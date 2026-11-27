@@ -38,6 +38,15 @@ describe("codingPlanProgressLabel", () => {
         ])).toBe("1/3");
     });
 
+    it("counts an ordinary skip and leaves a review wait open", () => {
+        expect(codingPlanProgressLabel([
+            { index: 1, status: "passed" },
+            { index: 2, status: "skipped" },
+            { index: 3, status: "skipped", block_reason: "等待子任务审阅" },
+            { index: 4, status: "waiting_review", summary: "子任务结果待审阅" },
+        ])).toBe("2/4");
+    });
+
     it("counts every done spelling and skipped, but never a failed step", () => {
         expect(codingPlanProgressLabel([
             { index: 1, status: "passed" },
@@ -143,6 +152,48 @@ describe("CodingAgentPlanChecklist", () => {
         expect(getByTestId("coding-agent-plan-current").textContent).toContain("T2");
         expect(getByTestId("coding-agent-plan-step-2").getAttribute("data-status")).toBe("running");
         expect(queryByTestId("coding-agent-plan-approve")).toBeNull();
+    });
+
+    it("shows a review wait as waiting and does not approve it", () => {
+        const { getByTestId, queryByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                pendingApproval
+                steps={[
+                    { index: 1, title: "完成", status: "passed" },
+                    { index: 2, title: "普通跳过", status: "skipped" },
+                    { index: 3, title: "等审阅", status: "skipped", block_reason: "等待子任务审阅" },
+                ]}
+            />,
+        );
+        expect(getByTestId("coding-agent-plan-progress").textContent).toContain("2/3");
+        expect(getByTestId("coding-agent-plan-step-2").getAttribute("data-status")).toBe("skipped");
+        expect(getByTestId("coding-agent-plan-step-2-sr-status").textContent).toContain("已跳过");
+        expect(getByTestId("coding-agent-plan-step-3").getAttribute("data-status")).toBe("skipped");
+        expect(getByTestId("coding-agent-plan-step-3-sr-status").textContent).toContain("等待审阅");
+        expect(getByTestId("coding-agent-plan-step-3-sr-status").textContent).not.toContain("已跳过");
+        expect(queryByTestId("coding-agent-plan-approve")).toBeNull();
+    });
+
+    it("keeps a failed step failed when its note mentions review", () => {
+        const { getByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[
+                    { index: 1, title: "探测", status: "failed", summary: "子任务结果待审阅" },
+                    { index: 2, title: "等审阅", status: "skipped", block_reason: "等待子任务审阅" },
+                ]}
+            />,
+        );
+        expect(getByTestId("coding-agent-plan-step-1").getAttribute("data-status")).toBe("failed");
+        expect(getByTestId("coding-agent-plan-step-1-sr-status").textContent).toContain("失败");
+        expect(getByTestId("coding-agent-plan-step-1-sr-status").textContent).not.toContain("等待审阅");
+        expect(getByTestId("coding-agent-plan-step-2-sr-status").textContent).toContain("等待审阅");
+        expect(getByTestId("coding-agent-plan-progress").textContent).toContain("0/2");
     });
 
     it("paints steps from the panel accent, not a standalone green", () => {
@@ -836,6 +887,12 @@ describe("CodingAgentPlanChecklist", () => {
         }
         const layoutPartial = readFileSync(resolve(process.cwd(), "src/styles/partials/90-im-channels-markdown.css"), "utf8");
         for (const css of [layoutPartial, assembled]) {
+            expect(css).toContain(".capc-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; font-weight: 600; }");
+            expect(css).toContain(".capc-title svg, .capc-title-label { flex-shrink: 0; }");
+            expect(css).toContain(".capc-title-label { white-space: nowrap; }");
+            expect(css).toContain(".capc-files { flex: 0 0 auto; min-width: 0; max-width: 48%; display: flex; align-items: center; }");
+            expect(css).toContain(".capc-bar > .capc-files { flex-shrink: 1; }");
+            expect(css).toContain(".capc-track { flex: 0 1 48px; width: 48px; min-width: 0; max-width: 48px; height: 4px; border-radius: 999px; background: color-mix(in srgb, currentColor 18%, transparent); overflow: hidden; }");
             expect(css).toContain(".capc-step-title { min-width: 0; flex: 1; overflow-wrap: anywhere; }");
             expect(css).toContain("[data-testid='coding-agent-plan-understanding'] { overflow-wrap: anywhere; }");
             expect(css).toContain(".capc-step-idx { flex-shrink: 0; min-width: 24px; opacity: 0.86; font-variant-numeric: tabular-nums; white-space: nowrap; }");

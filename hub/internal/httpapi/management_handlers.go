@@ -140,6 +140,8 @@ type BoundUserView struct {
 	HasServiceAccess  bool                      `json:"has_service_access,omitempty"`
 	ServiceStatus     *llmservice.ServiceStatus `json:"service_status,omitempty"`
 	Referral          *BoundUserReferralView    `json:"referral,omitempty"`
+	// CreatedAt is the account registration time from users.created_at.
+	CreatedAt string `json:"created_at,omitempty"`
 	// LastLogin* describe the most recently active client for this user. A
 	// desktop connect publishes machine.hello with platform/app_version, and
 	// re-enrollment refreshes the machine timestamp, so the newest machine
@@ -1036,6 +1038,7 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 				HasServiceAccess:    serviceStatus != nil && serviceStatus.Active,
 				ServiceStatus:       serviceStatus,
 				Referral:            referral,
+				CreatedAt:           boundUserCreatedAt(user),
 				LastLoginPlatform:   lastLoginPlatform,
 				LastLoginAppVersion: lastLoginAppVersion,
 				LastLoginAt:         lastLoginAt,
@@ -1044,6 +1047,13 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"users": out})
 	}
+}
+
+func boundUserCreatedAt(user *store.User) string {
+	if user == nil || user.CreatedAt.IsZero() {
+		return ""
+	}
+	return user.CreatedAt.UTC().Format(time.RFC3339)
 }
 
 func maskBoundUserReferralInviter(value string) string {

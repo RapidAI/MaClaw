@@ -91,6 +91,10 @@ func browseTarget(root, rel string) (string, error) {
 }
 
 func (rt *Runtime) browseListDir(inst *instance, rel string) (json.RawMessage, error) {
+	if inst != nil {
+		inst.jailMu.Lock()
+		defer inst.jailMu.Unlock()
+	}
 	root, err := rt.browseJail(inst)
 	if err != nil {
 		return nil, err
@@ -149,6 +153,10 @@ func (rt *Runtime) browseListDir(inst *instance, rel string) (json.RawMessage, e
 }
 
 func (rt *Runtime) browseReadFile(inst *instance, rel string, maxBytes int64) (json.RawMessage, error) {
+	if inst != nil {
+		inst.jailMu.Lock()
+		defer inst.jailMu.Unlock()
+	}
 	root, err := rt.browseJail(inst)
 	if err != nil {
 		return nil, err
@@ -162,16 +170,17 @@ func (rt *Runtime) browseReadFile(inst *instance, rel string, maxBytes int64) (j
 		return nil, err
 	}
 	// Lstat like serveFile: a path swapped for a symlink or special file
-	// must not leak an unrelated target.
+	// must not leak an unrelated target. A miss inside the checkout can
+	// still be a file written beside it before the jail root moved.
 	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, errors.New("这个文件已经不在了")
-	}
-	if info.IsDir() {
-		return nil, errors.New("这是一个目录，不能按文件读取")
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("这个文件已经不在了")
+	if err != nil || !info.Mode().IsRegular() {
+		if alt, altInfo, ok := strandedRegular(inst.dir, root, canonicalArtifactRel(root, path)); ok {
+			path, info = alt, altInfo
+		} else if err != nil || !info.IsDir() {
+			return nil, errors.New("这个文件已经不在了")
+		} else {
+			return nil, errors.New("这是一个目录，不能按文件读取")
+		}
 	}
 	limit := maxBytes
 	if limit <= 0 || limit > browseReadMaxBytes {
@@ -195,6 +204,10 @@ func (rt *Runtime) browseReadFile(inst *instance, rel string, maxBytes int64) (j
 }
 
 func (rt *Runtime) browseStat(inst *instance, rel string) (json.RawMessage, error) {
+	if inst != nil {
+		inst.jailMu.Lock()
+		defer inst.jailMu.Unlock()
+	}
 	root, err := rt.browseJail(inst)
 	if err != nil {
 		return nil, err
@@ -224,7 +237,12 @@ func (rt *Runtime) browseStat(inst *instance, rel string) (json.RawMessage, erro
 }
 
 func (rt *Runtime) browseDelete(inst *instance, rel string) (json.RawMessage, error) {
-	root, err := rt.browseJail(inst)
+	var root string
+	var err error
+	end := inst.beginJailWork(func() {
+		root, err = rt.browseJail(inst)
+	})
+	defer end()
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +273,14 @@ func (rt *Runtime) browseDelete(inst *instance, rel string) (json.RawMessage, er
 }
 
 func (rt *Runtime) browsePackDir(inst *instance, rel string) (json.RawMessage, error) {
-	root, err := rt.browseJail(inst)
+	var root string
+	var err error
+	// Packing walks the tree outside the lock. Counting it in flight keeps
+	// ConnectGit from renaming that tree until the archive is finished.
+	end := inst.beginJailWork(func() {
+		root, err = rt.browseJail(inst)
+	})
+	defer end()
 	if err != nil {
 		return nil, err
 	}
@@ -271,58 +296,84 @@ func (rt *Runtime) browsePackDir(inst *instance, rel string) (json.RawMessage, e
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
 	files := 0
-	walkErr := filepath.WalkDir(target, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if path != target && browseHidden(d.Name()) {
-			if d.IsDir() {
-				return filepath.SkipDir
+	seen := map[string]bool{}
+	packTree := func(nameRoot, walkRoot string, skipDir string) error {
+		return filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if skipDir != "" && filepath.Clean(path) == skipDir {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if path != walkRoot && browseHidden(d.Name()) {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			entry, err := d.Info()
+			if err != nil || (!entry.IsDir() && !entry.Mode().IsRegular()) {
+				return nil
+			}
+			name, err := filepath.Rel(nameRoot, path)
+			if err != nil || name == "." {
+				return nil
+			}
+			name = filepath.ToSlash(name)
+			if !entry.IsDir() && seen[name] {
+				return nil
+			}
+			if entry.IsDir() {
+				if seen[name] {
+					return nil
+				}
+				seen[name] = true
+				return tw.WriteHeader(&tar.Header{Name: name + "/", Mode: int64(entry.Mode().Perm()), ModTime: entry.ModTime(), Typeflag: tar.TypeDir})
+			}
+			seen[name] = true
+			files++
+			if files > browsePackMaxFiles {
+				return errBrowsePackLimit
+			}
+			if err := tw.WriteHeader(&tar.Header{Name: name, Mode: int64(entry.Mode().Perm()), Size: entry.Size(), ModTime: entry.ModTime(), Typeflag: tar.TypeReg}); err != nil {
+				return err
+			}
+			file, err := os.Open(path)
+			if err != nil {
+				return nil
+			}
+			_, copyErr := io.Copy(tw, file)
+			file.Close()
+			if copyErr != nil {
+				// Mid-pack size changes surface raw archive/tar errors — translate.
+				return errors.New("打包时文件发生变化，请重试")
+			}
+			// Flush both writers so buf.Len() reflects the real compressed size —
+			// the cap must trip on what actually travels, not the uncompressed sum.
+			if err := tw.Flush(); err != nil {
+				return err
+			}
+			if err := gz.Flush(); err != nil {
+				return err
+			}
+			if int64(buf.Len()) > browsePackMaxBytes {
+				return errBrowsePackLimit
 			}
 			return nil
+		})
+	}
+	walkErr := packTree(target, target, "")
+	// Packing the checkout root also takes files a turn wrote beside it
+	// while the jail was still the bare workspace. Names stay relative to
+	// the checkout, which is how the book recorded them.
+	if walkErr == nil && filepath.Clean(target) == filepath.Clean(root) {
+		if workspace, ok := looseWorkspace(inst.dir, root); ok {
+			walkErr = packTree(workspace, workspace, filepath.Clean(root))
 		}
-		entry, err := d.Info()
-		if err != nil || (!entry.IsDir() && !entry.Mode().IsRegular()) {
-			return nil
-		}
-		name, err := filepath.Rel(target, path)
-		if err != nil || name == "." {
-			return nil
-		}
-		name = filepath.ToSlash(name)
-		if entry.IsDir() {
-			return tw.WriteHeader(&tar.Header{Name: name + "/", Mode: int64(entry.Mode().Perm()), ModTime: entry.ModTime(), Typeflag: tar.TypeDir})
-		}
-		files++
-		if files > browsePackMaxFiles {
-			return errBrowsePackLimit
-		}
-		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: int64(entry.Mode().Perm()), Size: entry.Size(), ModTime: entry.ModTime(), Typeflag: tar.TypeReg}); err != nil {
-			return err
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			return nil
-		}
-		_, copyErr := io.Copy(tw, file)
-		file.Close()
-		if copyErr != nil {
-			// Mid-pack size changes surface raw archive/tar errors — translate.
-			return errors.New("打包时文件发生变化，请重试")
-		}
-		// Flush both writers so buf.Len() reflects the real compressed size —
-		// the cap must trip on what actually travels, not the uncompressed sum.
-		if err := tw.Flush(); err != nil {
-			return err
-		}
-		if err := gz.Flush(); err != nil {
-			return err
-		}
-		if int64(buf.Len()) > browsePackMaxBytes {
-			return errBrowsePackLimit
-		}
-		return nil
-	})
+	}
 	if walkErr != nil {
 		_ = tw.Close()
 		_ = gz.Close()
@@ -351,7 +402,12 @@ func (rt *Runtime) browsePackDir(inst *instance, rel string) (json.RawMessage, e
 // retried chunk cannot silently corrupt the file — the desktop resends from
 // scratch on mismatch. Missing parents are created inside the jail.
 func (rt *Runtime) browseWriteFile(inst *instance, rel, dataBase64 string, offset int64) (json.RawMessage, error) {
-	root, err := rt.browseJail(inst)
+	var root string
+	var err error
+	end := inst.beginJailWork(func() {
+		root, err = rt.browseJail(inst)
+	})
+	defer end()
 	if err != nil {
 		return nil, err
 	}
@@ -419,7 +475,12 @@ func (rt *Runtime) browseWriteFile(inst *instance, rel, dataBase64 string, offse
 
 // browseMkdir creates a directory (and any missing parents) inside the jail.
 func (rt *Runtime) browseMkdir(inst *instance, rel string) (json.RawMessage, error) {
-	root, err := rt.browseJail(inst)
+	var root string
+	var err error
+	end := inst.beginJailWork(func() {
+		root, err = rt.browseJail(inst)
+	})
+	defer end()
 	if err != nil {
 		return nil, err
 	}

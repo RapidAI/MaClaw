@@ -15,9 +15,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/wailsapp/wails/v2/pkg/maclawplayer"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/mac"
+	"github.com/RapidAI/CodeClaw/guiapp/internal/maclawplayer"
 	wailsruntime "github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
@@ -916,59 +914,7 @@ func (a *App) FileCompanionUIReady() []string {
 	return pending
 }
 
-func (a *App) onFileCompanionSecondInstance(data options.SecondInstanceData) {
-	// Second-instance args omit argv[0]. Classify with a placeholder so
-	// open-file stays the first user arg. Return immediately. The window is
-	// revealed asynchronously and does not wait on ctx.
-	launch := classifyDesktopLaunch(append([]string{"maclaw"}, data.Args...))
-	if launch.Mode != desktopLaunchFileCompanion {
-		return
-	}
-	if launch.Quit {
-		// The main process relays `open-file --quit` when it exits: tray
-		// quit, --quit, updater restart. Quit through the shared controller
-		// so this window cannot outlive the product without a tray icon.
-		logFileCompanion("second instance quit request")
-		a.requestCompanionQuit()
-		return
-	}
-	if launch.Notice != "" {
-		logFileCompanion("second instance notice=%s", launch.Notice)
-		a.presentCompanionPaperNotice(launch.Notice)
-		return
-	}
-	if launch.Library {
-		logFileCompanion("second instance library view")
-		a.requestFileCompanionLibraryView()
-		a.revealFileCompanionWindow()
-		return
-	}
-	// This process cwd is the install directory. On Windows and Linux the
-	// new process sends its own cwd. Darwin's payload is the executable
-	// directory, so a relative document stays relative there.
-	launchDir := data.WorkingDirectory
-	if goruntime.GOOS == "darwin" {
-		launchDir = ""
-	}
-	paths := make([]string, 0, len(launch.Paths))
-	for _, path := range launch.Paths {
-		doc, ok := fileCompanionDocumentArg(path, launchDir)
-		if !ok {
-			continue
-		}
-		paths = append(paths, doc)
-	}
-	logFileCompanion("second instance paths=%d", len(paths))
-	a.enqueueFileCompanionOpen(paths, launch.Place)
-	a.revealFileCompanionWindow()
-	if len(paths) == 0 {
-		a.notifyFileCompanionShow()
-	}
-}
 
-// notifyFileCompanionShow tells the open window to show its 打开 panel when
-// it has no tab. A launch that has not subscribed yet does that from its own
-// empty boot. The system file dialog stays behind the panel's 打开文档或导入项目 row.
 func (a *App) notifyFileCompanionShow() {
 	if a == nil {
 		return
@@ -1062,67 +1008,6 @@ func companionRevealDeminiaturizes() bool {
 	return goruntime.GOOS != "windows"
 }
 
-func applyDesktopLaunchOptions(app *App, opts *options.App, launch desktopLaunch) {
-	if app == nil || opts == nil {
-		return
-	}
-	if launch.Mode == desktopLaunchFileCompanion {
-		switch {
-		case launch.Quit:
-			app.seedFileCompanionQuit()
-			// A quit relay that takes the lock itself must not flash a
-			// window; it exits from fileCompanionStartup's quit check.
-			opts.StartHidden = true
-		case launch.Notice != "":
-			app.seedFileCompanionNotice(launch.Notice)
-		case launch.Library:
-			app.seedFileCompanionLibrary()
-		case launch.Place:
-			app.seedFileCompanionPlace(launch.Paths)
-		default:
-			app.seedFileCompanionPaths(launch.Paths)
-		}
-		opts.Width = 1280
-		opts.Height = 800
-		opts.WindowStartState = options.Normal
-		if !launch.Quit {
-			opts.StartHidden = false
-		}
-		// Alt+F4 and the native close box hide this window. The title-bar
-		// button calls runtime WindowHide itself; Quit would drop the open tabs.
-		opts.HideWindowOnClose = true
-		opts.OnStartup = app.fileCompanionStartup
-		opts.OnDomReady = app.fileCompanionDomReady
-		if opts.SingleInstanceLock != nil {
-			opts.SingleInstanceLock.UniqueId = launch.LockID
-			opts.SingleInstanceLock.OnSecondInstanceLaunch = app.onFileCompanionSecondInstance
-		}
-		if opts.Windows != nil {
-			profile := fileCompanionWebviewUserDataPath()
-			opts.Windows.WebviewUserDataPath = profile
-			clearWebviewAssetCacheIfNeeded(profile)
-		}
-		if opts.Mac == nil {
-			opts.Mac = &mac.Options{}
-		}
-		opts.Mac.OnFileOpen = app.darwinOnFileOpen
-		opts.Mac.OnUrlOpen = app.darwinOnURLOpen
-		logFileCompanion("process lock=%s paths=%d notice=%s", launch.LockID, len(launch.Paths), launch.Notice)
-		return
-	}
-	if opts.Mac == nil {
-		opts.Mac = &mac.Options{}
-	}
-	opts.Mac.OnFileOpen = app.darwinOnFileOpen
-	opts.Mac.OnUrlOpen = app.darwinOnURLOpen
-	if launch.StartHidden {
-		opts.StartHidden = true
-		app.armDarwinDocumentLatch()
-		opts.OnStartup = app.darwinLatchedStartup
-		opts.Mac.OnLaunchFileBatch = app.darwinOnLaunchFileBatch
-		logFileCompanion("darwin main latch StartHidden lock=%s", launch.LockID)
-	}
-}
 
 func fileCompanionWebviewUserDataPath() string {
 	if goruntime.GOOS != "windows" {

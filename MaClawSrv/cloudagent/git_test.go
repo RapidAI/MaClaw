@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestProgrammingGitRejectsSessionAndInsecureURL(t *testing.T) {
@@ -495,5 +497,614 @@ func TestGitConnectSourceRoundTrip(t *testing.T) {
 	}
 	if loaded.Source != "account" {
 		t.Fatalf("git.json source = %q", loaded.Source)
+	}
+}
+
+// ConnectGit during a running turn used to leave the host on the bare
+// workspace. The next tool has to fold those files into the checkout and
+// write the rest there.
+func TestSyncRootFoldsLooseFilesIntoCheckout(t *testing.T) {
+	dir := t.TempDir()
+	workspace := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(filepath.Join(workspace, "snake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "snake", "game.cpp"), []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := &agentHost{
+		inst:   &instance{dir: dir, meta: Spec{ID: "cag_sync", Kind: KindCoding}},
+		root:   workspace,
+		coding: true,
+	}
+	host.syncRoot()
+	if host.root != workspace {
+		t.Fatalf("root before connect = %s", host.root)
+	}
+	repo := filepath.Join(workspace, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeGit(dir, gitSecret{Token: "bind-token-01234567", Clone: "https://github.com/acme/repo.git", Repo: "acme/repo"}); err != nil {
+		t.Fatal(err)
+	}
+	host.syncRoot()
+	if host.root != repo {
+		t.Fatalf("root after connect = %s", host.root)
+	}
+	raw, err := os.ReadFile(filepath.Join(repo, "snake", "game.cpp"))
+	if err != nil || string(raw) != "before\n" {
+		t.Fatalf("folded file %q %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "snake", "game.cpp")); !os.IsNotExist(err) {
+		t.Fatalf("loose file still outside the checkout: %v", err)
+	}
+	_, path, _, _, _, _, _, _ := (&Runtime{}).execWriteFile(host.inst, host.root, `{"path":"snake/food.cpp","content":"after\n"}`)
+	if path != filepath.Join(repo, "snake", "food.cpp") {
+		t.Fatalf("write landed at %s", path)
+	}
+
+	// The next turn is constructed with root already equal to the published
+	// checkout. A file left in the parent workspace still has to fold in.
+	if err := os.WriteFile(filepath.Join(workspace, "later.txt"), []byte("later\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host.syncRoot()
+	if host.root != repo {
+		t.Fatalf("root while already on the checkout = %s", host.root)
+	}
+	raw, err = os.ReadFile(filepath.Join(repo, "later.txt"))
+	if err != nil || string(raw) != "later\n" {
+		t.Fatalf("later = %q %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "later.txt")); !os.IsNotExist(err) {
+		t.Fatalf("later still outside the checkout: %v", err)
+	}
+	raw, err = os.ReadFile(filepath.Join(repo, "snake", "game.cpp"))
+	if err != nil || string(raw) != "before\n" {
+		t.Fatalf("folded file after a second sync = %q %v", raw, err)
+	}
+
+	// Disconnect widens the published jail back to the workspace. This turn
+	// keeps the checkout and does not pull the new sibling into it.
+	if err := os.Remove(gitPath(dir)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "stay.txt"), []byte("stay\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host.syncRoot()
+	if host.root != repo {
+		t.Fatalf("disconnect widened root to %s", host.root)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "stay.txt")); !os.IsNotExist(err) {
+		t.Fatalf("disconnect moved stay.txt: %v", err)
+	}
+	raw, err = os.ReadFile(filepath.Join(workspace, "stay.txt"))
+	if err != nil || string(raw) != "stay\n" {
+		t.Fatalf("stay = %q %v", raw, err)
+	}
+
+	// An empty root adopts the checkout and folds what is still outside.
+	if err := writeGit(dir, gitSecret{Token: "bind-token-01234567", Clone: "https://github.com/acme/repo.git", Repo: "acme/repo"}); err != nil {
+		t.Fatal(err)
+	}
+	host.root = ""
+	host.syncRoot()
+	if host.root != repo {
+		t.Fatalf("empty root adopted %s", host.root)
+	}
+	raw, err = os.ReadFile(filepath.Join(repo, "stay.txt"))
+	if err != nil || string(raw) != "stay\n" {
+		t.Fatalf("empty root left stay = %q %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "stay.txt")); !os.IsNotExist(err) {
+		t.Fatalf("stay still outside after adopt: %v", err)
+	}
+}
+
+// A workspace write and a ConnectGit publish share one jail. The write does
+// not hold the lock for the whole call — a file fetch must stay possible —
+// but the publish waits until that write has landed, then folds it into the
+// checkout. The turn's next write and read use that checkout.
+func TestConnectGitWaitsForInFlightToolThenTurnAdoptsCheckout(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Fatal("git is not installed")
+	}
+	bare := seedBare(t)
+	pointCloneAt(t, bare)
+	rt := openRuntime(t)
+	coding := putKind(t, rt, KindCoding)
+	inst, err := rt.instance(coding.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(inst.dir, "workspace")
+	end := inst.beginJailWork(nil)
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			end()
+		}
+	})
+	var waitOnce sync.Once
+	waiting := make(chan struct{})
+	jailInflightWaitHook = func() {
+		waitOnce.Do(func() { close(waiting) })
+	}
+	t.Cleanup(func() { jailInflightWaitHook = nil })
+	entered := make(chan struct{})
+	jailConnectHook = func() { close(entered) }
+	t.Cleanup(func() { jailConnectHook = nil })
+	done := make(chan error, 1)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		_, err := rt.ConnectGit(context.Background(), coding.ID, demoConnect())
+		done <- err
+	}()
+	t.Cleanup(func() {
+		if !released {
+			released = true
+			end()
+		}
+		select {
+		case <-finished:
+		case <-time.After(20 * time.Second):
+		}
+	})
+	select {
+	case err := <-done:
+		t.Fatalf("ConnectGit finished while a workspace write was still in flight: %v", err)
+	case <-entered:
+		t.Fatal("ConnectGit published while a workspace write was still in flight")
+	case <-waiting:
+	case <-time.After(30 * time.Second):
+		t.Fatal("ConnectGit did not wait for the in-flight workspace write")
+	}
+	if err := os.MkdirAll(filepath.Join(workspace, "snake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "snake", "game.cpp"), []byte("int game;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+		t.Fatal("ConnectGit published before the in-flight write finished")
+	default:
+	}
+	released = true
+	end()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(workspace, "demo")
+	if raw, err := os.ReadFile(filepath.Join(repo, "snake", "game.cpp")); err != nil || string(raw) != "int game;\n" {
+		t.Fatalf("connect left game.cpp outside the checkout: %q %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "snake", "game.cpp")); !os.IsNotExist(err) {
+		t.Fatalf("game.cpp still beside the checkout: %v", err)
+	}
+	host := &agentHost{rt: rt, inst: inst, root: workspace, coding: true, turn: context.Background()}
+	if out, failed := host.runTool("write_file", `{"path":"snake/food.cpp","content":"after\n"}`); failed {
+		t.Fatalf("write: %s", out)
+	}
+	if host.root != repo {
+		t.Fatalf("turn root = %s", host.root)
+	}
+	if raw, err := os.ReadFile(filepath.Join(repo, "snake", "food.cpp")); err != nil || string(raw) != "after\n" {
+		t.Fatalf("food.cpp = %q %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "snake", "food.cpp")); !os.IsNotExist(err) {
+		t.Fatalf("food.cpp written beside the checkout: %v", err)
+	}
+	out, failed := host.runTool("read_file", `{"path":"snake/game.cpp"}`)
+	if failed || !strings.Contains(out, "int game;") {
+		t.Fatalf("read = %s failed=%v", out, failed)
+	}
+}
+
+// A clone that already has snake/ must absorb the agent's snake/game.cpp.
+// Renaming the whole directory to snake.pre-checkout drops the book key.
+func TestMergeWorkspaceLooseRecursesSharedDirectory(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	dest := filepath.Join(workspace, "demo")
+	writeTree := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTree(filepath.Join(dest, "snake", "other.hpp"), "clone\n")
+	writeTree(filepath.Join(dest, "README.md"), "hello\n")
+	writeTree(filepath.Join(workspace, "snake", "game.cpp"), "int game;\n")
+	writeTree(filepath.Join(workspace, "snake", "other.hpp"), "loose hpp\n")
+	writeTree(filepath.Join(workspace, "snake", "src", "deep.cpp"), "deep\n")
+	writeTree(filepath.Join(workspace, "README.md"), "loose readme\n")
+	writeTree(filepath.Join(workspace, "zombie", ".git", "HEAD"), "ref: refs/heads/main\n")
+	writeTree(filepath.Join(workspace, ".git", "HEAD"), "nope\n")
+
+	mergeWorkspaceLoose(workspace, dest, "", "cag_merge")
+
+	read := func(path, want string) {
+		t.Helper()
+		raw, err := os.ReadFile(path)
+		if err != nil || string(raw) != want {
+			t.Fatalf("%s = %q %v", path, raw, err)
+		}
+	}
+	read(filepath.Join(dest, "snake", "game.cpp"), "int game;\n")
+	read(filepath.Join(dest, "snake", "src", "deep.cpp"), "deep\n")
+	read(filepath.Join(dest, "snake", "other.hpp"), "clone\n")
+	read(filepath.Join(dest, "snake", "other.hpp.pre-checkout"), "loose hpp\n")
+	read(filepath.Join(dest, "README.md"), "hello\n")
+	read(filepath.Join(dest, "README.md.pre-checkout"), "loose readme\n")
+	read(filepath.Join(dest, "zombie", ".git", "HEAD"), "ref: refs/heads/main\n")
+	read(filepath.Join(workspace, ".git", "HEAD"), "nope\n")
+	if _, err := os.Stat(filepath.Join(dest, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("top-level .git entered the clone: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "snake")); !os.IsNotExist(err) {
+		t.Fatalf("loose snake still outside the checkout: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "zombie")); !os.IsNotExist(err) {
+		t.Fatalf("zombie stayed outside the checkout: %v", err)
+	}
+}
+
+// A directory symlink in the clone must not receive the loose tree.
+func TestMergeWorkspaceLooseDoesNotFollowDirectoryLink(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside")
+	workspace := filepath.Join(root, "workspace")
+	dest := filepath.Join(workspace, "demo")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dest, "snake")
+	if err := os.Symlink(outside, link); err != nil {
+		// A directory junction does not need the symlink privilege. Go reports
+		// it with the same mode bit plainDir refuses to walk.
+		out, jerr := exec.Command("cmd", "/c", "mklink", "/J", link, outside).CombinedOutput()
+		if jerr != nil {
+			t.Skip("symlink: " + err.Error() + "; junction: " + strings.TrimSpace(string(out)))
+		}
+	}
+	loose := filepath.Join(workspace, "snake")
+	if err := os.MkdirAll(loose, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(loose, "game.cpp"), []byte("int game;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mergeWorkspaceLoose(workspace, dest, "", "cag_link")
+	if _, err := os.Stat(filepath.Join(outside, "game.cpp")); err == nil {
+		t.Fatal("followed a directory symlink out of the checkout")
+	}
+	raw, err := os.ReadFile(filepath.Join(dest, "snake.pre-checkout", "game.cpp"))
+	if err != nil || string(raw) != "int game;\n" {
+		t.Fatalf("parked link collision = %q %v", raw, err)
+	}
+}
+
+// A loose directory whose name is a file in the clone parks wholesale.
+// Merging a directory into a file would destroy the clone's file.
+func TestMergeWorkspaceLooseParksDirectoryOnFile(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	dest := filepath.Join(workspace, "demo")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "snake"), []byte("clone-file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loose := filepath.Join(workspace, "snake")
+	if err := os.MkdirAll(loose, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(loose, "game.cpp"), []byte("int game;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mergeWorkspaceLoose(workspace, dest, "", "cag_file")
+	raw, err := os.ReadFile(filepath.Join(dest, "snake"))
+	if err != nil || string(raw) != "clone-file\n" {
+		t.Fatalf("clone file = %q %v", raw, err)
+	}
+	raw, err = os.ReadFile(filepath.Join(dest, "snake.pre-checkout", "game.cpp"))
+	if err != nil || string(raw) != "int game;\n" {
+		t.Fatalf("parked directory = %q %v", raw, err)
+	}
+}
+
+func initRepo(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Seed", "GIT_AUTHOR_EMAIL=seed@example.com",
+			"GIT_COMMITTER_NAME=Seed", "GIT_COMMITTER_EMAIL=seed@example.com")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v %s", strings.Join(args, " "), err, out)
+		}
+	}
+	git("init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "README.md")
+	git("commit", "-m", "init")
+}
+
+func adoptedBinding() gitSecret {
+	return gitSecret{
+		Service: "github", Origin: "https://github.com", Repo: "acme/other",
+		Clone: "https://github.com/acme/other.git", Token: "git-secret-token",
+		AuthorName: "Ada", AuthorEmail: "ada@example.com",
+	}
+}
+
+// The turn already writes the checkout it adopted. Commit and the HTTP
+// path must not share one root: jailRoot can name a different directory
+// while this turn's files still live in the adopted one.
+func TestTurnGitCommitUsesAdoptedRootNotJailRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Fatal("git is not installed")
+	}
+	rt := openRuntime(t)
+	spec := putKind(t, rt, KindCoding)
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(inst.dir, "workspace")
+	adopted := filepath.Join(workspace, "demo")
+	decoy := filepath.Join(workspace, "other")
+	initRepo(t, adopted)
+	initRepo(t, decoy)
+	if err := writeGit(inst.dir, adoptedBinding()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(adopted, "turned.txt"), []byte("from-turn\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(decoy, "decoy.txt"), []byte("from-decoy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	published, err := jailRoot(inst.dir, KindCoding)
+	if err != nil || filepath.Clean(published) != filepath.Clean(decoy) {
+		t.Fatalf("published jail = %s err=%v", published, err)
+	}
+	host := &agentHost{rt: rt, inst: inst, root: adopted, coding: true, turn: context.Background()}
+	out, failed := host.runTool("git_commit", `{"message":"from the turn"}`)
+	if failed {
+		t.Fatal(out)
+	}
+	if filepath.Clean(host.root) != filepath.Clean(adopted) {
+		t.Fatalf("turn root moved to %s", host.root)
+	}
+	if got := gitOut(t, "-C", adopted, "ls-files", "--", "turned.txt"); got != "turned.txt" {
+		t.Fatalf("adopted checkout was not committed: %q", got)
+	}
+	if got := gitOut(t, "-C", decoy, "ls-files", "--", "decoy.txt"); got != "" {
+		t.Fatalf("turn commit used the published jail: %q", got)
+	}
+	if _, err := rt.Commit(context.Background(), spec.ID, "published jail"); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitOut(t, "-C", decoy, "ls-files", "--", "decoy.txt"); got != "decoy.txt" {
+		t.Fatalf("HTTP commit missed the published jail: %q", got)
+	}
+	if got := gitOut(t, "-C", adopted, "log", "-1", "--format=%s"); got != "from the turn" {
+		t.Fatalf("adopted log = %q", got)
+	}
+}
+
+func TestTurnGitCommitFailsClosedWithoutBinding(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Fatal("git is not installed")
+	}
+	rt := openRuntime(t)
+	spec := putKind(t, rt, KindCoding)
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adopted := filepath.Join(inst.dir, "workspace", "demo")
+	initRepo(t, adopted)
+	if err := os.WriteFile(filepath.Join(adopted, "turned.txt"), []byte("from-turn\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := &agentHost{rt: rt, inst: inst, root: adopted, coding: true, turn: context.Background()}
+	out, failed := host.runTool("git_commit", `{"message":"from the turn"}`)
+	if !failed || !strings.Contains(out, "还没有连接代码库") {
+		t.Fatalf("commit without binding: failed=%v out=%s", failed, out)
+	}
+	if got := gitOut(t, "-C", adopted, "ls-files", "--", "turned.txt"); got != "" {
+		t.Fatalf("unbound turn committed: %q", got)
+	}
+}
+
+func TestTurnGitCommitRejectsRootOutsideWorkspace(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Fatal("git is not installed")
+	}
+	rt := openRuntime(t)
+	spec := putKind(t, rt, KindCoding)
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoy := filepath.Join(inst.dir, "workspace", "other")
+	initRepo(t, decoy)
+	if err := writeGit(inst.dir, adoptedBinding()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(decoy, "decoy.txt"), []byte("from-decoy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	initRepo(t, outside)
+	if err := os.WriteFile(filepath.Join(outside, "escaped.txt"), []byte("nope\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := &agentHost{rt: rt, inst: inst, root: outside, coding: true, turn: context.Background()}
+	out, failed := host.runTool("git_commit", `{"message":"from the turn"}`)
+	if !failed || !strings.Contains(out, "路径超出工作区") {
+		t.Fatalf("outside root: failed=%v out=%s", failed, out)
+	}
+	if got := gitOut(t, "-C", outside, "ls-files", "--", "escaped.txt"); got != "" {
+		t.Fatalf("commit left the workspace: %q", got)
+	}
+	if got := gitOut(t, "-C", decoy, "ls-files", "--", "decoy.txt"); got != "" {
+		t.Fatalf("rejected root fell back to the published jail: %q", got)
+	}
+}
+
+// A shared directory must not pour a loose .git into the clone's object store.
+func TestMergeWorkspaceLooseDoesNotMixGitDirectories(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	dest := filepath.Join(workspace, "demo")
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(dest, "snake", ".git", "HEAD"), "real\n")
+	write(filepath.Join(workspace, "snake", ".git", "objects", "x"), "loose-object\n")
+	write(filepath.Join(workspace, "snake", "game.cpp"), "int game;\n")
+
+	mergeWorkspaceLoose(workspace, dest, "", "cag_gitdir")
+
+	raw, err := os.ReadFile(filepath.Join(dest, "snake", ".git", "HEAD"))
+	if err != nil || string(raw) != "real\n" {
+		t.Fatalf("clone HEAD = %q %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "snake", ".git", "objects", "x")); !os.IsNotExist(err) {
+		t.Fatalf("loose git object merged into the clone: %v", err)
+	}
+	raw, err = os.ReadFile(filepath.Join(workspace, "snake", ".git", "objects", "x"))
+	if err != nil || string(raw) != "loose-object\n" {
+		t.Fatalf("loose git dir = %q %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "snake", ".git.pre-checkout")); !os.IsNotExist(err) {
+		t.Fatalf("loose git dir parked inside the work tree: %v", err)
+	}
+	raw, err = os.ReadFile(filepath.Join(dest, "snake", "game.cpp"))
+	if err != nil || string(raw) != "int game;\n" {
+		t.Fatalf("game.cpp = %q %v", raw, err)
+	}
+}
+
+// git.json is the jail's publication bit. Loose files must stay at their
+// open-jail paths when that write fails, and a retry must still pick them up.
+func TestConnectGitWriteFailureRestoresLooseFiles(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Fatal("git is not installed")
+	}
+	bare := seedBare(t)
+	pointCloneAt(t, bare)
+	rt := openRuntime(t)
+	coding := putKind(t, rt, KindCoding)
+	dir := instanceDir(rt, coding)
+	workspace := filepath.Join(dir, "workspace")
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(workspace, "snake", "game.cpp"), "int game;\n")
+	write(filepath.Join(workspace, "demo", "mine.cpp"), "mine\n")
+
+	connectGitWriteHook = func() error { return errors.New("git.json 写入失败") }
+	t.Cleanup(func() { connectGitWriteHook = nil })
+	if _, err := rt.ConnectGit(context.Background(), coding.ID, demoConnect()); err == nil || !strings.Contains(err.Error(), "git.json 写入失败") {
+		t.Fatalf("write failure = %v", err)
+	}
+	read := func(path, want string) {
+		t.Helper()
+		raw, err := os.ReadFile(path)
+		if err != nil || string(raw) != want {
+			t.Fatalf("%s = %q %v", path, raw, err)
+		}
+	}
+	read(filepath.Join(workspace, "snake", "game.cpp"), "int game;\n")
+	read(filepath.Join(workspace, "demo", "mine.cpp"), "mine\n")
+	if _, err := os.Stat(gitPath(dir)); !os.IsNotExist(err) {
+		t.Fatalf("git.json published after a failed write: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "demo", ".git")); !os.IsNotExist(err) {
+		t.Fatalf("unpublished checkout left in place: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "demo", "snake", "game.cpp")); !os.IsNotExist(err) {
+		t.Fatalf("file stranded inside the unpublished checkout: %v", err)
+	}
+
+	connectGitWriteHook = nil
+	if _, err := rt.ConnectGit(context.Background(), coding.ID, demoConnect()); err != nil {
+		t.Fatal(err)
+	}
+	read(filepath.Join(workspace, "demo", "snake", "game.cpp"), "int game;\n")
+	read(filepath.Join(workspace, "demo", "mine.cpp"), "mine\n")
+	readme, err := os.ReadFile(filepath.Join(workspace, "demo", "README.md"))
+	if err != nil || strings.TrimSpace(string(readme)) != "hello" {
+		t.Fatalf("README = %q %v", readme, err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "snake", "game.cpp")); !os.IsNotExist(err) {
+		t.Fatalf("retry left game.cpp outside the checkout: %v", err)
+	}
+}
+
+func TestWriteFileReplacesWithoutLeavingTmp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "git.json")
+	if err := os.WriteFile(path, []byte("old-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(path, []byte("new-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || string(raw) != "new-token\n" {
+		t.Fatalf("replaced = %q %v", raw, err)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("tmp left beside the replaced file: %v", err)
+	}
+	fresh := filepath.Join(dir, "meta.json")
+	if err := writeFile(fresh, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = os.ReadFile(fresh)
+	if err != nil || string(raw) != "{}\n" {
+		t.Fatalf("created = %q %v", raw, err)
+	}
+	if _, err := os.Stat(fresh + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("tmp left beside the new file: %v", err)
 	}
 }

@@ -3120,13 +3120,21 @@ func writeOpenAIChatAsResponsesStreamResponse(rw http.ResponseWriter, resp *http
 	textOutputIndex := -1
 	var text strings.Builder
 	textStarted := false
+	// Official cloud turns speak the Responses API. The official upstream is
+	// still a chat completion, and that stream carries the thought in
+	// reasoning_content. Dropping it here is why the desktop showed the
+	// answer and the tool chip with an empty 思考过程.
+	var reasoning strings.Builder
+	reasoningStarted := false
+	reasoningOutputIndex := -1
+	reasoningItemID := "rs_" + respID
 	toolCalls := map[int]*hubResponsesStreamToolCallAccum{}
 	var toolOrder []int
 	usage := corelib.TokenUsageStat{}
 	if err := writeHubResponsesSSE(w, "response.created", map[string]any{
 		"type":            "response.created",
 		"sequence_number": seq,
-		"response":        hubResponsesStreamResponseObject(respID, responseModel, "", false, -1, nil, nil, usage),
+		"response":        hubResponsesStreamResponseObject(respID, responseModel, "", false, -1, nil, nil, usage, "", -1),
 	}); err != nil {
 		return applyProviderUsageCost(usage, provider), true, err
 	}
@@ -3134,6 +3142,43 @@ func writeOpenAIChatAsResponsesStreamResponse(rw http.ResponseWriter, resp *http
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var eventLines [][]byte
+	writeReasoning := func(chunk string) error {
+		if chunk == "" {
+			return nil
+		}
+		if !reasoningStarted {
+			reasoningOutputIndex = nextOutputIndex
+			nextOutputIndex++
+			if err := writeHubResponsesSSE(w, "response.output_item.added", map[string]any{
+				"type":            "response.output_item.added",
+				"sequence_number": seq,
+				"output_index":    reasoningOutputIndex,
+				"item": map[string]any{
+					"id":      reasoningItemID,
+					"type":    "reasoning",
+					"status":  "in_progress",
+					"summary": []any{},
+				},
+			}); err != nil {
+				return err
+			}
+			seq++
+			reasoningStarted = true
+		}
+		reasoning.WriteString(chunk)
+		if err := writeHubResponsesSSE(w, "response.reasoning_summary_text.delta", map[string]any{
+			"type":            "response.reasoning_summary_text.delta",
+			"sequence_number": seq,
+			"item_id":         reasoningItemID,
+			"output_index":    reasoningOutputIndex,
+			"summary_index":   0,
+			"delta":           chunk,
+		}); err != nil {
+			return err
+		}
+		seq++
+		return nil
+	}
 	flushEvent := func() (bool, error) {
 		if len(eventLines) == 0 {
 			return true, nil
@@ -3157,7 +3202,37 @@ func writeOpenAIChatAsResponsesStreamResponse(rw http.ResponseWriter, resp *http
 		for _, choiceRaw := range anySlice(chunk["choices"]) {
 			choice := mapFromProviderHandlerAny(choiceRaw)
 			delta := mapFromProviderHandlerAny(choice["delta"])
-			if content, ok := delta["content"].(string); ok && content != "" {
+			reasoningChunk := chatStreamReasoningText(delta)
+			if err := writeReasoning(reasoningChunk); err != nil {
+				return false, err
+			}
+			// Deltas are incremental. The final message is a snapshot: append
+			// only the part the deltas have not already carried, and ignore a
+			// repeat of the same thought.
+			message := mapFromProviderHandlerAny(choice["message"])
+			if extra := reasoningSnapshotDelta(reasoning.String(), chatStreamReasoningText(message)); extra != "" {
+				if err := writeReasoning(extra); err != nil {
+					return false, err
+				}
+			}
+			// Content is usually a string. Hosted reasoning models also send a
+			// part list whose thinking blocks are the thought and whose text
+			// blocks are the answer. Those thinking blocks are incremental
+			// deltas, like reasoning_content: the next fragment is not a
+			// snapshot of the text already sent. A plain narration string
+			// stays the answer.
+			answer, thought := corelib.OpenAIChatContent(delta["content"])
+			if err := writeReasoning(thought); err != nil {
+				return false, err
+			}
+			if _, messageThought := corelib.OpenAIChatContent(message["content"]); messageThought != "" {
+				if extra := reasoningSnapshotDelta(reasoning.String(), messageThought); extra != "" {
+					if err := writeReasoning(extra); err != nil {
+						return false, err
+					}
+				}
+			}
+			if answer != "" {
 				if !textStarted {
 					textOutputIndex = nextOutputIndex
 					nextOutputIndex++
@@ -3189,14 +3264,14 @@ func writeOpenAIChatAsResponsesStreamResponse(rw http.ResponseWriter, resp *http
 					seq++
 					textStarted = true
 				}
-				text.WriteString(content)
+				text.WriteString(answer)
 				if err := writeHubResponsesSSE(w, "response.output_text.delta", map[string]any{
 					"type":            "response.output_text.delta",
 					"sequence_number": seq,
 					"item_id":         msgID,
 					"output_index":    textOutputIndex,
 					"content_index":   0,
-					"delta":           content,
+					"delta":           answer,
 					"logprobs":        []any{},
 				}); err != nil {
 					return false, err
@@ -3337,6 +3412,37 @@ func writeOpenAIChatAsResponsesStreamResponse(rw http.ResponseWriter, resp *http
 	if err := scanner.Err(); err != nil {
 		return applyProviderUsageCost(usage, provider), true, err
 	}
+	if reasoningStarted {
+		summary := reasoning.String()
+		if err := writeHubResponsesSSE(w, "response.reasoning_summary_text.done", map[string]any{
+			"type":            "response.reasoning_summary_text.done",
+			"sequence_number": seq,
+			"item_id":         reasoningItemID,
+			"output_index":    reasoningOutputIndex,
+			"summary_index":   0,
+			"text":            summary,
+		}); err != nil {
+			return applyProviderUsageCost(usage, provider), true, err
+		}
+		seq++
+		if err := writeHubResponsesSSE(w, "response.output_item.done", map[string]any{
+			"type":            "response.output_item.done",
+			"sequence_number": seq,
+			"output_index":    reasoningOutputIndex,
+			"item": map[string]any{
+				"id":     reasoningItemID,
+				"type":   "reasoning",
+				"status": "completed",
+				"summary": []any{map[string]any{
+					"type": "summary_text",
+					"text": summary,
+				}},
+			},
+		}); err != nil {
+			return applyProviderUsageCost(usage, provider), true, err
+		}
+		seq++
+	}
 	outputText := text.String()
 	if textStarted {
 		if err := writeHubResponsesSSE(w, "response.output_text.done", map[string]any{
@@ -3454,7 +3560,7 @@ func writeOpenAIChatAsResponsesStreamResponse(rw http.ResponseWriter, resp *http
 	if err := writeHubResponsesSSE(w, "response.completed", map[string]any{
 		"type":            "response.completed",
 		"sequence_number": seq,
-		"response":        hubResponsesStreamResponseObject(respID, responseModel, outputText, true, textOutputIndex, toolOrder, toolCalls, usage),
+		"response":        hubResponsesStreamResponseObject(respID, responseModel, outputText, true, textOutputIndex, toolOrder, toolCalls, usage, reasoning.String(), reasoningOutputIndex),
 	}); err != nil {
 		return applyProviderUsageCost(usage, provider), true, err
 	}
@@ -3577,6 +3683,51 @@ func writeHubResponsesPayloadSSE(w io.Writer, payload map[string]any) error {
 				return err
 			}
 			seq++
+		case "reasoning", "analysis", "reasoning_summary":
+			itemID := firstNonEmptyProviderHandler(strings.TrimSpace(fmt.Sprint(item["id"])), fmt.Sprintf("rs_%d", outputIndex))
+			summary := hubResponsesReasoningItemText(item)
+			if err := writeHubResponsesSSE(w, "response.output_item.added", map[string]any{
+				"type":            "response.output_item.added",
+				"sequence_number": seq,
+				"output_index":    outputIndex,
+				"item":            map[string]any{"id": itemID, "type": "reasoning", "status": "in_progress", "summary": []any{}},
+			}); err != nil {
+				return err
+			}
+			seq++
+			if summary != "" {
+				if err := writeHubResponsesSSE(w, "response.reasoning_summary_text.delta", map[string]any{
+					"type":            "response.reasoning_summary_text.delta",
+					"sequence_number": seq,
+					"item_id":         itemID,
+					"output_index":    outputIndex,
+					"summary_index":   0,
+					"delta":           summary,
+				}); err != nil {
+					return err
+				}
+				seq++
+				if err := writeHubResponsesSSE(w, "response.reasoning_summary_text.done", map[string]any{
+					"type":            "response.reasoning_summary_text.done",
+					"sequence_number": seq,
+					"item_id":         itemID,
+					"output_index":    outputIndex,
+					"summary_index":   0,
+					"text":            summary,
+				}); err != nil {
+					return err
+				}
+				seq++
+			}
+			if err := writeHubResponsesSSE(w, "response.output_item.done", map[string]any{
+				"type":            "response.output_item.done",
+				"sequence_number": seq,
+				"output_index":    outputIndex,
+				"item":            item,
+			}); err != nil {
+				return err
+			}
+			seq++
 		case "function_call":
 			itemID := firstNonEmptyProviderHandler(strings.TrimSpace(fmt.Sprint(item["id"])), fmt.Sprintf("fc_%d", outputIndex))
 			callID := firstNonEmptyProviderHandler(strings.TrimSpace(fmt.Sprint(item["call_id"])), itemID)
@@ -3643,7 +3794,7 @@ type hubResponsesStreamToolCallAccum struct {
 	Added            bool
 }
 
-func hubResponsesStreamResponseObject(id, model, text string, completed bool, textOutputIndex int, toolOrder []int, toolCalls map[int]*hubResponsesStreamToolCallAccum, usage corelib.TokenUsageStat) map[string]any {
+func hubResponsesStreamResponseObject(id, model, text string, completed bool, textOutputIndex int, toolOrder []int, toolCalls map[int]*hubResponsesStreamToolCallAccum, usage corelib.TokenUsageStat, reasoning string, reasoningOutputIndex int) map[string]any {
 	status := "in_progress"
 	output := []any{}
 	if completed {
@@ -3653,17 +3804,35 @@ func hubResponsesStreamResponseObject(id, model, text string, completed bool, te
 			item  any
 		}
 		items := []outputItem{}
+		if reasoning != "" {
+			if reasoningOutputIndex < 0 {
+				reasoningOutputIndex = 0
+			}
+			items = append(items, outputItem{index: reasoningOutputIndex, item: map[string]any{
+				"id":           "rs_" + id,
+				"type":         "reasoning",
+				"status":       "completed",
+				"output_index": reasoningOutputIndex,
+				"summary": []any{map[string]any{
+					"type": "summary_text",
+					"text": reasoning,
+				}},
+			}})
+		}
 		hasTools := len(toolOrder) > 0
-		if text != "" || !hasTools {
+		// A reasoning-only turn already has an output item. An empty message
+		// at the same index would sit on top of that thought.
+		if text != "" || (reasoning == "" && !hasTools) {
 			if textOutputIndex < 0 {
 				textOutputIndex = 0
 			}
 			items = append(items, outputItem{index: textOutputIndex, item: map[string]any{
-				"id":      "msg_" + id,
-				"type":    "message",
-				"status":  "completed",
-				"role":    "assistant",
-				"content": []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}}},
+				"id":           "msg_" + id,
+				"type":         "message",
+				"status":       "completed",
+				"role":         "assistant",
+				"output_index": textOutputIndex,
+				"content":      []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}}},
 			}})
 		}
 		for _, idx := range toolOrder {
@@ -3672,12 +3841,13 @@ func hubResponsesStreamResponseObject(id, model, text string, completed bool, te
 				continue
 			}
 			items = append(items, outputItem{index: acc.OutputIndex, item: map[string]any{
-				"id":        firstNonEmptyProviderHandler(acc.ItemID, "fc_"+acc.ID),
-				"type":      "function_call",
-				"status":    "completed",
-				"call_id":   acc.ID,
-				"name":      acc.Name,
-				"arguments": acc.Arguments,
+				"id":           firstNonEmptyProviderHandler(acc.ItemID, "fc_"+acc.ID),
+				"type":         "function_call",
+				"status":       "completed",
+				"output_index": acc.OutputIndex,
+				"call_id":      acc.ID,
+				"name":         acc.Name,
+				"arguments":    acc.Arguments,
 			}})
 		}
 		sort.SliceStable(items, func(i, j int) bool { return items[i].index < items[j].index })
@@ -3923,6 +4093,57 @@ func synthesizeOpenAIStreamChunk(body []byte, externalModel string) ([]byte, cor
 		return nil, corelib.TokenUsageStat{}, fmt.Errorf("marshal synthesized stream chunk: %w", err)
 	}
 	return data, parseUsageStats(body), nil
+}
+
+// chatStreamReasoningText reads the thought a chat-completions delta carries.
+// Providers spell it reasoning_content, reasoning, or thinking. The value
+// itself may be a string, a list of parts, or a reasoning item.
+func chatStreamReasoningText(delta map[string]any) string {
+	if delta == nil {
+		return ""
+	}
+	for _, key := range []string{"reasoning_content", "reasoning", "thinking"} {
+		if text := corelib.OpenAIReasoningValue(delta[key]); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+// reasoningSnapshotDelta returns the part of a full thought snapshot that the
+// incremental deltas have not already emitted. A repeat, or a snapshot that
+// is not an extension of the streamed text, contributes nothing.
+//
+// A streamed chunk may end in a space or newline that the snapshot omits.
+// The comparison ignores that trailing space, and the returned suffix keeps
+// its own leading space: that space is the boundary before the rest of the
+// thought.
+func reasoningSnapshotDelta(have, next string) string {
+	if next == "" || strings.Contains(have, next) {
+		return ""
+	}
+	if have == "" {
+		return next
+	}
+	if strings.HasPrefix(next, have) {
+		return next[len(have):]
+	}
+	if trimmed := strings.TrimSpace(have); trimmed != "" && strings.HasPrefix(next, trimmed) {
+		return next[len(trimmed):]
+	}
+	return ""
+}
+
+func hubResponsesReasoningItemText(item map[string]any) string {
+	if item == nil {
+		return ""
+	}
+	for _, key := range []string{"summary", "content"} {
+		if text := corelib.OpenAIReasoningValue(item[key]); text != "" {
+			return text
+		}
+	}
+	return firstStringField(item, "text", "reasoning_content", "reasoning")
 }
 
 func firstStringField(values map[string]any, keys ...string) string {

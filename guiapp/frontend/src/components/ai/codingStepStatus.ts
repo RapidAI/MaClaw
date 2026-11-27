@@ -45,6 +45,34 @@ export function codingStepIsSkipped(status: string): boolean {
     return s === "skipped" || s === "cancelled" || s === "canceled";
 }
 
+const codingReviewBlockReason = "等待子任务审阅";
+
+/**
+ * The execution layer published a child-review wait. The runner status of a
+ * dependent row stays skipped so it can reopen; the checklist must not
+ * present that row as Skipped or count it done.
+ */
+export function codingStepAwaitsReview(step: { status?: string; block_reason?: string; summary?: string } | null | undefined): boolean {
+    if (!step) return false;
+    const status = String(step.status || "").toLowerCase();
+    if (status === "waiting_review") return true;
+    // Passed and failed rows keep that result. A review sentence left in the
+    // note must not paint a failure as waiting, or count a pass as still open.
+    if (status !== "skipped" && status !== "cancelled" && status !== "canceled") return false;
+    if (String(step.block_reason || "").trim() === codingReviewBlockReason) return true;
+    const summary = String(step.summary || "");
+    return summary.includes("子任务结果待审阅")
+        || summary.includes("waiting_child")
+        || summary.includes("runtime_child_review_required")
+        || summary.includes("runtime_child_review_in_progress");
+}
+
+/** Status the checklist paints. The stored runner status stays on the row. */
+export function codingStepDisplayStatus(step: { status?: string; block_reason?: string; summary?: string } | null | undefined): string {
+    if (codingStepAwaitsReview(step)) return "waiting_review";
+    return String(step?.status || "");
+}
+
 /**
  * Step never started because a declared dependency did not pass. It is open
  * work, not a finished skip: it does not advance the done counter and the
@@ -213,10 +241,11 @@ export function codingPlanAwaitingStart<T extends { status?: string }>(steps: T[
  * the failure can be read. An empty list is not closed either; the
  * requirement-understanding card still uses it.
  */
-export function codingChecklistAllDone<T extends { status?: string }>(steps: T[] | undefined): boolean {
+export function codingChecklistAllDone<T extends { status?: string; block_reason?: string; summary?: string }>(steps: T[] | undefined): boolean {
     const list = steps || [];
     if (list.length === 0) return false;
     return list.every((step) => {
+        if (codingStepAwaitsReview(step)) return false;
         const status = String(step?.status || "");
         return codingStepIsDone(status) || codingStepIsSkipped(status);
     });

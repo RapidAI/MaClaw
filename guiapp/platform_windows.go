@@ -1741,7 +1741,18 @@ func startSystemOpenWindows(path string) error {
 }
 
 func (a *App) findSh() (string, error) {
-	// 1. 硬编码路径（最高优先级）— Git Bash / MSYS2 / Cygwin / Scoop
+	if path, err := resolveUnixShell(); err == nil {
+		return path, nil
+	}
+	return "", fmt.Errorf(
+		"找不到 Unix 兼容的 shell（如 Git Bash）\n" +
+			"Suggestion: 安装 Git for Windows: https://git-scm.com/download/win\n" +
+			"或运行: winget install Git.Git")
+}
+
+// resolveUnixShell returns a Git, MSYS, Cygwin, or Scoop shell.
+// The WSL launcher in System32 and WindowsApps is not that shell.
+func resolveUnixShell() (string, error) {
 	userProfile := os.Getenv("USERPROFILE")
 	candidates := []string{
 		`C:\Program Files\Git\bin\sh.exe`,

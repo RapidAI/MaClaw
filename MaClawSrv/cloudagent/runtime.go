@@ -83,6 +83,78 @@ type instance struct {
 	// drainMu keeps concurrent recovery/stop/finish drain triggers from
 	// promoting the same parked row twice.
 	drainMu sync.Mutex
+	// jailMu guards publication of the checkout root. Workspace reads hold
+	// it for the read. A write snapshots its root under it, then drops it
+	// and stays counted in jailInflight until the write returns, so a
+	// clone or a long command does not freeze file fetch. ConnectGit waits
+	// for that count to hit zero before it moves files and writes git.json.
+	jailMu       sync.Mutex
+	jailOnce     sync.Once
+	jailIdle     sync.Cond
+	jailInflight int
+}
+
+// ensureJail binds the idle condition to jailMu. The zero Cond is not
+// usable, and instances are also built in tests without a constructor.
+func (inst *instance) ensureJail() {
+	if inst == nil {
+		return
+	}
+	inst.jailOnce.Do(func() {
+		inst.jailIdle.L = &inst.jailMu
+	})
+}
+
+// lockJailIdle waits until no workspace write is between its root snapshot
+// and the matching disk change, then returns holding jailMu. Callers publish
+// the checkout (or drop it) before unlocking. A caller blocked in Wait is
+// woken by endJailWork; a caller blocked on the mutex is woken by Unlock.
+func (inst *instance) lockJailIdle() {
+	if inst == nil {
+		return
+	}
+	inst.ensureJail()
+	inst.jailMu.Lock()
+	for inst.jailInflight > 0 {
+		if jailInflightWaitHook != nil {
+			jailInflightWaitHook()
+		}
+		inst.jailIdle.Wait()
+	}
+}
+
+// beginJailWork runs snapshot while a publish is excluded, then counts this
+// call as in flight so the publish waits for the caller's later write.
+// snapshot may be nil. The returned function is safe to call once.
+func (inst *instance) beginJailWork(snapshot func()) (end func()) {
+	if inst == nil {
+		if snapshot != nil {
+			snapshot()
+		}
+		return func() {}
+	}
+	inst.ensureJail()
+	inst.jailMu.Lock()
+	if snapshot != nil {
+		snapshot()
+	}
+	inst.jailInflight++
+	inst.jailMu.Unlock()
+	return inst.endJailWork
+}
+
+func (inst *instance) endJailWork() {
+	if inst == nil {
+		return
+	}
+	inst.ensureJail()
+	inst.jailMu.Lock()
+	inst.jailInflight--
+	if inst.jailInflight <= 0 {
+		inst.jailInflight = 0
+		inst.jailIdle.Broadcast()
+	}
+	inst.jailMu.Unlock()
 }
 
 type trackedCancel struct {
@@ -585,11 +657,28 @@ func (rt *Runtime) idleUnload(after time.Duration) {
 	}
 }
 
+// writeFile replaces path with raw. The bytes land in a sibling temp file
+// first, then rename over the destination. On Linux that rename replaces
+// atomically, so a crash cannot delete git.json and leave nothing in its
+// place. Windows refuses to rename onto an existing file; only then is the
+// destination removed. If that removal fails, the temp file is deleted and
+// the original stays. If the destination is already gone and the rename
+// fails, the temp file is kept: it is the only remaining copy.
 func writeFile(path string, raw []byte, mode os.FileMode) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, raw, mode); err != nil {
 		return err
 	}
-	_ = os.Remove(path)
+	err := os.Rename(tmp, path)
+	if err == nil {
+		return nil
+	}
+	if _, statErr := os.Lstat(path); statErr != nil {
+		return err
+	}
+	if rmErr := os.Remove(path); rmErr != nil {
+		_ = os.Remove(tmp)
+		return rmErr
+	}
 	return os.Rename(tmp, path)
 }

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
@@ -2200,6 +2201,303 @@ func TestWriteOpenAIStreamResponseKeepsClientAliveUntilHandlerReleasesHold(t *te
 		t.Fatal("keepalive wrote after the handler joined it")
 	case <-time.After(80 * time.Millisecond):
 	}
+}
+
+func TestWriteOpenAIChatAsResponsesStreamForwardsReasoning(t *testing.T) {
+	body := "" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"先\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"核对\",\"content\":\"正文\"},\"message\":{\"reasoning_content\":\"先核对\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"message\":{\"reasoning_content\":\"先核对\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	rec := httptest.NewRecorder()
+	_, wroteStream, err := writeOpenAIChatAsResponsesStreamResponse(rec, resp, &im.LLMProvider{ID: "provider-a"}, &llmservice.AuthorizedModel{Name: "auto"}, "auto", nil, nil)
+	if err != nil {
+		t.Fatalf("writeOpenAIChatAsResponsesStreamResponse() error = %v", err)
+	}
+	if !wroteStream {
+		t.Fatal("wroteStream = false")
+	}
+	out := rec.Body.String()
+	reasoningAt := strings.Index(out, "response.reasoning_summary_text.delta")
+	textAt := strings.Index(out, "response.output_text.delta")
+	if reasoningAt < 0 || textAt < 0 || reasoningAt > textAt {
+		t.Fatalf("reasoning delta should precede the answer: %s", out)
+	}
+	if strings.Count(out, `"delta":"先"`) != 1 || strings.Count(out, `"delta":"核对"`) != 1 {
+		t.Fatalf("reasoning deltas were dropped or repeated: %s", out)
+	}
+	if strings.Contains(out, `"delta":"先核对"`) {
+		t.Fatalf("final message repeated the streamed thought: %s", out)
+	}
+	if !strings.Contains(out, `"delta":"正文"`) {
+		t.Fatalf("answer delta missing: %s", out)
+	}
+	answerDelta := out[strings.Index(out, "response.output_text.delta"):]
+	if strings.Contains(answerDelta[:strings.Index(answerDelta, "\n\n")], "先核对") {
+		t.Fatalf("thought leaked into the answer delta: %s", out)
+	}
+	if !strings.Contains(out, `"type":"reasoning"`) || !strings.Contains(out, `"text":"先核对"`) {
+		t.Fatalf("completed response missing the reasoning item: %s", out)
+	}
+}
+
+func TestWriteOpenAIChatAsResponsesStreamAppendsReasoningSnapshotSuffix(t *testing.T) {
+	body := "" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"先核对 \"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"message\":{\"reasoning_content\":\"先核对完整\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"正文\"},\"message\":{\"reasoning_content\":\"完全不同\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	out := translateChatStreamToResponses(t, body)
+	if strings.Count(out, `"delta":"完整"`) != 1 {
+		t.Fatalf("snapshot suffix missing or repeated: %s", out)
+	}
+	if strings.Contains(out, `"delta":"先核对完整"`) || strings.Contains(out, `"delta":"完全不同"`) {
+		t.Fatalf("snapshot was forwarded whole or an unrelated thought was appended: %s", out)
+	}
+	if !strings.Contains(out, `"text":"先核对 完整"`) {
+		t.Fatalf("completed reasoning = %s, want the streamed prefix plus the suffix", out)
+	}
+	if !strings.Contains(out, `"delta":"正文"`) {
+		t.Fatalf("answer delta missing: %s", out)
+	}
+}
+
+func TestWriteOpenAIChatAsResponsesStreamKeepsMessageOnlyReasoning(t *testing.T) {
+	body := "" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"正文\"},\"message\":{\"reasoning_content\":\"只有收尾\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	out := translateChatStreamToResponses(t, body)
+	if strings.Count(out, `"delta":"只有收尾"`) != 1 || !strings.Contains(out, `"text":"只有收尾"`) {
+		t.Fatalf("message-only thought missing: %s", out)
+	}
+	if !strings.Contains(out, `"delta":"正文"`) {
+		t.Fatalf("answer delta missing: %s", out)
+	}
+}
+
+func TestWriteOpenAIChatAsResponsesStreamReasoningOnlyOmitsEmptyMessage(t *testing.T) {
+	body := "" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"只思考\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	out := translateChatStreamToResponses(t, body)
+	if strings.Contains(out, `"type":"message"`) {
+		t.Fatalf("reasoning-only turn invented an empty answer: %s", out)
+	}
+	if strings.Count(out, `"type":"reasoning"`) < 1 || !strings.Contains(out, `"text":"只思考"`) {
+		t.Fatalf("reasoning item missing: %s", out)
+	}
+	completed := completedResponsesOutput(t, out)
+	if len(completed) != 1 {
+		t.Fatalf("completed output = %#v, want one reasoning item", completed)
+	}
+	item := completed[0].(map[string]any)
+	if item["type"] != "reasoning" || item["output_index"] != float64(0) {
+		t.Fatalf("reasoning item = %#v", item)
+	}
+}
+
+func TestWriteOpenAIChatAsResponsesStreamReadsNestedReasoning(t *testing.T) {
+	body := "" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":{\"summary\":[{\"type\":\"summary_text\",\"text\":\"嵌套\"},{\"type\":\"summary_text\",\"text\":\"摘要\"}]}},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	out := translateChatStreamToResponses(t, body)
+	if strings.Count(out, `"delta":"嵌套摘要"`) != 1 {
+		t.Fatalf("nested reasoning delta = %s", out)
+	}
+}
+
+func TestWriteOpenAIChatAsResponsesStreamReadsNestedThinkingParts(t *testing.T) {
+	body := "" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"深层思考\"}],\"reasoning\":\"auto\"}},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	out := translateChatStreamToResponses(t, body)
+	if strings.Count(out, `"delta":"深层思考"`) != 1 || strings.Contains(out, `"delta":"auto"`) {
+		t.Fatalf("nested thinking parts = %s", out)
+	}
+}
+
+func TestWriteOpenAIChatAsResponsesStreamReadsContentThinkingParts(t *testing.T) {
+	body := "" +
+		"data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"先看接口\"}]},{\"type\":\"text\",\"text\":\"正文\"}]},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	out := translateChatStreamToResponses(t, body)
+	if strings.Count(out, `"delta":"先看接口"`) != 1 {
+		t.Fatalf("content thinking part missing or repeated: %s", out)
+	}
+	reasoningAt := strings.Index(out, "response.reasoning_summary_text.delta")
+	textAt := strings.Index(out, "response.output_text.delta")
+	if reasoningAt < 0 || textAt < 0 || reasoningAt > textAt {
+		t.Fatalf("thinking part should precede the answer: %s", out)
+	}
+	answerDelta := out[textAt:]
+	answerDelta = answerDelta[:strings.Index(answerDelta, "\n\n")]
+	if !strings.Contains(answerDelta, `"delta":"正文"`) || strings.Contains(answerDelta, "先看接口") {
+		t.Fatalf("answer delta = %s", out)
+	}
+}
+
+func TestWriteOpenAIChatAsResponsesStreamAppendsContentThinkingFragments(t *testing.T) {
+	body := "" +
+		"data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"先\"}]}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"核对\"}]},{\"type\":\"text\",\"text\":\"正\"}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"text\",\"text\":\"文\"}]},\"message\":{\"content\":[{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"先核对\"}]}]},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	out := translateChatStreamToResponses(t, body)
+	if strings.Count(out, `"delta":"先"`) != 1 || strings.Count(out, `"delta":"核对"`) != 1 {
+		t.Fatalf("thinking fragments were dropped or repeated: %s", out)
+	}
+	if strings.Contains(out, `"delta":"先核对"`) {
+		t.Fatalf("message repeated the streamed thought: %s", out)
+	}
+	if !strings.Contains(out, `"text":"先核对"`) {
+		t.Fatalf("completed reasoning missing the fragments: %s", out)
+	}
+	if strings.Count(out, `"delta":"正"`) != 1 || strings.Count(out, `"delta":"文"`) != 1 {
+		t.Fatalf("answer fragments missing: %s", out)
+	}
+}
+
+func TestWriteOpenAIChatAsResponsesStreamKeepsNarrationInAnswer(t *testing.T) {
+	body := "" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"我来帮你查北京天气，并写成 PDF。\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	out := translateChatStreamToResponses(t, body)
+	if strings.Contains(out, "response.reasoning_summary_text.delta") || strings.Contains(out, `"type":"reasoning"`) {
+		t.Fatalf("narration became the thought: %s", out)
+	}
+	if !strings.Contains(out, `"delta":"我来帮你查北京天气，并写成 PDF。"`) {
+		t.Fatalf("answer delta missing: %s", out)
+	}
+}
+
+func TestWriteOpenAIChatAsResponsesStreamSkipsReasoningControlEcho(t *testing.T) {
+	body := "" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning\":{\"effort\":\"high\",\"summary\":\"auto\"},\"content\":\"正文\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	out := translateChatStreamToResponses(t, body)
+	if strings.Contains(out, "response.reasoning_summary_text.delta") || strings.Contains(out, `"text":"auto"`) {
+		t.Fatalf("request control became the thought: %s", out)
+	}
+	if !strings.Contains(out, `"delta":"正文"`) {
+		t.Fatalf("answer delta missing: %s", out)
+	}
+}
+
+func TestWriteOpenAIChatAsResponsesStreamReasoningParsesOnce(t *testing.T) {
+	body := "" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"先\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"正文\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"a.py\\\"}\"}}]},\"message\":{\"reasoning_content\":\"先核对完整\"},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	out := translateChatStreamToResponses(t, body)
+	reasoning, content, calls := parseResponsesSSE(t, out)
+	if reasoning != "先核对完整" {
+		t.Fatalf("reasoning = %q, want the deltas plus the snapshot suffix once", reasoning)
+	}
+	if content != "正文" {
+		t.Fatalf("content = %q", content)
+	}
+	if len(calls) != 1 || calls[0].ID != "call_1" || calls[0].Function.Name != "read_file" || calls[0].Function.Arguments != `{"path":"a.py"}` {
+		t.Fatalf("tool calls = %#v", calls)
+	}
+}
+
+func TestWriteOpenAIChatAsResponsesNonStreamReasoningParsesOnce(t *testing.T) {
+	raw := []byte(`{"id":"chatcmpl-nest","model":"test-model","choices":[{"message":{"role":"assistant","content":"正文","reasoning_content":{"summary":[{"type":"summary_text","text":"嵌套摘要"}]},"tool_calls":[{"id":"call_9","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.py\"}"}}]},"finish_reason":"tool_calls"}]}`)
+	rec := httptest.NewRecorder()
+	_, wrote, err := writeOpenAIChatNonStreamAsResponsesStreamResponse(rec, rec, bytes.NewReader(raw), http.StatusOK, &im.LLMProvider{ID: "provider-a"}, &llmservice.AuthorizedModel{Name: "auto"}, "auto", nil)
+	if err != nil {
+		t.Fatalf("writeOpenAIChatNonStreamAsResponsesStreamResponse() error = %v", err)
+	}
+	if !wrote {
+		t.Fatal("wroteStream = false")
+	}
+	reasoning, content, calls := parseResponsesSSE(t, rec.Body.String())
+	if reasoning != "嵌套摘要" {
+		t.Fatalf("reasoning = %q", reasoning)
+	}
+	if content != "正文" {
+		t.Fatalf("content = %q", content)
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "read_file" || calls[0].Function.Arguments != `{"path":"a.py"}` {
+		t.Fatalf("tool calls = %#v", calls)
+	}
+}
+
+func translateChatStreamToResponses(t *testing.T, body string) string {
+	t.Helper()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	rec := httptest.NewRecorder()
+	_, wrote, err := writeOpenAIChatAsResponsesStreamResponse(rec, resp, &im.LLMProvider{ID: "provider-a"}, &llmservice.AuthorizedModel{Name: "auto"}, "auto", nil, nil)
+	if err != nil {
+		t.Fatalf("writeOpenAIChatAsResponsesStreamResponse() error = %v", err)
+	}
+	if !wrote {
+		t.Fatal("wroteStream = false")
+	}
+	return rec.Body.String()
+}
+
+func completedResponsesOutput(t *testing.T, sse string) []any {
+	t.Helper()
+	for _, event := range strings.Split(sse, "\n\n") {
+		if !strings.Contains(event, "event: response.completed") {
+			continue
+		}
+		data := ""
+		for _, line := range strings.Split(event, "\n") {
+			if strings.HasPrefix(line, "data: ") {
+				data = strings.TrimPrefix(line, "data: ")
+			}
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			t.Fatalf("decode completed event: %v\n%s", err, event)
+		}
+		response, _ := payload["response"].(map[string]any)
+		output, _ := response["output"].([]any)
+		return output
+	}
+	t.Fatalf("completed event missing: %s", sse)
+	return nil
+}
+
+func parseResponsesSSE(t *testing.T, sse string) (string, string, []llm.ToolCall) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sse))
+	}))
+	t.Cleanup(srv.Close)
+	var reasoning, content strings.Builder
+	response, err := llm.DoResponsesAPIRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		func(delta string) { content.WriteString(delta) },
+		func(delta string) { reasoning.WriteString(delta) },
+	)
+	if err != nil {
+		t.Fatalf("DoResponsesAPIRequestStream: %v\ntranslated:\n%s", err, sse)
+	}
+	message := response.Choices[0].Message
+	if message.ReasoningContent != reasoning.String() {
+		t.Fatalf("callback reasoning %q != message reasoning %q", reasoning.String(), message.ReasoningContent)
+	}
+	if message.Content != content.String() {
+		t.Fatalf("callback content %q != message content %q", content.String(), message.Content)
+	}
+	return message.ReasoningContent, message.Content, message.ToolCalls
 }
 
 func TestWriteRawResponsesStreamResponseFiltersCommentOnlyHeartbeats(t *testing.T) {

@@ -274,6 +274,8 @@ function logoutAdmin() {
   window._boundUsersAll = null;
   window._boundUsersPage = 1;
   window._boundUsersSearch = '';
+  window._boundUsersRegisteredFrom = '';
+  window._boundUsersRegisteredTo = '';
   setAuthState(false);
 }
 Object.assign(window, { applyI18n, setLanguage, getAdminLang, escapeHtml, token, adminProfile, setAdminProfile, updateCurrentTenantContext, setOutput, showToast, api, loadAdminStatus, refreshAuthStage, refreshAdminHeader, setAuthState, adminTabAllowed, syncNavGroups, normalizeAdminTab, openTab, restoreTab, setupAdmin, loginAdmin, logoutAdmin });

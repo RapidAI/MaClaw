@@ -495,6 +495,7 @@ func TestListUsersHandlerReturnsLastLoginClient(t *testing.T) {
 	var payload struct {
 		Users []struct {
 			Email               string `json:"email"`
+			CreatedAt           string `json:"created_at"`
 			LastLoginPlatform   string `json:"last_login_platform"`
 			LastLoginAppVersion string `json:"last_login_app_version"`
 			LastLoginAt         string `json:"last_login_at"`
@@ -511,6 +512,16 @@ func TestListUsersHandlerReturnsLastLoginClient(t *testing.T) {
 	var found bool
 	var noClientFound bool
 	for _, item := range payload.Users {
+		if item.Email != "no-client@example.com" && item.Email != "last-login@example.com" {
+			continue
+		}
+		parsedCreated, err := time.Parse(time.RFC3339, item.CreatedAt)
+		if err != nil {
+			t.Fatalf("parse created_at %q: %v", item.CreatedAt, err)
+		}
+		if !parsedCreated.Equal(now.Truncate(time.Second)) {
+			t.Fatalf("created_at = %s, want %s", parsedCreated, now.Truncate(time.Second))
+		}
 		if item.Email == "no-client@example.com" {
 			noClientFound = true
 			if item.LastLoginPlatform != "" || item.LastLoginAppVersion != "" || item.LastLoginAt != "" || len(item.LoginClients) != 0 {
@@ -550,6 +561,20 @@ func TestListUsersHandlerReturnsLastLoginClient(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("user missing from response: %s", listResp.Body.String())
+	}
+}
+
+func TestBoundUserCreatedAtUsesUTCAndOmitsZero(t *testing.T) {
+	if got := boundUserCreatedAt(nil); got != "" {
+		t.Fatalf("nil user created_at = %q", got)
+	}
+	if got := boundUserCreatedAt(&store.User{}); got != "" {
+		t.Fatalf("zero created_at = %q", got)
+	}
+	at := time.Date(2026, 11, 2, 4, 5, 6, 0, time.FixedZone("CST", 8*3600))
+	got := boundUserCreatedAt(&store.User{CreatedAt: at})
+	if got != "2026-11-01T20:05:06Z" {
+		t.Fatalf("created_at = %s, want 2026-11-01T20:05:06Z", got)
 	}
 }
 

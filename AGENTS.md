@@ -255,9 +255,53 @@
   when a comma sits immediately before } or ], and when the model echoes
   the schema the last valid object is the decision. The host does not scan the
   wording for 哪些/什么/吗/怎么/改成/介绍/完/好/图形界面 or any other marker;
-  those lists misclassify other questions. A short implementation edit
-  (≤48 runes) still echoes itself via `codingDescribeNewAsk`
-  ("这次<ask>，其它先不动"). Inquiry uses `codingDescribeQuestion`
+  those lists misclassify other questions. The first command of a new task
+  (`codingOpeningTaskCommand`: no turn, no written files, no summary, and no
+  stored title that names other work) is a task analysis, not an echo.
+  A stored title that is only the leading clause of this command
+  (`codingStoredTitleIsThisCommand`) is still the opening command. The
+  requirement is the next clause (`codingOpeningGoalPastTitle` /
+  `codingDescribePeeledOpening`: 「constraint」限定的是做法). The prefix
+  dropped is the stored title, even when the headline swallowed the next
+  clause (`codingHeadExtendsTitle` requires a boundary rune, so 数据 does
+  not match 数据库). A colon body is material when it continues on the next
+  line or runs past 40 runes (`codingSplitColonBody` cuts at the last colon
+  whose left side is still one line, so 标题：识别印章：\n正文 keeps the
+  goal). It is named as 材料 and is not pasted. A further requirement before
+  that colon stays in scope; a remainder of 2–24 runes with no newline is
+  quoted (同时还要「…」), and a longer one stays 其余要求. A title colon
+  that opens onto the next line makes the title the goal and the rest
+  material. A one-line tail of 40 runes or fewer stays part of the
+  requirement. The opening model prompt replaces the body with
+  ［已附正文，N字，M行，此处不引用］ (`codingRedactSuppliedBody`); the chat
+  sentence has no character count. A model reply that quotes any 8-rune
+  window from the first 80 runes of the body
+  (`codingAnalysisQuotesSuppliedBody`) is discarded, except a window that
+  also appears on the instruction side. The desktop file-picker block
+  (`[用户选择的本地文件路径]` plus paths) is an attachment, not another
+  requirement and not a colon body: `codingSeparateOpeningInput` analyzes
+  the stripped instruction, the host says 附上的图片 or 附上的文件, and the
+  opening prompt names the count without the path. OCR and auto-extract
+  bodies are quote-checked the same way. A path quote has to contain a
+  slash, so the file name alone is not a leak. The 48-rune gate, the
+  short-edit echo, a continue cue, and the copy check use
+  `codingTypedRequest` (the picker block removed). A short edit with an
+  attachment stays 「这次…，其它先不动」 and does not quote the path. A
+  bare document name such as paper.pdf still counts as an attached file.
+  An attachment-only send keeps that empty typed text. A stored short title
+  is the goal and the file is material; with no title the goal is
+  处理附上的图片 or 处理附上的文件. A later file drop stays
+  「这次处理附上的文件，其它先不动」. The path and the picker marker are
+  not quoted.
+  `publishCodingRequestUnderstanding` asks the lightweight model first
+  (`codingOpeningTaskUnderstandingSystemPrompt`); the host stand-in for a
+  long opening command is `codingDescribeOpeningCommand`
+  (`codingDescribePeeledOpening` when the title is the leading clause,
+  `codingDescribeLongOpeningAnalysis` otherwise). The short no-title
+  stand-in stays `codingDescribeOpeningTask` ("这是新建任务的第一条指令。要完成的是「ask」。…确认前不改文件。").
+  That paragraph is what the chat shows, and it stays in front of the
+  plan-approval text. A later short edit (≤48 runes) still echoes itself via
+  `codingDescribeNewAsk` ("这次<ask>，其它先不动"). Inquiry uses `codingDescribeQuestion`
   ("对照当前实现，回答「q」，这一步只读不改文件"); a session that already
   wrote files drops 不改文件 ("对照现有实现，回答「q」。"). An operational
   launch (acceptance empty or launch, not command) says
@@ -266,8 +310,10 @@
   "在「name」里，运行当前已有程序并确认它能正常工作，这一步不改源代码。"
   A continue cue (`codingWorkbenchContinueCue`) wins before kind, so 继续
   stays a resume. When the classifier is down the decision is
-  implementation, so the sentence is the edit echo and is not invented as
-  a read-only answer from the words. `codingRequestLooksModeratelyComplex`
+  implementation. An opening command then uses the opening-task paragraph
+  (it says 确认前不改文件 because the plan still needs approval). A later
+  short edit is the edit echo. Neither sentence is invented as a read-only
+  answer from the words. `codingRequestLooksModeratelyComplex`
   only raises NeedsPlan after the judgment is already implementation, or
   inside that no-model fallback; it must not skip the classifier.
   Publish runs on the classifier decision and before
@@ -288,9 +334,10 @@
   name. A project() in a comment, or a ${variable} name, is not the
   project name. A task titled with the user's command
   is not repeated as 在「同一句话」里, and that title does not hide the
-  project name. A longer
-  implementation ask leads with its first requirement via
-  `codingRequestHeadline` ("先处理「<head>」，其余要求一并处理") — the
+  project name. A longer follow-up still leads with its first requirement via
+  `codingRequestHeadline` ("先处理「<head>」，其余要求一并处理"). The opening
+  command, including a long one, uses `codingDescribeOpeningCommand` instead
+  of that headline template. The
   headline peels leading discourse openers ("太好了！", "帮我，") and
   sub-2-rune fragments, cuts at the first sentence boundary, only accepts a
   comma clause ≥6 runes as the head, and resolves numbered breakdowns the
@@ -302,7 +349,12 @@
   ("先看清当前项目里相关的实现和约束…") survives only for inputs with no
   nameable ask — punctuation-only text or a bare continue with nothing
   stored. The lightweight-LLM refinement (`llmCodingRequestRestatement`)
-  still replaces the fallback when the host sentence is not locked.
+  still replaces the fallback when the host sentence is not locked. An
+  opening-task analysis is not refined again:
+  `refineCodingRequestUnderstanding` keeps the paragraph already shown, and
+  the plan-approval text is appended under it
+  (`joinCodingUnderstandingAndBody`), so that analysis stays on screen when
+  「## 需要确认执行计划」 arrives.
 
 ## Remote-control ops (guiapp ↔ hub)
 

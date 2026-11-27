@@ -840,7 +840,23 @@ func passthroughRuntimeProgram(name string) string {
 			}
 		}
 	}
+	if runtime.GOOS == "windows" && passthroughUnixShellName(name) {
+		if path, err := resolveUnixShell(); err == nil {
+			return path
+		}
+		// A bare "bash" is the WSL launcher on a normal Windows PATH.
+		return ""
+	}
 	return name
+}
+
+func passthroughUnixShellName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "bash", "bash.exe", "sh", "sh.exe":
+		return true
+	default:
+		return false
+	}
 }
 
 func previewPassthroughProcessArgs(cmd PassthroughCommand, values map[string]string) ([]string, error) {

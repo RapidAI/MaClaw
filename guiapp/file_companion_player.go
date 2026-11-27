@@ -3,7 +3,7 @@ package guiapp
 import (
 	"errors"
 
-	"github.com/wailsapp/wails/v2/pkg/maclawplayer"
+	"github.com/RapidAI/CodeClaw/guiapp/internal/maclawplayer"
 )
 
 // FileCompanionPlayerSupported reports whether this process shows a web page

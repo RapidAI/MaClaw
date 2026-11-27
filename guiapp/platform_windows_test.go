@@ -6,6 +6,22 @@ import (
 	"testing"
 )
 
+func TestWindowsUnixShellProbeRejectsWSL(t *testing.T) {
+	if !isWSLShell(`C:\Windows\System32\bash.exe`) || !isWSLShell(`C:\Users\ma\AppData\Local\Microsoft\WindowsApps\bash.exe`) {
+		t.Fatal("WSL launcher must not count as a Unix shell")
+	}
+	if isWSLShell(`C:\Program Files\Git\bin\bash.exe`) || isWSLShell(`C:\msys64\usr\bin\bash.exe`) {
+		t.Fatal("Git and MSYS bash are real shells")
+	}
+	path, err := resolveUnixShell()
+	if err != nil {
+		return
+	}
+	if isWSLShell(path) {
+		t.Fatalf("probe returned the WSL launcher %s", path)
+	}
+}
+
 func TestEnsureHiddenHostConsoleLeavesExistingConsole(t *testing.T) {
 	before := windowsConsoleWindow()
 	if before == 0 {

@@ -12,8 +12,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
-	"github.com/wailsapp/wails/v2/pkg/maclawcapture"
-	"github.com/wailsapp/wails/v2/pkg/maclawplayer"
+	"github.com/RapidAI/CodeClaw/guiapp/internal/maclawcapture"
+	"github.com/RapidAI/CodeClaw/guiapp/internal/maclawplayer"
 )
 
 // FileCompanionOpenResult is one open-field result. Web pages are not files.

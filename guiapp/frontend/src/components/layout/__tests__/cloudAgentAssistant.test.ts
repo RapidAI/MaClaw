@@ -71,6 +71,7 @@ describe('cloud agent assistant', () => {
         expect(session?.taskName).toBe('演示');
         expect(session?.projectPath).toBe('cloud-agent:cag_1');
         expect(session?.cloud).toBe(true);
+        expect(session?.cloudKind).toBe('session');
         expect(session?.offline).toBe(false);
         expect(session?.canSend).toBe(true);
         expect(session?.error).toBe('');
@@ -1057,6 +1058,21 @@ describe('cloud stream resync', () => {
         const session = remoteAssistantSessionSnapshot();
         expect(session?.machineName).toBe('云端');
         expect(session?.serverLabel).toBe('官方云端服务');
+        expect(session?.cloudKind).toBe('session');
+    });
+
+    it('publishes a coding instance as a coding task', async () => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent({ ...item, kind: 'coding' }, 'zh');
+        expect(remoteAssistantSessionSnapshot()?.cloudKind).toBe('coding');
     });
 
     it('labels the private maclawsrv node name and address of the instance', async () => {

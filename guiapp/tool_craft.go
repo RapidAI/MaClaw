@@ -600,7 +600,7 @@ func detectAvailableScriptRuntimes() craftRuntimeAvailability {
 	runtimes := craftRuntimeAvailability{
 		Python:     detectCraftPythonRuntime(),
 		Node:       firstAvailableLookPath("node"),
-		Bash:       firstAvailableLookPath("bash"),
+		Bash:       craftBashPath(),
 		PowerShell: firstAvailableLookPath("powershell", "pwsh"),
 	}
 	return runtimes
@@ -681,6 +681,17 @@ var findRealPythonViaCMD = sync.OnceValue(func() string {
 	}
 	return ""
 })
+
+func craftBashPath() string {
+	if runtime.GOOS == "windows" {
+		path, err := resolveUnixShell()
+		if err != nil {
+			return ""
+		}
+		return path
+	}
+	return firstAvailableLookPath("bash")
+}
 
 func firstAvailableLookPath(names ...string) string {
 	for _, name := range names {

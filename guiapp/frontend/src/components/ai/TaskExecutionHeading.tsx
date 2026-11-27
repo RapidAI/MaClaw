@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { CloudWorkspaceEntitlement } from "../../../wailsjs/go/main/App";
+import { cloudAgentKindLabel } from "../layout/taskPlace";
 import type { AITab } from "./AITabTypes";
 import { cloudWorkspaceIdFromPath, isCloudWorkspacePath, rememberCloudWorkspaceDisplayNames, remoteWorkspaceLocationLabel } from "./codingTaskMode";
 import { useCloudWorkspaceDisplayName, workingDirDisplayLabel } from "./SessionWorkingDirChip";
@@ -25,6 +26,8 @@ type Props = {
     cloudGitRepo?: string;
     /** Already resolved against the sidebar task list by the panel. */
     title?: string;
+    /** Cloud agent instance kind ("coding" | "session"). Empty for local and remote desktops. */
+    cloudTaskKind?: string;
 };
 
 type ExecutionWorkspaceKind = "local" | "cloud" | "remote";
@@ -48,7 +51,28 @@ function executionWorkspaceKindLabel(kind: ExecutionWorkspaceKind, lang?: string
     return localizeText(lang, "Local", "本地", "本地");
 }
 
-export function TaskExecutionHeading({ activeTab, lang, status, taskCreatedLabel, workingDirPath, remoteWorkspace, remoteWorkspaceLabel, cloudGitRepo, title }: Props) {
+/** Only the two cloud-agent kinds. Anything else stays unmarked so a remote desktop does not read as 会话. */
+function cloudTaskKindOf(kind: string | undefined): "coding" | "session" | "" {
+    const value = String(kind || "").trim().toLowerCase();
+    if (value === "coding" || value === "session") return value;
+    return "";
+}
+
+/** The panel's running tone is the cloud task that still accepts input. In
+ * that state the label is only the place word (云端 / 雲端 / Үүл / Cloud), and
+ * it is frozen in the language from when the task was opened. Matching those
+ * translations drops any language the list forgot, so the tone is the signal:
+ * a running pill is the kind, and a pending pill keeps the restriction the
+ * panel just localized (只读 / 离线). */
+function cloudTaskStatusLabel(statusLabel: string, taskKind: "coding" | "session" | "", lang: string | undefined, tone: string): string {
+    if (!taskKind) return statusLabel;
+    const kindLabel = cloudAgentKindLabel(taskKind, lang || "");
+    const restriction = statusLabel.trim();
+    if (!restriction || tone === "running") return kindLabel;
+    return `${kindLabel} · ${restriction}`;
+}
+
+export function TaskExecutionHeading({ activeTab, lang, status, taskCreatedLabel, workingDirPath, remoteWorkspace, remoteWorkspaceLabel, cloudGitRepo, title, cloudTaskKind }: Props) {
     const workingDir = workingDirPath || "";
     const cloudId = isCloudWorkspacePath(workingDir) ? cloudWorkspaceIdFromPath(workingDir) : "";
     const cloudName = useCloudWorkspaceDisplayName(cloudId);
@@ -84,8 +108,12 @@ export function TaskExecutionHeading({ activeTab, lang, status, taskCreatedLabel
         : remoteLabel || (isCloudWorkspacePath(workingDir) ? locationLabel : workingDir);
     const metaText = [createdBy, taskCreatedLabel, locationLabel].filter(Boolean).join(" · ");
     const metaTitle = [createdBy, taskCreatedLabel, fullLocation].filter(Boolean).join(" · ");
-    const workspaceKind = executionWorkspaceKind(workingDir, remoteLabel);
+    const taskKind = cloudTaskKindOf(cloudTaskKind);
+    // A cloud agent passes its service name as the location label. That string
+    // must not flip the place icon to 远程; the place is still 云端.
+    const workspaceKind = taskKind ? "cloud" : executionWorkspaceKind(workingDir, remoteLabel);
     const workspaceKindLabel = executionWorkspaceKindLabel(workspaceKind, lang);
+    const shownStatus = cloudTaskStatusLabel(status.label, taskKind, lang, status.tone);
     return (
         <div className="mc-task-execution-heading">
             <div className="mc-task-execution-title-row">
@@ -93,7 +121,7 @@ export function TaskExecutionHeading({ activeTab, lang, status, taskCreatedLabel
                 <strong className="mc-task-execution-title" data-task-title={executionTitle} role="heading" aria-level={2} aria-label={executionTitle} title={executionTitle}>{executionTitle}</strong>
             </div>
             <div className="mc-task-execution-subline">
-                {status.label ? <span className={`mc-task-execution-status mc-task-execution-status--${status.tone}`} data-status={status.tone} role="status"><i aria-hidden="true" />{status.label}</span> : null}
+                {shownStatus ? <span className={`mc-task-execution-status mc-task-execution-status--${status.tone}`} data-status={status.tone} data-task-kind={taskKind || undefined} data-testid={taskKind ? "task-execution-task-kind" : undefined} role="status"><i aria-hidden="true" />{shownStatus}</span> : null}
                 {metaText ? <div className="mc-task-execution-meta" data-testid="task-execution-meta" title={metaTitle}>{metaText}</div> : null}
                 {cloudGitRepo ? (
                     <div className="mc-task-execution-cloud-git" data-testid="task-execution-cloud-git" title={cloudGitRepo}>

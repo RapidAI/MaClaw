@@ -15,6 +15,15 @@ import (
 	"unicode/utf8"
 )
 
+func testingUnixShell(t *testing.T) string {
+	t.Helper()
+	path, err := resolveUnixShell()
+	if err != nil || strings.TrimSpace(path) == "" {
+		t.Skip("bash is not installed")
+	}
+	return path
+}
+
 func TestExtractCodingSubAgentBugSignal(t *testing.T) {
 	s := extractCodingSubAgentBugSignal(`panic: "database connection failed" at gui/app.go:42 expected response, actual crash; 复现：点击保存`)
 	if len(s.StackFrames) != 1 || s.StackFrames[0] != "gui/app.go:42" {
@@ -385,10 +394,7 @@ func TestCodegraphDominantHitFilePrefersRepeatedSource(t *testing.T) {
 	if codegraphQueryBatch([][]string{{"node", "playTone"}}) || !codegraphQueryBatch([][]string{{"query", "--limit", "4", "bmp"}, {"query", "--limit", "4", "draw"}}) {
 		t.Fatal("symbol map attaches to a query batch, not a node lookup")
 	}
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("bash is not installed")
-	}
+	bash := testingUnixShell(t)
 	script := "cd " + remoteShellQuote(dir) + "; _cg_map_file=; _cg_best=-1; for _cg_row in $(printf '%s\\n' " + remoteShellQuote(sample) + " | awk " + remoteShellQuote(codegraphDominantFileAwk) + "); do _cg_sc=${_cg_row%%:*}; _cg_f=${_cg_row#*:}; if [ -n \"$_cg_f\" ] && [ -f \"$_cg_f\" ] && [ \"$_cg_sc\" -gt \"$_cg_best\" ]; then _cg_best=$_cg_sc; _cg_map_file=$_cg_f; fi; done; printf '%s\\n' \"$_cg_map_file\""
 	cmd := exec.Command(bash, "-c", script)
 	out, err := cmd.CombinedOutput()
@@ -2566,10 +2572,7 @@ func TestRemoteCodeNavigationShellPrefersCodeGraphThenFallsBack(t *testing.T) {
 }
 
 func TestCodegraphRemoteEdgeSkipsNeighbor(t *testing.T) {
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("bash is not installed")
-	}
+	bash := testingUnixShell(t)
 	run := func(symbol, callersText string) string {
 		t.Helper()
 		script := `cg() { if [ "$1" = node ]; then printf '%s\n' '## playTone (function)'; return 0; fi; printf '%s\n' ` + remoteShellQuote(callersText) + `; }
@@ -3106,10 +3109,7 @@ func TestCodegraphRemovePartialIndexDropsInterruptedDatabase(t *testing.T) {
 }
 
 func TestRemoteCodegraphAcceptSkipsAnswerPreface(t *testing.T) {
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("bash is not installed")
-	}
+	bash := testingUnixShell(t)
 	run := func(output, accept string) (body, hit string) {
 		t.Helper()
 		script := `IFS= read -r -d '' _cg_out || true; _cg_hit=0; _cg_term_hit=0; ` + accept + `; printf '\n__HIT_%s' "$_cg_hit"`
@@ -3162,10 +3162,7 @@ func TestRemoteCodegraphAcceptSkipsAnswerPreface(t *testing.T) {
 
 func assertRemoteNavigationShellSyntax(t *testing.T, script string) {
 	t.Helper()
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("bash is not installed")
-	}
+	bash := testingUnixShell(t)
 	// The navigation script is larger than the local bash argument limit, so
 	// the syntax check reads it on stdin.
 	cmd := exec.Command(bash, "-n", "-s")
@@ -3177,10 +3174,7 @@ func assertRemoteNavigationShellSyntax(t *testing.T, script string) {
 }
 
 func TestRemoteCodegraphDirAssignmentTrimsAndKeepsSpaces(t *testing.T) {
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("bash is not installed")
-	}
+	bash := testingUnixShell(t)
 	run := func(value string) string {
 		t.Helper()
 		cmd := exec.Command(bash, "-c", remoteCodegraphDirAssignment()+`printf '%s' "$_cg_dir"`)
@@ -3209,10 +3203,7 @@ func TestRemoteCodegraphDirAssignmentTrimsAndKeepsSpaces(t *testing.T) {
 }
 
 func TestRemoteCodegraphStatusKeepsFailedExitAndParentIndex(t *testing.T) {
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("bash is not installed")
-	}
+	bash := testingUnixShell(t)
 	// A status command that exits immediately must not be treated as still
 	// running. That mistake keeps a broken database and also spends the
 	// whole 20s budget.

@@ -400,6 +400,7 @@ func (rt *Runtime) sessionResult(ctx context.Context, inst *instance, taskID, re
 		return "", true, nil
 	}
 	files := host.producedFiles()
+	rt.publishTurnReasoning(host, result)
 	if len(files) > 0 {
 		slog.Info("cloudagent turn produced files",
 			slog.String("instance", inst.meta.ID), slog.String("task", taskID),
@@ -449,15 +450,29 @@ func (rt *Runtime) executor() executor {
 }
 
 func (rt *Runtime) fetchFile(inst *instance, rel string) (json.RawMessage, error) {
-	root, err := jailRoot(inst.dir, inst.meta.Kind)
-	if err != nil {
-		return nil, err
+	return rt.readWorkspaceFile(inst, "", rel)
+}
+
+// readWorkspaceFile reads rel. An empty root uses the published jail; a
+// turn passes the root it adopted under jailMu so the read matches the write.
+func (rt *Runtime) readWorkspaceFile(inst *instance, root, rel string) (json.RawMessage, error) {
+	var err error
+	if strings.TrimSpace(root) == "" {
+		root, err = jailRoot(inst.dir, inst.meta.Kind)
+		if err != nil {
+			return nil, err
+		}
 	}
 	path, err := resolveInJail(root, rel)
 	if err != nil {
 		return nil, err
 	}
 	file, err := os.Open(path)
+	if err != nil {
+		if alt, _, ok := strandedRegular(inst.dir, root, canonicalArtifactRel(root, path)); ok {
+			file, err = os.Open(alt)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -477,6 +492,10 @@ const serveFileMaxBytes = 4 << 20
 // size, base64 bytes. Like the desktop op it only serves paths a turn
 // recorded as produced, never an arbitrary workspace read.
 func (rt *Runtime) serveFile(inst *instance, rel string) (json.RawMessage, error) {
+	if inst != nil {
+		inst.jailMu.Lock()
+		defer inst.jailMu.Unlock()
+	}
 	deny := func(reason string, err error) (json.RawMessage, error) {
 		slog.Warn("cloudagent fetch artifact denied",
 			slog.String("instance", inst.meta.ID), slog.String("path", rel), slog.String("reason", reason))
@@ -490,14 +509,21 @@ func (rt *Runtime) serveFile(inst *instance, rel string) (json.RawMessage, error
 	if err != nil {
 		return deny("jail", err)
 	}
-	if !inst.book.producedPaths()[canonicalArtifactRel(root, path)] {
+	key := canonicalArtifactRel(root, path)
+	if !inst.book.producedPaths()[key] {
 		return deny("not-produced", errors.New("没有找到这个文件"))
 	}
 	// Lstat like the desktop fetch: a recorded path swapped for a symlink or
-	// special file after the turn must not leak an unrelated target.
+	// special file after the turn must not leak an unrelated target. A miss
+	// inside the checkout can still be a file the same turn wrote beside it,
+	// before ConnectGit moved the jail root.
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() {
-		return deny("missing", errors.New("这个文件已经不在了"))
+		if alt, altInfo, ok := strandedRegular(inst.dir, root, key); ok {
+			path, info = alt, altInfo
+		} else {
+			return deny("missing", errors.New("这个文件已经不在了"))
+		}
 	}
 	if info.Size() > serveFileMaxBytes {
 		return deny("too-large", fmt.Errorf("文件太大（%.1f MB），暂不支持回传", float64(info.Size())/(1<<20)))

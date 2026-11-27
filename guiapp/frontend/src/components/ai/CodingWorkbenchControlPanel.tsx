@@ -17,6 +17,8 @@ export { isFormFieldTarget } from "./codingUiGuards";
 export {
     codingChecklistAllDone,
     codingPlanAwaitingStart,
+    codingStepAwaitsReview,
+    codingStepDisplayStatus,
     codingStepsClockFrom,
     codingStepsClockIsCurrent,
     codingStepsSnapshotRegresses,

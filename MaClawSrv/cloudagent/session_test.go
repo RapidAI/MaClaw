@@ -1,6 +1,9 @@
 package cloudagent
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -912,6 +915,139 @@ func TestServeFileOnlyServesProducedPaths(t *testing.T) {
 	}
 	if _, err := rt.serveFile(inst, "stray.txt"); err == nil {
 		t.Fatal("an unrecorded file must not be served")
+	}
+}
+
+// A coding turn that started before ConnectGit keeps writing beside the
+// checkout. The book still names snake/game.cpp, and the checkout itself
+// can be empty. Fetch and export have to see the stranded file.
+func TestServeFileFindsFilesStrandedByMidTurnGitConnect(t *testing.T) {
+	dir := t.TempDir()
+	b, err := openBook(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	inst := &instance{dir: dir, meta: Spec{ID: "cag_strand", Kind: KindCoding}, book: b}
+	rt := &Runtime{}
+
+	repo := filepath.Join(dir, "workspace", "repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const token = "strand-forge-token"
+	if err := writeGit(dir, gitSecret{Token: token, Clone: "https://github.com/acme/repo.git", Repo: "acme/repo"}); err != nil {
+		t.Fatal(err)
+	}
+	snake := filepath.Join(dir, "workspace", "snake")
+	if err := os.MkdirAll(snake, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const body = "int game(){return 1;}\n"
+	if err := os.WriteFile(filepath.Join(snake, "game.cpp"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "workspace", "stray.txt"), []byte("not-produced"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	requestID, _, err := b.Begin("c1", "task_1", "写蛇", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Finish(requestID, "写好了", false, []string{"snake/game.cpp", "gone.cpp"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := rt.serveFile(inst, "snake/game.cpp")
+	if err != nil {
+		t.Fatalf("serve stranded: %v", err)
+	}
+	var served map[string]any
+	if err := json.Unmarshal(raw, &served); err != nil {
+		t.Fatal(err)
+	}
+	got, err := base64.StdEncoding.DecodeString(fmt.Sprint(served["data_base64"]))
+	if err != nil || string(got) != body {
+		t.Fatalf("bytes %q %v", got, err)
+	}
+	if _, err := rt.serveFile(inst, "stray.txt"); err == nil || !strings.Contains(err.Error(), "没有找到这个文件") {
+		t.Fatalf("unrecorded stranded file err=%v", err)
+	}
+	if _, err := rt.serveFile(inst, filepath.Join("..", "git.json")); err == nil || strings.Contains(err.Error(), token) {
+		t.Fatalf("git.json err=%v", err)
+	}
+	if _, err := rt.serveFile(inst, "gone.cpp"); err == nil || !strings.Contains(err.Error(), "这个文件已经不在了") {
+		t.Fatalf("missing recorded file err=%v", err)
+	}
+	fetched, err := rt.fetchFile(inst, "snake/game.cpp")
+	if err != nil || !strings.Contains(string(fetched), "int game()") {
+		t.Fatalf("fetch stranded: %s %v", fetched, err)
+	}
+
+	packed, err := rt.browsePackDir(inst, "/")
+	if err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+	var pack struct {
+		Data string `json:"data_base64"`
+	}
+	if err := json.Unmarshal(packed, &pack); err != nil {
+		t.Fatal(err)
+	}
+	data, err := base64.StdEncoding.DecodeString(pack.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gzr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gzr.Close()
+	tr := tar.NewReader(gzr)
+	found := false
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(hdr.Name, "git.json") {
+			t.Fatalf("pack leaked %s", hdr.Name)
+		}
+		if hdr.Name == "snake/game.cpp" {
+			raw, err := io.ReadAll(tr)
+			if err != nil || string(raw) != body {
+				t.Fatalf("packed %q %v", raw, err)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("export omitted snake/game.cpp")
+	}
+
+	// A file that does exist inside the checkout wins over the stranded copy.
+	if err := os.MkdirAll(filepath.Join(repo, "snake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "snake", "game.cpp"), []byte("in-jail\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = rt.serveFile(inst, "snake/game.cpp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &served); err != nil {
+		t.Fatal(err)
+	}
+	got, err = base64.StdEncoding.DecodeString(fmt.Sprint(served["data_base64"]))
+	if err != nil || string(got) != "in-jail\n" {
+		t.Fatalf("jail copy %q %v", got, err)
 	}
 }
 

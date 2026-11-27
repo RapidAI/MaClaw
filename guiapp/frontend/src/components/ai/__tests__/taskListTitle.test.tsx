@@ -274,4 +274,106 @@ describe("TaskExecutionHeading", () => {
         // Nothing connected → no repo segment at all.
         expect(screen.queryByTestId("task-execution-cloud-git")).toBeNull();
     });
+
+    it("marks a cloud agent as a coding or session task", () => {
+        const status = { tone: "running", label: "云端" };
+        const { rerender } = render(
+            <TaskExecutionHeading
+                activeTab={tab}
+                lang="zh-CN"
+                status={status}
+                remoteWorkspaceLabel="官方云端服务"
+                cloudTaskKind="coding"
+                title="开发偷金子游戏，C++"
+            />,
+        );
+        const coding = screen.getByTestId("task-execution-task-kind");
+        expect(coding.textContent).toBe("编程");
+        expect(coding.getAttribute("data-task-kind")).toBe("coding");
+        expect(coding.getAttribute("title")).toBeNull();
+        // 云端 was only the place. The pill now names the task type, and the
+        // place icon stays 云端 instead of reading the service name as 远程.
+        expect(screen.getByRole("status")).toBe(coding);
+        expect(screen.getByTestId("task-execution-kind").getAttribute("data-kind")).toBe("cloud");
+        expect(screen.getByTestId("task-execution-kind").getAttribute("title")).toBe("云端");
+        expect(screen.getByTestId("task-execution-kind").querySelector("svg")?.getAttribute("data-icon")).toBe("cloud");
+        expect(screen.getByTestId("task-execution-meta").textContent).toContain("官方云端服务");
+
+        rerender(
+            <TaskExecutionHeading
+                activeTab={tab}
+                lang="zh-CN"
+                status={{ tone: "pending", label: "只读" }}
+                remoteWorkspaceLabel="官方云端服务"
+                cloudTaskKind="coding"
+                title="开发偷金子游戏，C++"
+            />,
+        );
+        expect(screen.getByRole("status").textContent).toBe("编程 · 只读");
+
+        rerender(
+            <TaskExecutionHeading
+                activeTab={tab}
+                lang="zh-Hant"
+                status={status}
+                remoteWorkspaceLabel="官方雲端服務"
+                cloudTaskKind="session"
+                title="聊天"
+            />,
+        );
+        const session = screen.getByTestId("task-execution-task-kind");
+        expect(session.textContent).toBe("會話");
+        expect(session.getAttribute("data-task-kind")).toBe("session");
+
+        rerender(
+            <TaskExecutionHeading
+                activeTab={tab}
+                lang="en"
+                status={status}
+                cloudTaskKind="coding"
+                title="Snake"
+            />,
+        );
+        expect(screen.getByTestId("task-execution-task-kind").textContent).toBe("Coding");
+
+        rerender(
+            <TaskExecutionHeading
+                activeTab={tab}
+                lang="mn"
+                status={{ tone: "running", label: "Үүл" }}
+                cloudTaskKind="session"
+                title="Snake"
+            />,
+        );
+        // "Cloud" localizes to Үүл. That place name must not stay beside the kind.
+        expect(screen.getByRole("status").textContent).toBe("Сесс");
+
+        rerender(
+            <TaskExecutionHeading
+                activeTab={tab}
+                lang="zh-CN"
+                status={{ tone: "running", label: "Үүл" }}
+                remoteWorkspaceLabel="官方云端服务"
+                cloudTaskKind="coding"
+                title="开发偷金子游戏，C++"
+            />,
+        );
+        // Opened in Mongolian, then the UI switched. The frozen place word is
+        // not in the current language, and the pill is still only the kind.
+        expect(screen.getByRole("status").textContent).toBe("编程");
+
+        rerender(
+            <TaskExecutionHeading
+                activeTab={tab}
+                lang="zh-CN"
+                status={status}
+                remoteWorkspaceLabel="官方云端服务"
+                cloudTaskKind="workspace"
+                title="本地任务"
+            />,
+        );
+        expect(screen.queryByTestId("task-execution-task-kind")).toBeNull();
+        // An unrecognized kind must not steal the place icon either.
+        expect(screen.getByTestId("task-execution-kind").getAttribute("data-kind")).toBe("remote");
+    });
 });
