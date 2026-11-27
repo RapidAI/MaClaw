@@ -390,7 +390,7 @@ import (
 	"os"
 	"unsafe"
 
-	"github.com/wailsapp/wails/v2/pkg/maclawcapture"
+	"github.com/RapidAI/CodeClaw/guiapp/internal/maclawcapture"
 )
 
 func captureCompanionWebViewPNG(ctx context.Context, rect image.Rectangle) ([]byte, error) {
