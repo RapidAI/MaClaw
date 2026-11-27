@@ -293,7 +293,10 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 // failure is that empty -1, the command's own exit status is used instead;
 // an early pipeline stop leaves it 0, a self-exited -1 keeps it -1.
 func codingWindowsPipelineStopExitCode(command string, exitErr *exec.ExitError, output string) (int, bool) {
-	if runtime.GOOS != "windows" || exitErr == nil || exitErr.ExitCode() != -1 {
+	// ExitCode() on Windows is the raw uint32 status. SetShouldExit(-1)
+	// therefore arrives as 4294967295, never as Go's -1. Comparing only with
+	// -1 skips this recovery for every real wrapper exit.
+	if runtime.GOOS != "windows" || exitErr == nil || !windowsProcessStatusIsMinusOne(exitErr.ExitCode()) {
 		return 0, false
 	}
 	if strings.Contains(output, "Last error:") || strings.Contains(output, "PowerShell error:") || strings.Contains(output, "PowerShell exception:") {

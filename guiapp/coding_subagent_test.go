@@ -7913,6 +7913,20 @@ func TestExecuteCodingBashWindowsEarlyPipelineStopSucceeds(t *testing.T) {
 	}
 }
 
+func TestWindowsProcessStatusIsMinusOneCoversBothForms(t *testing.T) {
+	// Go's ExitCode() on Windows is int(uint32(status)). SetShouldExit(-1)
+	// is therefore 4294967295. A comparison with only -1 never matches the
+	// wrapper and turns every early pipeline stop into a failure.
+	if !windowsProcessStatusIsMinusOne(-1) || !windowsProcessStatusIsMinusOne(int(uint32(0xFFFFFFFF))) {
+		t.Fatal("both the Go sentinel and the Windows uint32 status must count as -1")
+	}
+	for _, code := range []int{0, 1, 7, 255, int(uint32(0xFFFFFFFE))} {
+		if windowsProcessStatusIsMinusOne(code) {
+			t.Fatalf("ordinary exit %d must not count as -1", code)
+		}
+	}
+}
+
 func TestExecuteCodingBashWindowsNativeExitMinusOneFails(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("PowerShell native exit behavior is Windows-specific")
