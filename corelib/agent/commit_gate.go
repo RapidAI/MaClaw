@@ -1447,6 +1447,8 @@ func splitPowerShellAssignment(tokens []string) []string {
 			out := make([]string, 0, len(tokens)+2)
 			out = append(out, target, op, tokens[0][strings.Index(tokens[0], op)+len(op):])
 			return append(out, tokens[1:]...)
+		}
+	}
 	if op, target, value, ok := splitGluedPowerShellAssignment(tokens[0]); ok && powershellAssignmentTarget(target) {
 		out := make([]string, 0, len(tokens)+3)
 		out = append(out, target, op)
@@ -1588,6 +1590,7 @@ func skipPowerShellAssignment(tokens []string) ([]string, bool) {
 			return nil, false
 		}
 		return rest[1:], true
+	}
 	if _, target, value, ok := splitGluedPowerShellAssignment(tokens[0]); ok {
 		if !powershellAssignmentTarget(target) {
 			return nil, false
@@ -1619,6 +1622,11 @@ func gluedPowerShellAssignmentOp(token string) string {
 		at := strings.Index(token, op)
 		if at > 0 && at+len(op) <= len(token) {
 			return op
+		}
+	}
+	return ""
+}
+
 // splitGluedPowerShellAssignment splits $n+=git into $n, +=, git.
 // The operator is the leftmost assignment operator, and += wins over =
 // at the same position. A suffix scan would leave $n+=gi as the target.
@@ -1638,7 +1646,6 @@ func splitGluedPowerShellAssignment(token string) (op, target, value string, ok 
 	}
 	return token[bestAt : bestAt+bestLen], token[:bestAt], token[bestAt+bestLen:], true
 }
-
 
 func powershellAssignmentOp(token string) bool {
 	switch token {
@@ -1667,7 +1674,9 @@ func powershellAssignmentTarget(token string) bool {
 	}
 	if strings.HasPrefix(token, "[") {
 		rest, ok := stripPowerShellAttributes(token)
-		return ok && powershellAssignmentTarget(rest)
+		if ok {
+			return powershellAssignmentTarget(rest)
+		}
 		// [string[]]$a and [nullable[int]]$n close at the matching bracket.
 		// IndexByte would stop inside the array or generic parameter.
 		if end := powershellTypeConstraintEnd(token); end > 1 && end+1 < len(token) {
@@ -1718,6 +1727,21 @@ func matchingPowerShellBracket(token string) int {
 		switch ch {
 		case '\'', '"':
 			quote = ch
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return i
+			}
+			if depth < 0 {
+				return -1
+			}
+		}
+	}
+	return -1
+}
+
 // powershellTypeConstraint reports a PowerShell cast prefix such as [int]
 // or [nullable[int]]. A bare [0] index is not a cast.
 func powershellTypeConstraint(token string) bool {
@@ -1779,6 +1803,7 @@ func powershellAssignableExpr(token string) bool {
 	}
 	return true
 }
+
 // operatorRHSTail drops the right-hand side. A comma, glued or alone, keeps
 // the next word in that operand, so both `$x -replace 'a', 'b' git push` and
 // `$x -replace 'a' , 'b' git push` still see git push.

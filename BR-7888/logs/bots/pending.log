@@ -1,0 +1,13 @@
+2026-11-27T04:21:42.0984048+08:00 stage=gui.hub bot=pending method=GET path=/api/v1/bots/pending hub=hub.mypapers.top status=200 dur_ms=8 err=none
+2026-11-27T04:22:42.110459+08:00 stage=gui.hub bot=pending method=GET path=/api/v1/bots/pending hub=hub.mypapers.top status=200 dur_ms=8 err=none
+2026-11-27T04:23:42.1094295+08:00 stage=gui.hub bot=pending method=GET path=/api/v1/bots/pending hub=hub.mypapers.top status=200 dur_ms=7 err=none
+2026-11-27T04:24:52.1413068+08:00 stage=gui.hub bot=pending method=GET path=/api/v1/bots/pending hub=hub.mypapers.top status=200 dur_ms=13 err=none
+2026-11-27T04:26:02.095088+08:00 stage=gui.hub bot=pending method=GET path=/api/v1/bots/pending hub=hub.mypapers.top status=200 dur_ms=8 err=none
+2026-11-27T04:27:02.1037985+08:00 stage=gui.hub bot=pending method=GET path=/api/v1/bots/pending hub=hub.mypapers.top status=200 dur_ms=9 err=none
+2026-11-27T04:28:12.0979241+08:00 stage=gui.hub bot=pending method=GET path=/api/v1/bots/pending hub=hub.mypapers.top status=200 dur_ms=7 err=none
+2026-11-27T04:29:12.1008515+08:00 stage=gui.hub bot=pending method=GET path=/api/v1/bots/pending hub=hub.mypapers.top status=200 dur_ms=8 err=none
+2026-11-27T04:30:22.1094464+08:00 stage=gui.hub bot=pending method=GET path=/api/v1/bots/pending hub=hub.mypapers.top status=200 dur_ms=9 err=none
+2026-11-27T04:31:32.1120712+08:00 stage=gui.hub bot=pending method=GET path=/api/v1/bots/pending hub=hub.mypapers.top status=200 dur_ms=11 err=none
+2026-11-27T04:32:42.1113978+08:00 stage=gui.hub bot=pending method=GET path=/api/v1/bots/pending hub=hub.mypapers.top status=200 dur_ms=9 err=none
+2026-11-27T04:33:52.1778669+08:00 stage=gui.hub bot=pending method=GET path=/api/v1/bots/pending hub=hub.mypapers.top status=200 dur_ms=27 err=none
+2026-11-27T04:35:00.6576027+08:00 stage=gui.hub bot=pending method=GET path=/api/v1/bots/pending hub=hub.mypapers.top status=200 dur_ms=7 err=none

@@ -1,0 +1,6 @@
+2026/11/27 04:27:48 [download] start url="https://hubs.mypapers.top/api/v1/problem-reports/d/69c51ab6b9a10901d38b9238854e632c3385a0dcec63a792581bbf5b5971d1bc/diagnostics.zip" save_path="C:\\Users\\ma139\\.maclaw\\workspace\\maclaw-tmp\\BR-20261126-5FD6BB1A7A22\\diagnostics.zip" max_bytes=104857600 timeout=600s custom_headers=
+2026/11/27 04:27:49 [download] success url="https://hubs.mypapers.top/api/v1/problem-reports/d/69c51ab6b9a10901d38b9238854e632c3385a0dcec63a792581bbf5b5971d1bc/diagnostics.zip" final="https://hubs.mypapers.top/api/v1/problem-reports/d/69c51ab6b9a10901d38b9238854e632c3385a0dcec63a792581bbf5b5971d1bc/diagnostics.zip" bytes=565881 dur=1.354s speed=408.0 KB/s saved="C:\\Users\\ma139\\.maclaw\\workspace\\maclaw-tmp\\BR-20261126-5FD6BB1A7A22\\diagnostics.zip" attempts=1 level=0
+2026/11/27 04:34:14 [search] start url="https://cn.bing.com/search" save_path="" max_bytes=2097152 timeout=30s custom_headers=
+2026/11/27 04:34:14 [search] success url="https://cn.bing.com/search" final="https://cn.bing.com/search" bytes=104399 dur=168ms speed=607.9 KB/s saved="" attempts=1 level=0
+2026/11/27 04:34:20 [browser-search] engine=google hits=3
+2026/11/27 04:34:22 [browser-search] engine=bing hits=3

@@ -1,0 +1,139 @@
+2026/11/26 11:47:14 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=41.9639ms
+2026/11/26 12:47:41 remote_hub_client.go:576: [onboarding] RemoteHubClient.Connect failed total=1h0m26.7659276s err=write tcp 10.43.57.149:60502->107.172.86.131:443: i/o timeout
+2026/11/26 12:47:41 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=173.1134ms
+2026/11/26 12:47:41 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=558.7616ms url=wss://hub.maclaw.top/ws
+2026/11/26 12:47:41 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=992.1µs
+2026/11/26 15:36:58 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/26 15:36:59 remote_hub_client.go:576: [onboarding] RemoteHubClient.Connect failed total=1.4753489s err=websocket: bad handshake
+2026/11/26 15:36:59 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/26 15:37:02 remote_hub_client.go:576: [onboarding] RemoteHubClient.Connect failed total=2.2664197s err=websocket: bad handshake
+2026/11/26 15:37:02 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=1.89ms
+2026/11/26 15:37:02 remote_hub_client.go:576: [onboarding] RemoteHubClient.Connect failed total=511.68ms err=websocket: bad handshake
+2026/11/26 15:37:03 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/26 15:37:03 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=471.6269ms url=wss://hub.maclaw.top/ws
+2026/11/26 15:37:03 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=1.0007ms
+2026/11/26 15:37:04 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=154.6449ms auth_type=auth.ok
+2026/11/26 15:37:05 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=1.3413058s total=1.9753573s
+2026/11/26 15:37:05 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=1.9758771s
+2026/11/26 15:54:55 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=584.4µs
+2026/11/26 15:55:24 remote_hub_client.go:576: [onboarding] RemoteHubClient.Connect failed total=29.5042916s err=read tcp 10.43.57.149:49376->107.172.86.131:443: wsarecv: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond.
+2026/11/26 15:55:26 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/26 15:55:27 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=863.3183ms url=wss://hub.maclaw.top/ws
+2026/11/26 15:55:27 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=0s
+2026/11/26 15:55:27 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=152.0642ms auth_type=auth.ok
+2026/11/26 15:55:27 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=481.6928ms total=1.5031874s
+2026/11/26 15:55:27 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=1.5031874s
+2026/11/26 18:00:15 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=523.9µs
+2026/11/26 18:00:16 remote_hub_client.go:576: [onboarding] RemoteHubClient.Connect failed total=683.418ms err=websocket: bad handshake
+2026/11/26 18:00:16 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/26 18:00:18 remote_hub_client.go:576: [onboarding] RemoteHubClient.Connect failed total=1.724502s err=websocket: bad handshake
+2026/11/26 18:00:18 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/26 18:00:19 remote_hub_client.go:576: [onboarding] RemoteHubClient.Connect failed total=844.0102ms err=websocket: bad handshake
+2026/11/26 18:00:19 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/26 18:00:19 remote_hub_client.go:576: [onboarding] RemoteHubClient.Connect failed total=460.9906ms err=websocket: bad handshake
+2026/11/26 18:00:20 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/26 18:00:21 remote_hub_client.go:576: [onboarding] RemoteHubClient.Connect failed total=521.899ms err=websocket: bad handshake
+2026/11/26 18:00:23 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/26 18:00:23 remote_hub_client.go:576: [onboarding] RemoteHubClient.Connect failed total=561.2577ms err=websocket: bad handshake
+2026/11/26 18:00:25 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/26 18:00:25 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=539.8426ms url=wss://hub.maclaw.top/ws
+2026/11/26 18:00:25 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=0s
+2026/11/26 18:00:26 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=157.2784ms auth_type=auth.ok
+2026/11/26 18:00:27 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=847.5887ms total=1.5516251s
+2026/11/26 18:00:27 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=1.5516251s
+2026/11/26 19:10:37 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/26 19:10:39 remote_hub_client.go:576: [onboarding] RemoteHubClient.Connect failed total=2.3031707s err=websocket: bad handshake
+2026/11/26 19:10:39 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/26 19:10:41 remote_hub_client.go:576: [onboarding] RemoteHubClient.Connect failed total=1.5196826s err=websocket: bad handshake
+2026/11/26 19:10:41 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/26 19:10:42 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=549.7874ms url=wss://hub.maclaw.top/ws
+2026/11/26 19:10:42 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=0s
+2026/11/26 19:10:42 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=187.5515ms auth_type=auth.ok
+2026/11/26 19:10:43 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=1.1217227s total=1.8693205s
+2026/11/26 19:10:43 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=1.8693205s
+2026/11/27 02:47:39 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/27 02:47:39 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=536.3931ms url=wss://hub.maclaw.top/ws
+2026/11/27 02:47:39 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=0s
+2026/11/27 02:47:40 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=165.5489ms auth_type=auth.ok
+2026/11/27 02:47:40 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=368.666ms total=1.127818s
+2026/11/27 02:47:40 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=1.133279s
+2026/11/27 02:47:41 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=1.0529ms
+2026/11/27 02:47:41 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=483.186ms url=wss://hub.maclaw.top/ws
+2026/11/27 02:47:41 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=0s
+2026/11/27 02:47:41 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=151.49ms auth_type=auth.ok
+2026/11/27 02:47:42 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=435.3615ms total=1.0904967s
+2026/11/27 02:47:42 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=1.0904967s
+2026/11/27 02:47:42 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/27 02:47:42 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=528.9708ms url=wss://hub.maclaw.top/ws
+2026/11/27 02:47:42 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=0s
+2026/11/27 02:47:42 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=162.0456ms auth_type=auth.ok
+2026/11/27 02:47:43 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=478.3335ms total=1.1830745s
+2026/11/27 02:47:43 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=1.1830745s
+2026/11/27 02:47:44 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=525.9µs
+2026/11/27 02:47:45 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=476.9982ms url=wss://hub.maclaw.top/ws
+2026/11/27 02:47:45 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=0s
+2026/11/27 02:47:45 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=150.1123ms auth_type=auth.ok
+2026/11/27 02:47:45 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=359.694ms total=994.7611ms
+2026/11/27 02:47:45 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=994.7611ms
+2026/11/27 03:05:58 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=435.1µs
+2026/11/27 03:41:00 remote_hub_client.go:576: [onboarding] RemoteHubClient.Connect failed total=35m2.1737334s err=dial tcp 107.172.86.131:443: i/o timeout
+2026/11/27 03:41:00 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=1.0308ms
+2026/11/27 03:41:00 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=601.0071ms url=wss://hub.maclaw.top/ws
+2026/11/27 03:41:00 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=997.7µs
+2026/11/27 03:41:01 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=156.088ms auth_type=auth.ok
+2026/11/27 03:41:01 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=441.603ms total=1.2166484s
+2026/11/27 03:41:01 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=1.2166484s
+2026/11/27 04:24:28 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=66.8691ms
+2026/11/27 04:24:29 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=1.5205746s url=wss://hub.maclaw.top/ws
+2026/11/27 04:24:29 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=534.6µs
+2026/11/27 04:24:30 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=167.8733ms auth_type=auth.ok
+2026/11/27 04:24:30 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=239.4129ms total=2.0042866s
+2026/11/27 04:24:30 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=2.005153s
+2026/11/27 05:07:56 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/27 05:07:57 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=1.54838s url=wss://hub.maclaw.top/ws
+2026/11/27 05:07:57 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=514.1µs
+2026/11/27 05:07:57 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=154.4057ms auth_type=auth.ok
+2026/11/27 05:07:58 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=445.9225ms total=2.1564893s
+2026/11/27 05:07:58 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=2.1564893s
+2026/11/27 05:51:25 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=57.4581ms
+2026/11/27 05:51:26 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=509.1295ms url=wss://hub.maclaw.top/ws
+2026/11/27 05:51:26 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=654.1µs
+2026/11/27 05:51:26 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=160.9637ms auth_type=auth.ok
+2026/11/27 05:51:26 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=449.1026ms total=1.1908276s
+2026/11/27 05:51:26 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=1.1913482s
+2026/11/27 06:08:40 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/27 06:08:42 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=1.5512011s url=wss://hub.maclaw.top/ws
+2026/11/27 06:08:42 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=0s
+2026/11/27 06:08:42 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=167.8989ms auth_type=auth.ok
+2026/11/27 06:08:42 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=483.981ms total=2.2124076s
+2026/11/27 06:08:42 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=2.2124076s
+2026/11/27 06:54:11 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=31.2019ms
+2026/11/27 06:54:12 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=1.4736896s url=wss://hub.maclaw.top/ws
+2026/11/27 06:54:12 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=540.6µs
+2026/11/27 06:54:12 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=170.587ms auth_type=auth.ok
+2026/11/27 06:54:13 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=441.0902ms total=2.1254128s
+2026/11/27 06:54:13 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=2.1254128s
+2026/11/27 07:37:41 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/27 07:37:41 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=510.301ms url=wss://hub.maclaw.top/ws
+2026/11/27 07:37:41 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=0s
+2026/11/27 07:37:42 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=162.1473ms auth_type=auth.ok
+2026/11/27 07:37:42 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=611.1696ms total=1.2902324s
+2026/11/27 07:37:42 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=1.2927537s
+2026/11/27 08:21:09 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=24.215ms
+2026/11/27 08:21:11 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=1.5299346s url=wss://hub.maclaw.top/ws
+2026/11/27 08:21:11 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=550.6µs
+2026/11/27 08:21:11 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=149.199ms auth_type=auth.ok
+2026/11/27 08:21:11 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=415.4393ms total=2.1290002s
+2026/11/27 08:21:11 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=2.1290002s
+2026/11/27 09:04:39 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=0s
+2026/11/27 09:04:40 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=803.5778ms url=wss://hub.maclaw.top/ws
+2026/11/27 09:04:40 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=853.3µs
+2026/11/27 09:04:40 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=181.4075ms auth_type=auth.ok
+2026/11/27 09:04:41 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=856.8133ms total=1.8495691s
+2026/11/27 09:04:41 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=1.8794791s
+2026/11/27 09:30:12 remote_hub_client.go:784: [onboarding] RemoteHubClient.connectLocked load_config=48.1186ms
+2026/11/27 09:30:14 remote_hub_client.go:793: [onboarding] RemoteHubClient.connectLocked dial_ws=1.2265045s url=wss://hub.maclaw.top/ws
+2026/11/27 09:30:14 remote_hub_client.go:820: [onboarding] RemoteHubClient.connectLocked send_auth=523.2µs
+2026/11/27 09:30:14 remote_hub_client.go:834: [onboarding] RemoteHubClient.connectLocked read_auth=187.5602ms auth_type=auth.ok
+2026/11/27 09:30:14 remote_hub_client.go:876: [onboarding] RemoteHubClient.connectLocked send_hello=308.8301ms total=1.7963043s
+2026/11/27 09:30:14 remote_hub_client.go:614: [onboarding] RemoteHubClient.Connect total=1.7963043s
