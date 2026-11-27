@@ -29578,8 +29578,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 /* The steps bar is a hover target: keeping it to the middle 45% of the
    column leaves clear space on both sides, so the pointer can pass along
-   the edges without opening the step list. The label does not wrap; a
-   tighter bar shortens the progress track instead of stacking its characters. */
+   the edges without opening the step list. */
 [data-testid='coding-agent-plan-checklist'] {
   width: 45%;
   margin-left: auto;
