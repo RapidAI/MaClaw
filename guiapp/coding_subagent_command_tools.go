@@ -583,9 +583,19 @@ var windowsCodingPipeConsumerWaitPatterns = []struct {
 	alreadyApplied func(command string) bool
 }{
 	{
-		pattern: regexp.MustCompile(`(?i)(\bSelect-Object\b[^|;\n]*?-First(?:\s+|:)\d+)(\s|$)`),
+		// The consumer may be followed by a pipe or closing parenthesis with
+		// no space. Those still stop the upstream command; requiring
+		// whitespace or end-of-command left them unrewritten.
+		pattern: regexp.MustCompile(`(?i)(\bSelect-Object\b[^|;\n]*?-First(?:\s+|:)\d+)(\s|[|)]|$)`),
 		fix: func(match []string) string {
-			return match[1] + " -Wait" + match[2]
+			tail := match[2]
+			// A following pipe needs a separator. A closing parenthesis and
+			// the end of the command do not, and an extra space there is a
+			// visible rewrite of the caller's command.
+			if tail == "|" {
+				tail = " " + tail
+			}
+			return match[1] + " -Wait" + tail
 		},
 		// Already waiting: -Wait follows the matched tail, so the match
 		// itself never contains it. Rewriting again would repeat the switch.

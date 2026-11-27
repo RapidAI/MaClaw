@@ -7397,6 +7397,21 @@ func TestKeepCodingPowerShellPipeReadersAddsWait(t *testing.T) {
 			want:    `dir | Select-Object -First:3 -Wait`,
 		},
 		{
+			name:    "piped consumer gets wait before next pipe",
+			command: `dir | Select-Object -First 1|Out-Null`,
+			want:    `dir | Select-Object -First 1 -Wait |Out-Null`,
+		},
+		{
+			name:    "parenthesized consumer gets wait",
+			command: `(dir | Select-Object -First 1)|Out-Null`,
+			want:    `(dir | Select-Object -First 1 -Wait)|Out-Null`,
+		},
+		{
+			name:    "existing wait before pipe stays once",
+			command: `dir | Select-Object -First 1 -Wait|Out-Null`,
+			want:    `dir | Select-Object -First 1 -Wait|Out-Null`,
+		},
+		{
 			name:    "property selection untouched",
 			command: `dir | Select-Object Name,Length`,
 			want:    `dir | Select-Object Name,Length`,
