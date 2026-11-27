@@ -607,6 +607,18 @@ func preferOpenSpecCard(tenant, user, bot, content string, out BotIntake) BotInt
 		card = strings.TrimSpace(out.Instruction)
 	}
 	if !specCardIsWritten(card) {
+		// The model marked this a spec yet wrote no structured card and named
+		// no open point anywhere — neither the stored card nor this turn's
+		// order carries a 还缺, and the model's own ack is not a question it is
+		// waiting on. With nothing actually missing and nothing being asked,
+		// the spec premise does not hold: an explicit order such as 「改成
+		// 小红书形式发在小红书」 is a go-ahead, not a question, and must run
+		// instead of settling to a chat bubble with no run. A 还缺 that does
+		// appear, or an ack that asks for a fact, still asks as before.
+		asking := specAckAsks(out.Ack) || specAckAsks(out.Told)
+		if !asking && specGapOpen(card) == "" && specGapOpen(out.Instruction) == "" {
+			return specRun(card, content, out)
+		}
 		sentence := specVisibleSentence(out.Ack, out.Told, out.Instruction, out.Phase == "execute")
 		if sentence == "" {
 			if out.Phase == "execute" {
