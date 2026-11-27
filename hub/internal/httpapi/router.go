@@ -1590,6 +1590,12 @@ func NewRouter(
 			if rc != nil {
 				rc.Cloud = cloudSvc.Dispatcher()
 			}
+			// Give bot management a router into cloud agents so classified
+			// coding tasks can be provisioned on cloud instances instead of a
+			// desktop. botmgmt cannot import cloudagent, so httpapi bridges.
+			if botSvc != nil {
+				botSvc.CloudRouter = botCloudRouter{svc: cloudSvc}
+			}
 			users := cloudagent.UserHandler{Svc: cloudSvc, RC: rc, Viewer: cloudAgentViewer(identity)}
 			mux.HandleFunc("GET /api/v1/cloud-agents", users.List)
 			mux.HandleFunc("POST /api/v1/cloud-agents", users.Create)

@@ -132,7 +132,11 @@ type Instance struct {
 	// SrvNodeID is the private node srv this instance was provisioned on.
 	// Empty means the public connection. The pin that created it may move;
 	// the instance keeps running where it was provisioned.
-	SrvNodeID     string     `json:"srv_node_id,omitempty"`
+	SrvNodeID string `json:"srv_node_id,omitempty"`
+	// SourceBotID is the bot that owns this instance when it was spawned by
+	// the bot task router. Empty means a GUI-created instance. It stays off
+	// the JSON payload: bot reuse is an internal concern.
+	SourceBotID   string     `json:"-"`
 	RuntimeStatus string     `json:"runtime_status,omitempty"`
 	Git           *GitPublic `json:"git,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
@@ -178,6 +182,11 @@ type CreateInput struct {
 	// srv spec keeps it and a re-provision without it preserves the old value.
 	ThinkingMode string `json:"thinking_mode,omitempty"`
 	LLMMode      string `json:"llm_mode"`
+	// BotID is optional: only the bot task router sets it, marking the new
+	// instance as that bot's session or coding worker. The GUI create path
+	// leaves it empty, which keeps bot instances out of the user's list
+	// view should they ever surface there.
+	BotID string `json:"bot_id,omitempty"`
 }
 
 // PatchInput renames an instance or switches its LLM mode. Kind is rejected.

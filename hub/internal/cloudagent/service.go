@@ -162,6 +162,9 @@ func (s *Service) ensureSchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `ALTER TABLE cloud_agents ADD COLUMN srv_node_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
 		return err
 	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE cloud_agents ADD COLUMN source_bot_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+		return err
+	}
 	if err := s.ensureLimits(ctx); err != nil {
 		return err
 	}
@@ -352,10 +355,11 @@ func (s *Service) Create(ctx context.Context, tenantID, userID string, in Create
 		CreatedAt:       s.now(),
 		UpdatedAt:       s.now(),
 	}
+	inst.SourceBotID = strings.TrimSpace(in.BotID)
 	_, err = tx.ExecContext(ctx, `INSERT INTO cloud_agents (
-		id, tenant_id, owner_user_id, name, kind, llm_mode, llm_label, llm_model, status, cloud_workspace_id, created_at, updated_at, deleted_at
-	) VALUES (?, ?, ?, ?, ?, ?, '', '', ?, '', ?, ?, '')`,
-		inst.ID, tenantID, userID, name, kind, mode, StatusProvisioning, now, now)
+		id, tenant_id, owner_user_id, name, kind, llm_mode, llm_label, llm_model, status, cloud_workspace_id, source_bot_id, created_at, updated_at, deleted_at
+	) VALUES (?, ?, ?, ?, ?, ?, '', '', ?, '', ?, ?, ?, '')`,
+		inst.ID, tenantID, userID, name, kind, mode, StatusProvisioning, inst.SourceBotID, now, now)
 	if err != nil {
 		return Instance{}, err
 	}
@@ -490,6 +494,32 @@ func (s *Service) List(ctx context.Context, tenantID, userID string) ([]Instance
 		out[i].RuntimeStatus = st
 	}
 	return out, nil
+}
+
+// FindReusable returns the most recent live instance the bot router may reuse
+// for (tenant, owner, bot, kind). Only idle, running, and stopped rows count —
+// a stopped one still needs a Resume call before the send. provisioning and
+// provision_failed rows are skipped so a half-built or broken instance never
+// swallows the message; deleted rows are already filtered by deleted_at.
+// ok is false when nothing is reusable, in which case the caller should Create.
+func (s *Service) FindReusable(ctx context.Context, tenantID, userID, botID, kind string) (inst Instance, ok bool, err error) {
+	if s == nil || s.db == nil {
+		return Instance{}, false, fail(503, "UNAVAILABLE", "云端管理暂时不可用")
+	}
+	tenantID = store.NormalizeTenantID(tenantID)
+	userID = strings.TrimSpace(userID)
+	botID = strings.TrimSpace(botID)
+	kind = strings.TrimSpace(kind)
+	row := s.db.QueryRowContext(ctx, instanceSelect+` WHERE tenant_id = ? AND owner_user_id = ? AND source_bot_id = ? AND kind = ? AND deleted_at = '' AND status IN (?, ?, ?) ORDER BY created_at DESC LIMIT 1`,
+		tenantID, userID, botID, kind, StatusIdle, StatusRunning, StatusStopped)
+	got, err := scanInstance(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Instance{}, false, nil
+	}
+	if err != nil {
+		return Instance{}, false, err
+	}
+	return got, true, nil
 }
 
 // Get returns one live instance owned by the caller, including a coding git view.
@@ -664,7 +694,7 @@ func (s *Service) Resume(ctx context.Context, tenantID, userID, id string) (Inst
 	return s.Get(ctx, inst.TenantID, inst.OwnerUserID, inst.ID)
 }
 
-const instanceSelect = `SELECT id, tenant_id, owner_user_id, name, kind, llm_mode, llm_label, llm_model, status, cloud_workspace_id, srv_node_id, created_at, updated_at, deleted_at FROM cloud_agents`
+const instanceSelect = `SELECT id, tenant_id, owner_user_id, name, kind, llm_mode, llm_label, llm_model, status, cloud_workspace_id, srv_node_id, source_bot_id, created_at, updated_at, deleted_at FROM cloud_agents`
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -676,7 +706,7 @@ func scanInstance(row scanner) (Instance, error) {
 	err := row.Scan(
 		&inst.ID, &inst.TenantID, &inst.OwnerUserID, &inst.Name, &inst.Kind,
 		&inst.LLMMode, &inst.LLMLabel, &inst.LLMModel, &inst.Status, &inst.CloudWorkspaceID,
-		&inst.SrvNodeID, &created, &updated, &deleted,
+		&inst.SrvNodeID, &inst.SourceBotID, &created, &updated, &deleted,
 	)
 	if err != nil {
 		return Instance{}, err

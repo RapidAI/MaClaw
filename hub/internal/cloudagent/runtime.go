@@ -144,6 +144,32 @@ func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Gran
 	return raw, nil
 }
 
+// SendMessage is DispatchCloud for an owner-originated send with no remote
+// grant: the bot task router already resolved which instance to use, so it
+// posts the op itself instead of going through a controller grant. The grant
+// is a thin wrapper — srv only reads owner_user_id (grant_id is remote-control
+// bookkeeping it ignores), so an empty grant id keeps the same semantics. All
+// of DispatchCloud's behavior carries over: a stopped instance is refused, a
+// failed or stale provision retries, a busy instance is queued, and the turn
+// cap + client_message_id idempotency replay a repeated key's run.
+func (d *Dispatcher) SendMessage(ctx context.Context, tenantID, userID, instanceID, clientMessageID, text string) (json.RawMessage, error) {
+	if d == nil {
+		return nil, offlineStatus()
+	}
+	body, err := json.Marshal(map[string]any{
+		"client_message_id": strings.TrimSpace(clientMessageID),
+		"text":              text,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return d.DispatchCloud(ctx, remotecontrol.Grant{
+		TenantID:      tenantID,
+		TargetUserID:  userID,
+		TargetAgentID: instanceID,
+	}, remotecontrol.OpCloudSendMessage, body)
+}
+
 // settleStaleTurns asks the runtime whether a turn is actually running and,
 // when it is not, finishes this instance's stale running rows so the slot
 // frees on demand instead of at the next sweep tick. Returns false whenever

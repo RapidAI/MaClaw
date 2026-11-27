@@ -707,6 +707,16 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	if noDesktop {
 		botNode = ""
 	}
+	// A computer-less bot with a wired cloud router runs on a cloud_agents
+	// instance instead of the srv desktop: classify the task, ensure that
+	// kind of instance exists for this bot, and post the turn to it. The
+	// desktop route / queue / memory machinery below is computer-specific
+	// and does not apply; a bot with a computer keeps that path untouched.
+	if noDesktop && s.CloudRouter != nil {
+		admission, routeErr := s.deliverCloudMessage(ctx, tenantID, userID, botID, rec.Bots[index].Name, content, clientMessageID)
+		traceBot(botID, "cloud_route", routeErr, "instance", instanceID, "dur_ms", traceMS(time.Since(pipelineStarted)))
+		return admission, routeErr
+	}
 	gate := rec
 	if botNode != "" {
 		if view, ok := nodeView(rec, botNode); ok {

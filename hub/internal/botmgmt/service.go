@@ -260,6 +260,11 @@ type Service struct {
 	// of this tenant carrying MaClawSrv — i.e. a usable LAN computer. A nil
 	// hook reports no LAN desktop.
 	LanDesktopAvailable func(ctx context.Context, tenantID, nodeID string) bool
+	// CloudRouter routes a no-desktop bot's task to a cloud_agents instance.
+	// httpapi wires the real cloudagent.Service in; botmgmt cannot import it
+	// (cloudagent already imports botmgmt). A nil router leaves a no-desktop
+	// bot on its original srv /messages path.
+	CloudRouter CloudRouter
 
 	mu       sync.RWMutex
 	bearerMu sync.Mutex
