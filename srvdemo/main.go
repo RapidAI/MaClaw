@@ -4,9 +4,7 @@ import (
 	"embed"
 	"log"
 
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 //go:embed frontend/dist
@@ -14,19 +12,25 @@ var assets embed.FS
 
 func main() {
 	app := NewApp()
-	err := wails.Run(&options.App{
-		Title:                    "srvdemo",
-		Width:                    1480,
-		Height:                   980,
-		MinWidth:                 1200,
-		MinHeight:                760,
-		EnableDefaultContextMenu: true,
-		BackgroundColour:         &options.RGBA{R: 244, G: 246, B: 240, A: 255},
-		AssetServer:              &assetserver.Options{Assets: assets},
-		OnStartup:                app.startup,
-		Bind:                     []interface{}{app},
+	v3app := application.New(application.Options{
+		Name: "srvdemo",
+		Services: []application.Service{
+			application.NewService(app),
+		},
+		Assets: application.AssetOptions{
+			Handler: application.AssetFileServerFS(assets),
+		},
 	})
-	if err != nil {
+	win := v3app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Title:            "srvdemo",
+		Width:            1480,
+		Height:           980,
+		MinWidth:         1200,
+		MinHeight:        760,
+		BackgroundColour: application.RGBA{Red: 244, Green: 246, Blue: 240, Alpha: 255},
+	})
+	_ = win
+	if err := v3app.Run(); err != nil {
 		log.Fatal(err)
 	}
 }

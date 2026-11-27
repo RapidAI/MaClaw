@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/wailsapp/wails/v3/pkg/application"
 	"io"
 	"net/http"
 	"net/url"
@@ -278,6 +279,13 @@ type tokenResponse struct {
 
 func NewApp() *App {
 	return &App{}
+}
+
+// ServiceStartup wires the wails3 service lifecycle into the existing
+// startup hook (v3 promotion of the demo).
+func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
+	a.startup(ctx)
+	return nil
 }
 
 func (a *App) startup(ctx context.Context) {

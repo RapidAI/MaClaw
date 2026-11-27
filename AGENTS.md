@@ -1263,22 +1263,30 @@
 
 ## Wails v3 migration (branch wails3-migration)
 
-- State: guiapp ports to wails/v3 v3.1.0 behind the `wails3` build tag; the
-  default build stays wails v2 (vendored `third_party/wails`). Both runtimes
-  are in go.mod; the v3 fork is vendored at `third_party/wails3` (replace in
-  go.mod, examples/ trimmed) with two local patches: second-instance exit via
-  `TerminateProcess` without DLL_PROCESS_DETACH (OBS graphics-hook zombie
-  fix, port of 9818e301) and fullscreen drag deny in `startDrag` (port of
-  the v2 caption_drag patch).
+- State (FINAL, v2 fully retired): wails/v3 v3.1.0 is THE runtime for all
+  four apps (guiapp, TigerProxy, ClawMateMaker, srvdemo). `third_party/wails`
+  is DELETED; go.mod/go.sum carry zero wails/v2 entries; the v3 fork is
+  vendored at `third_party/wails3` (replace in go.mod, examples/ trimmed)
+  with three local patches: second-instance exit via `TerminateProcess`
+  without DLL_PROCESS_DETACH (OBS graphics-hook zombie fix, port of
+  9818e301), fullscreen drag deny in `startDrag` (port of the v2
+  caption_drag patch), and the window-level `HideOnClose` option
+  (companion Alt+F4 must hide, not destroy).
 - Seam: `guiapp/wruntime` (package NAME is `runtime` — 40 files import it
-  unaliased as `runtime.X`; only the import path changed). `!wails3` build
-  delegates to wails/v2/pkg/runtime byte-for-byte; `wails3` build implements
-  v3 objects. Entry dispatch: `cmd/maclaw-gui` checks `guiapp.Wails3Enabled()`
-  → `Main3` (main_wails3.go) / `Main` (main.go, untouched).
+  unaliased as `runtime.X`; the import path was the only change). The v2
+  delegation mode is deleted; v3.go is the sole implementation. Entry:
+  `cmd/maclaw-gui` calls `guiapp.Main` (main_wails3.go — the v2 Main and
+  the Wails3Enabled/Main3 dispatch scaffolding are deleted). The v2 Main
+  preamble's 10 init steps (log file, program logger, companion-paper host
+  argv, bm25.PrewarmDict, skill.MigrateSkillsDir, TUI dispatch) and the
+  Run tail (signalFileCompanionQuit + finishDesktopExit) were PORTED into
+  Main — dropping them silently regressed file logging and companion
+  retirement.
 - Frontend shim: `frontend/wailsjs/runtime/runtime.js` keeps the 52-export
   surface (803 call sites / 174 vitest mocks untouched) and routes through
-  `v3bridge.js`; every function has a `hasV2Runtime()` fast path — the v2
-  build MUST delegate to `window.runtime` or all events die (white screen).
+  `v3bridge.js`; the `hasV2Runtime()` fast-path guards were deleted with
+  the v2 runtime (removing the guards was the first white screen — v2
+  builds lost their event channel to a nonexistent /wails URL).
   Bindings: index.html installs a synchronous `window.go.main.App` Proxy →
   `Call.ByName('github.com/RapidAI/CodeClaw/guiapp.App.' + method)` — the
   FQN is pkgPath.TypeName.Method with the FULL import path
@@ -1289,10 +1297,13 @@
 - RDP white screen (root cause, three layers): (1) GPU self-heal wired via
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--disable-gpu` env var — v3.1.0 has
   no Windows GPU toggle in options; (2) preload kills the early-event race on
-  `env-check-done`; (3) **RDP sessions need visual hosting**:
-  `WindowsOptions.UseVisualHosting: true` gated on `perfSessionIsRemote()`
+  `env-check-done`; (3) **RDP sessions need composition hosting**: the per-window
+  `WindowsWindow.WebView2CompositionHosting: true` gated on
+  `perfSessionIsRemote()`. v3.1.0's app-level `UseVisualHosting` option is
+  a NO-OP (its env var has no consumer in this version — verified against
+  the vendored source); the live switch is the composition controller
   (official wails3 RDP issue — stock windowed hosting never presents over
-  RDP; COREWEBVIEW2_FORCED_HOSTING_MODE is set before WebView2 init).
+  RDP).
   Control experiment: the spike is equally unrendered over RDP, so this is
   environment-level, not app code.
 - Build: `scripts\goheavy.cmd go build -tags "wails3 production" -ldflags
@@ -1302,11 +1313,11 @@
   refuses plain cross-compiles; `-tags purego` is the escape hatch but
   prefer a native CGO toolchain). Rapid sequential relaunch can stall
   WebView2 env creation for seconds (watchdog added in the spike, C0).
-- EditMenu parity: Main3 attaches an application EditMenu role
+- EditMenu parity: Main attaches an application EditMenu role
   (SetApplicationMenu — Windows never renders the bar, it exists for the
   Ctrl+A/C/V/X accelerators, same as the v2 setupTray attach). Companion close paths: the frontend title-bar close button calls
   WindowHide, and the fork's HideOnClose window option covers Alt+F4
-  (Main3 sets it for file-companion launches); `firstPaintMark` renderer reports were
+  (Main sets it for file-companion launches); `firstPaintMark` renderer reports were
   unverified under wails3 so the GPU-failure marker write is suppressed
   there (frontend_paint_watch.go gate). TigerProxy is migrated
   (wruntime seam + dual-tag dispatch, `go build ./TigerProxy` honours the
@@ -1323,7 +1334,7 @@
   windows, 406407d5) needs NO port — v3's runtime implements all 8 natively
   (drag.ts cursorForEdge + corner detection) plus `wails:resize:` IPC.
 - This machine runs MaClaw over an RDP session without GPU acceleration —
-  keep `UseVisualHosting` on for wails3 builds here.
+  keep `WebView2CompositionHosting` on for wails3 builds here.
 - Debugging caveat on this machine: when the RDP session is disconnected or
   locked, DWM stops composing and EVERY window reports as unrendered —
   CUA/Playwright screenshots refuse (even for known-visible apps like ZCode)
@@ -1340,12 +1351,12 @@
   a no-op compat switch). main_wails3.go's Main is THE entry;
   frontend_paint_watch's GPU-marker suppression is LIFTED (the renderer
   report channel is proven — firstPaintMark/FCP arrive via bindings).
-  Still pending: maclawplayer/maclawcapture (file-companion playback host +
-  capture bridge, living inside third_party/wails) need a v3-native port
-  (second-WebviewWindow via the desktop_stage_window pattern) before
-  third_party/wails can be deleted — until then the v2 fork directory stays
-  in-tree solely for those two packages, and the wails3 build tag is dormant
-  scaffold no file consumes.
+  Completion (2026-11-28): maclawplayer/maclawcapture moved to
+  `guiapp/internal/` and the companion player is a v3-native owned popup
+  (internal/maclawplayer/host_v3_windows.go — borderless window owned via
+  GWLP_HWNDPARENT, slot-follow on WindowDidMove/Resize, composition hosting
+  over RDP, PrintWindow capture view); third_party/wails is deleted,
+  srvdemo is ported, and go.mod carries zero wails/v2 entries.
 - Old promotion checklist (superseded): `build_win.bat /w3` is the promoted release path — the /w3
   switch flips the GUI steps (amd64+arm64) to -tags wails3 with CGO_ENABLED=1
   (default without /w3 stays v2, CGO off); build_win_wails3.bat remains the
