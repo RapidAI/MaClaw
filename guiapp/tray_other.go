@@ -3,8 +3,6 @@
 package guiapp
 
 import (
-	"github.com/wailsapp/wails/v2/pkg/menu"
-	"github.com/wailsapp/wails/v2/pkg/options"
 )
 
 func setupTray(app *App, appOptions *options.App) {

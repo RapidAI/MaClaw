@@ -13,6 +13,8 @@ import {
     codingStepIsFailed,
     codingStepIsSettled,
     codingStepIsSkipped,
+    codingStepAwaitsReview,
+    codingStepDisplayStatus,
     presentCodingAgentChecklist,
 } from "../codingStepStatus";
 import { codingStepGlyph } from "../CodingWorkbenchControlPanel";
@@ -172,6 +174,14 @@ describe("codingChecklistAllDone", () => {
             { index: 1, status: "verify_failed" },
             { index: 2, status: "passed" },
         ])).toBe(false);
+        expect(codingChecklistAllDone([
+            { index: 1, status: "passed" },
+            { index: 2, status: "skipped", block_reason: "等待子任务审阅" },
+        ])).toBe(false);
+        expect(codingStepAwaitsReview({ status: "failed", summary: "子任务结果待审阅" })).toBe(false);
+        expect(codingStepDisplayStatus({ status: "failed", summary: "子任务结果待审阅" })).toBe("failed");
+        expect(codingStepAwaitsReview({ status: "passed", summary: "updated the dependency list" })).toBe(false);
+        expect(codingStepAwaitsReview({ status: "skipped", block_reason: "等待子任务审阅" })).toBe(true);
     });
 
     it("normalizes a step payload and drops a non-array", () => {

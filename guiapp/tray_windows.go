@@ -3,7 +3,6 @@
 package guiapp
 
 import (
-	"context"
 	"log"
 	"os"
 	stdruntime "runtime"
@@ -12,50 +11,12 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
-	"github.com/energye/systray"
-	"github.com/wailsapp/wails/v2/pkg/menu"
-	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
+	"github.com/energye/systray"
 )
 
-func setupTray(app *App, appOptions *options.App) {
-	// Provide a standard Edit menu so that Ctrl+A / Ctrl+C / Ctrl+V / Ctrl+X
-	// work correctly inside WebView2 input fields.  Without this, Ctrl+A in a
-	// modal input can cause the webview to select all page content and
-	// inadvertently dismiss the dialog.
-	editMenu := menu.NewMenu()
-	editMenu.Append(menu.EditMenu())
-	appOptions.Menu = editMenu
-
-	// A --quit launch never needs a tray: either another instance receives the
-	// handoff, or startup exits immediately. Skipping the tray start avoids a
-	// notification-icon flash on the way out.
-	if secondInstanceRequestsQuit(os.Args[1:]) {
-		return
-	}
-
-	// Start the systray from OnStartup rather than before wails.Run. Wails
-	// performs its single-instance check inside wails.Run, before OnStartup,
-	// and a rejected second instance exits straight through os.Exit. Starting
-	// the tray earlier therefore created a notification icon that was never
-	// removed (os.Exit skips NIM_DELETE on the icon), leaving a stale tray icon
-	// whose menu no longer belongs to any live process. Clicking "Quit" there
-	// does nothing and the real instance keeps running.
-	origStartup := appOptions.OnStartup
-	appOptions.OnStartup = func(ctx context.Context) {
-		startSystray(app)
-		if origStartup != nil {
-			origStartup(ctx)
-		}
-	}
-}
-
-// trayStartOnce makes the tray start idempotent even if a startup hook is
-// invoked more than once.
 var trayStartOnce sync.Once
 
-// startSystray runs the tray event loop. It is only reached by the primary
-// instance, after Wails accepted the single-instance lock.
 func startSystray(app *App) {
 	trayStartOnce.Do(func() {
 		go func() {

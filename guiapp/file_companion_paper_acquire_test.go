@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/wailsapp/wails/v3/pkg/application"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
-	"github.com/wailsapp/wails/v2/pkg/options"
 )
 
 func TestCompanionPaperURLDoesNotHandoffOrDownload(t *testing.T) {
@@ -74,7 +74,7 @@ func TestClassifyCompanionPaperNotice(t *testing.T) {
 		t.Fatalf("unknown notice = %#v", unknown)
 	}
 	app := &App{}
-	app.onFileCompanionSecondInstance(optionsSecond("companion-paper-notice", "no-pdf"))
+	onFileCompanionSecondInstance3(app, optionsSecond("companion-paper-notice", "no-pdf").Args, "")
 	if app.fileCompanion == nil || len(app.fileCompanion.notices) != 1 || app.fileCompanion.notices[0] != "no-pdf" {
 		t.Fatalf("notices = %#v", app.fileCompanion)
 	}
@@ -86,7 +86,7 @@ func TestClassifyCompanionPaperNotice(t *testing.T) {
 		t.Fatalf("boot = %#v", boot)
 	}
 	app.fileCompanion.uiReady = true
-	app.onFileCompanionSecondInstance(optionsSecond("companion-paper-notice", "timeout"))
+	onFileCompanionSecondInstance3(app, optionsSecond("companion-paper-notice", "timeout").Args, "")
 	if app.fileCompanion.shows != 0 {
 		t.Fatal("ready notice still opened the panel")
 	}
@@ -95,8 +95,8 @@ func TestClassifyCompanionPaperNotice(t *testing.T) {
 	}
 }
 
-func optionsSecond(args ...string) options.SecondInstanceData {
-	return options.SecondInstanceData{Args: args}
+func optionsSecond(args ...string) application.SecondInstanceData {
+	return application.SecondInstanceData{Args: args}
 }
 
 func TestCompanionPaperNoticeSecondInstance(t *testing.T) {

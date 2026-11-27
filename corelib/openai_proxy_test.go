@@ -1016,6 +1016,358 @@ func TestHandleResponses_ConvertsToChatAndBack(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatChatResponseToResponsesKeepsReasoning(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl-think","object":"chat.completion","model":"test-model","choices":[{"message":{"role":"assistant","content":"北京今天晴","reasoning_content":"先核对天气接口"},"finish_reason":"stop"}]}`)
+	respBody, err := OpenAICompatChatResponseToResponses(body, "test-model")
+	if err != nil {
+		t.Fatalf("convert response: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(respBody, &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	output := got["output"].([]interface{})
+	if len(output) != 2 {
+		t.Fatalf("output = %#v, want reasoning then message", output)
+	}
+	reasoning := output[0].(map[string]interface{})
+	if reasoning["type"] != "reasoning" {
+		t.Fatalf("first output = %#v, want reasoning", reasoning)
+	}
+	summary := reasoning["summary"].([]interface{})[0].(map[string]interface{})
+	if summary["type"] != "summary_text" || summary["text"] != "先核对天气接口" {
+		t.Fatalf("summary = %#v", summary)
+	}
+	message := output[1].(map[string]interface{})
+	if message["type"] != "message" {
+		t.Fatalf("second output = %#v, want message", message)
+	}
+}
+
+func TestOpenAICompatChatResponseToResponsesKeepsStructuredReasoning(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "thinking parts",
+			raw:  `{"id":"chatcmpl-parts","choices":[{"message":{"role":"assistant","content":"正文","reasoning_content":[{"type":"thinking","thinking":"先看接口"},{"type":"summary_text","text":"再写正文"}]}}]}`,
+			want: "先看接口再写正文",
+		},
+		{
+			name: "nested summary",
+			raw:  `{"id":"chatcmpl-summary","choices":[{"message":{"role":"assistant","content":"正文","reasoning":{"summary":[{"type":"summary_text","text":"嵌套摘要"}]}}}]}`,
+			want: "嵌套摘要",
+		},
+		{
+			name: "content string",
+			raw:  `{"id":"chatcmpl-content","choices":[{"message":{"role":"assistant","content":"正文","thinking":{"content":"纯字符串"}}}]}`,
+			want: "纯字符串",
+		},
+		{
+			name: "nested thinking parts",
+			raw:  `{"id":"chatcmpl-deep","choices":[{"message":{"role":"assistant","content":"正文","reasoning_content":{"type":"thinking","thinking":[{"type":"text","text":"深层思考"}]}}}]}`,
+			want: "深层思考",
+		},
+		{
+			name: "summary parts win over a sibling control string",
+			raw:  `{"id":"chatcmpl-sibling","choices":[{"message":{"role":"assistant","content":"正文","reasoning_content":{"reasoning":"auto","summary":[{"type":"summary_text","text":"实际思考"}]}}}]}`,
+			want: "实际思考",
+		},
+		{
+			name: "thought beside effort",
+			raw:  `{"id":"chatcmpl-effort","choices":[{"message":{"role":"assistant","content":"正文","reasoning":{"effort":"high","summary":"auto","thinking":"仍要保留"}}}]}`,
+			want: "仍要保留",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			respBody, err := OpenAICompatChatResponseToResponses([]byte(tc.raw), "test-model")
+			if err != nil {
+				t.Fatalf("convert response: %v", err)
+			}
+			var got map[string]interface{}
+			if err := json.Unmarshal(respBody, &got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			output := got["output"].([]interface{})
+			if len(output) != 2 {
+				t.Fatalf("output = %#v, want reasoning then message", output)
+			}
+			reasoning := output[0].(map[string]interface{})
+			summary := reasoning["summary"].([]interface{})[0].(map[string]interface{})
+			if reasoning["type"] != "reasoning" || summary["text"] != tc.want {
+				t.Fatalf("reasoning = %#v, want %q", reasoning, tc.want)
+			}
+			if output[1].(map[string]interface{})["type"] != "message" {
+				t.Fatalf("second output = %#v, want message", output[1])
+			}
+		})
+	}
+}
+
+func TestOpenAICompatChatResponseToResponsesKeepsContentThinking(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl-parts","choices":[{"message":{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"先看接口"}]},{"type":"text","text":"北京今天晴"}]}}]}`)
+	respBody, err := OpenAICompatChatResponseToResponses(body, "test-model")
+	if err != nil {
+		t.Fatalf("convert response: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(respBody, &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	output := got["output"].([]interface{})
+	if len(output) != 2 {
+		t.Fatalf("output = %#v, want reasoning then message", output)
+	}
+	reasoning := output[0].(map[string]interface{})
+	summary := reasoning["summary"].([]interface{})[0].(map[string]interface{})
+	if reasoning["type"] != "reasoning" || summary["text"] != "先看接口" {
+		t.Fatalf("reasoning = %#v", reasoning)
+	}
+	message := output[1].(map[string]interface{})
+	parts := message["content"].([]interface{})
+	text := parts[0].(map[string]interface{})["text"]
+	if message["type"] != "message" || text != "北京今天晴" {
+		t.Fatalf("message = %#v, want the answer without the thought", message)
+	}
+}
+
+func TestOpenAICompatChatResponseToResponsesJoinsThinkingFragments(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl-fragments","choices":[{"message":{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"T1"},{"type":"text","text":"T2"}]},{"type":"text","text":"OK"}]}}]}`)
+	respBody, err := OpenAICompatChatResponseToResponses(body, "test-model")
+	if err != nil {
+		t.Fatalf("convert response: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(respBody, &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	output := got["output"].([]interface{})
+	if len(output) != 2 {
+		t.Fatalf("output = %#v, want reasoning then message", output)
+	}
+	summary := output[0].(map[string]interface{})["summary"].([]interface{})[0].(map[string]interface{})
+	if summary["text"] != "T1\nT2" {
+		t.Fatalf("summary = %#v, want the fragments on separate lines", summary)
+	}
+	text := output[1].(map[string]interface{})["content"].([]interface{})[0].(map[string]interface{})["text"]
+	if text != "OK" {
+		t.Fatalf("answer = %#v", output[1])
+	}
+}
+
+func TestOpenAICompatChatResponseToResponsesKeepsNestedThinkingFragment(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl-nested-frag","choices":[{"message":{"role":"assistant","content":[{"type":"thinking","thinking":[{"thinking":"深层"}]},{"type":"text","text":"正文"}]}}]}`)
+	respBody, err := OpenAICompatChatResponseToResponses(body, "test-model")
+	if err != nil {
+		t.Fatalf("convert response: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(respBody, &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	output := got["output"].([]interface{})
+	summary := output[0].(map[string]interface{})["summary"].([]interface{})[0].(map[string]interface{})
+	if summary["text"] != "深层" {
+		t.Fatalf("summary = %#v, want the nested fragment", summary)
+	}
+	fallback := []byte(`{"id":"chatcmpl-fallback","choices":[{"message":{"role":"assistant","content":[{"type":"thinking","text":"先看接口","thinking":[{"type":"image"}]},{"type":"text","text":"正文"}]}}]}`)
+	respBody, err = OpenAICompatChatResponseToResponses(fallback, "test-model")
+	if err != nil {
+		t.Fatalf("convert fallback: %v", err)
+	}
+	if err := json.Unmarshal(respBody, &got); err != nil {
+		t.Fatalf("decode fallback: %v", err)
+	}
+	output = got["output"].([]interface{})
+	summary = output[0].(map[string]interface{})["summary"].([]interface{})[0].(map[string]interface{})
+	if summary["text"] != "先看接口" {
+		t.Fatalf("summary = %#v, want the part text when the array has none", summary)
+	}
+	answer := output[1].(map[string]interface{})["content"].([]interface{})[0].(map[string]interface{})["text"]
+	if answer != "正文" {
+		t.Fatalf("answer = %#v", output[1])
+	}
+}
+
+func TestOpenAICompatChatResponseToResponsesMergesDistinctThoughts(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl-merge","choices":[{"message":{"role":"assistant","reasoning_content":"先核对接口","content":[{"type":"thinking","thinking":[{"type":"text","text":"再看边界"}]},{"type":"text","text":"正文"}]}}]}`)
+	respBody, err := OpenAICompatChatResponseToResponses(body, "test-model")
+	if err != nil {
+		t.Fatalf("convert response: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(respBody, &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	output := got["output"].([]interface{})
+	summary := output[0].(map[string]interface{})["summary"].([]interface{})[0].(map[string]interface{})
+	if summary["text"] != "先核对接口\n再看边界" {
+		t.Fatalf("summary = %#v, want both thoughts", summary)
+	}
+	text := output[1].(map[string]interface{})["content"].([]interface{})[0].(map[string]interface{})["text"]
+	if text != "正文" {
+		t.Fatalf("answer = %#v", output[1])
+	}
+
+	repeat := []byte(`{"id":"chatcmpl-repeat","choices":[{"message":{"role":"assistant","reasoning_content":"先核对接口","content":[{"type":"thinking","text":"核对"},{"type":"text","text":"正文"}]}}]}`)
+	respBody, err = OpenAICompatChatResponseToResponses(repeat, "test-model")
+	if err != nil {
+		t.Fatalf("convert repeat: %v", err)
+	}
+	if err := json.Unmarshal(respBody, &got); err != nil {
+		t.Fatalf("decode repeat: %v", err)
+	}
+	output = got["output"].([]interface{})
+	summary = output[0].(map[string]interface{})["summary"].([]interface{})[0].(map[string]interface{})
+	if summary["text"] != "先核对接口" {
+		t.Fatalf("summary = %#v, want the field thought once", summary)
+	}
+}
+
+func TestOpenAICompatChatResponseToResponsesKeepsAnswerBesideContentThinking(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl-beside","choices":[{"message":{"role":"assistant","content":[{"type":"thinking","text":"先看接口","thinking":[{"type":"text","text":"先看接口"}]},{"type":"text","text":"北京今天晴"},{"type":"refusal","text":"补充一句"}]}}]}`)
+	respBody, err := OpenAICompatChatResponseToResponses(body, "test-model")
+	if err != nil {
+		t.Fatalf("convert response: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(respBody, &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	output := got["output"].([]interface{})
+	if len(output) != 2 {
+		t.Fatalf("output = %#v, want reasoning then message", output)
+	}
+	summary := output[0].(map[string]interface{})["summary"].([]interface{})[0].(map[string]interface{})
+	if summary["text"] != "先看接口" {
+		t.Fatalf("summary = %#v", summary)
+	}
+	message := output[1].(map[string]interface{})
+	text := message["content"].([]interface{})[0].(map[string]interface{})["text"]
+	if text != "北京今天晴\n补充一句" {
+		t.Fatalf("answer = %#v, want both remaining parts", message)
+	}
+}
+
+func TestOpenAICompatChatResponseToResponsesOmitsAnswerForThinkingOnly(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl-thinkonly","choices":[{"message":{"role":"assistant","content":[{"type":"thinking","text":"只思考","thinking":[{"type":"text","text":"只思考"}]}],"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.py\"}"}}]}}]}`)
+	respBody, err := OpenAICompatChatResponseToResponses(body, "test-model")
+	if err != nil {
+		t.Fatalf("convert response: %v", err)
+	}
+	if strings.Contains(string(respBody), `"text":"[]"`) {
+		t.Fatalf("thinking-only content became an answer: %s", respBody)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(respBody, &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	output := got["output"].([]interface{})
+	if len(output) != 2 {
+		t.Fatalf("output = %#v, want reasoning then function_call", output)
+	}
+	reasoning := output[0].(map[string]interface{})
+	summary := reasoning["summary"].([]interface{})[0].(map[string]interface{})
+	if reasoning["type"] != "reasoning" || summary["text"] != "只思考" {
+		t.Fatalf("reasoning = %#v", reasoning)
+	}
+	call := output[1].(map[string]interface{})
+	if call["type"] != "function_call" || call["name"] != "read_file" {
+		t.Fatalf("function_call = %#v", call)
+	}
+	for _, item := range output {
+		if item.(map[string]interface{})["type"] == "message" {
+			t.Fatalf("thinking-only turn invented a message: %#v", output)
+		}
+	}
+}
+
+func TestOpenAICompatChatResponseToResponsesOmitsAnswerForEmptyContentArray(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl-empty","choices":[{"message":{"role":"assistant","content":[],"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]}}]}`)
+	respBody, err := OpenAICompatChatResponseToResponses(body, "test-model")
+	if err != nil {
+		t.Fatalf("convert response: %v", err)
+	}
+	if strings.Contains(string(respBody), `"text":"[]"`) {
+		t.Fatalf("empty content array became an answer: %s", respBody)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(respBody, &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	output := got["output"].([]interface{})
+	if len(output) != 1 {
+		t.Fatalf("output = %#v, want the function_call only", output)
+	}
+	call := output[0].(map[string]interface{})
+	if call["type"] != "function_call" || call["name"] != "read_file" {
+		t.Fatalf("function_call = %#v", call)
+	}
+}
+
+func TestOpenAICompatChatResponseToResponsesWithoutThinkingDropsOnlyThinkingParts(t *testing.T) {
+	thinking := map[string]any{"type": "thinking", "text": "只思考"}
+	text := map[string]any{"type": "text", "text": "正文"}
+	if got := openAIChatWithoutThinking([]any{thinking}); got != nil {
+		t.Fatalf("[]any thinking-only = %#v, want nil", got)
+	}
+	if got := openAIChatWithoutThinking([]map[string]any{thinking}); got != nil {
+		t.Fatalf("[]map thinking-only = %#v, want nil", got)
+	}
+	if got := openAIChatWithoutThinking(thinking); got != nil {
+		t.Fatalf("thinking map = %#v, want nil", got)
+	}
+	if got := openAIChatWithoutThinking([]any{}); got != nil {
+		t.Fatalf("empty []any = %#v, want nil", got)
+	}
+	if got := openAIChatWithoutThinking([]map[string]any{}); got != nil {
+		t.Fatalf("empty []map = %#v, want nil", got)
+	}
+	original := []any{text, thinking}
+	kept, ok := openAIChatWithoutThinking(original).([]any)
+	if !ok || len(kept) != 1 || kept[0].(map[string]any)["text"] != "正文" {
+		t.Fatalf("mixed = %#v, want the text part", kept)
+	}
+	if openAIChatWithoutThinking("正文") != "正文" || openAIChatWithoutThinking("[]") != "[]" {
+		t.Fatal("a string answer must stay a string")
+	}
+}
+
+func TestOpenAICompatChatResponseToResponsesKeepsNarrationInAnswer(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl-narration","choices":[{"message":{"role":"assistant","content":"我来帮你查北京天气，并写成 PDF。"}}]}`)
+	respBody, err := OpenAICompatChatResponseToResponses(body, "test-model")
+	if err != nil {
+		t.Fatalf("convert response: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(respBody, &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	output := got["output"].([]interface{})
+	if len(output) != 1 || output[0].(map[string]interface{})["type"] != "message" {
+		t.Fatalf("output = %#v, want the narration as the answer", output)
+	}
+}
+
+func TestOpenAICompatChatResponseToResponsesSkipsReasoningControl(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl-control","choices":[{"message":{"role":"assistant","content":"正文","reasoning":{"effort":"high","summary":"auto"}}}]}`)
+	respBody, err := OpenAICompatChatResponseToResponses(body, "test-model")
+	if err != nil {
+		t.Fatalf("convert response: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(respBody, &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	output := got["output"].([]interface{})
+	if len(output) != 1 || output[0].(map[string]interface{})["type"] != "message" {
+		t.Fatalf("output = %#v, want the answer only", output)
+	}
+}
+
 func TestOpenAICompatChatResponseToResponsesConvertsLegacyFunctionCall(t *testing.T) {
 	body := []byte(`{"id":"chatcmpl-legacy","object":"chat.completion","model":"test-model","choices":[{"message":{"role":"assistant","content":"","function_call":{"name":"get_ticket","arguments":"{\"id\":\"T-1\"}"}},"finish_reason":"function_call"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`)
 	respBody, err := OpenAICompatChatResponseToResponses(body, "test-model")

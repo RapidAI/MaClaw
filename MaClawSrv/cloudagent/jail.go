@@ -123,6 +123,39 @@ func followReparse(root, cleaned string, depth int) (string, error) {
 	return current, nil
 }
 
+// looseWorkspace is the pre-connect workspace when jail is a checkout inside
+// it. A turn that captured the bare workspace keeps writing there after
+// ConnectGit, and those files sit beside the checkout instead of inside it.
+func looseWorkspace(instDir, jail string) (string, bool) {
+	workspace := filepath.Clean(filepath.Join(instDir, "workspace"))
+	jail = filepath.Clean(jail)
+	if jail == workspace || !insideRoot(workspace, jail) {
+		return "", false
+	}
+	return workspace, true
+}
+
+// strandedRegular is a regular file recorded relative to the old workspace
+// root and left outside the checkout. rel is the canonical slash key.
+func strandedRegular(instDir, jail, rel string) (string, os.FileInfo, bool) {
+	workspace, ok := looseWorkspace(instDir, jail)
+	if !ok {
+		return "", nil, false
+	}
+	path, err := resolveInJail(workspace, rel)
+	if err != nil {
+		return "", nil, false
+	}
+	if filepath.Clean(path) == filepath.Clean(jail) || insideRoot(jail, path) {
+		return "", nil, false
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", nil, false
+	}
+	return path, info, true
+}
+
 func secretBase(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
 	return base == "git.json" || base == "llm.json"

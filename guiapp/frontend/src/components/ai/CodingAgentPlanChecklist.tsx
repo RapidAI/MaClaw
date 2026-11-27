@@ -12,6 +12,8 @@ import { CodingAgentFileChanges, useCapcFloatingRoom } from "./CodingAgentFileCh
 import type { CodingAgentFileChange } from "./CodingAgentProgressStatus";
 import {
     codingPlanAwaitingStart,
+    codingStepAwaitsReview,
+    codingStepDisplayStatus,
     codingStepIsDone,
     codingStepIsActive,
     codingStepIsFailed,
@@ -82,7 +84,7 @@ export function codingContextUsageLabel(used: number, max: number): string | nul
  *  `success`/`succeeded` count as finished alongside `passed`/`completed`. */
 export function codingPlanDoneCount(steps: CodingStepStatus[]): number {
     return steps.reduce(
-        (done, s) => (codingStepIsDone(s.status) || codingStepIsSkipped(s.status) ? done + 1 : done),
+        (done, s) => (codingStepAwaitsReview(s) ? done : codingStepIsDone(s.status) || codingStepIsSkipped(s.status) ? done + 1 : done),
         0,
     );
 }
@@ -253,7 +255,9 @@ export function CodingAgentPlanChecklist({
     const stepLabel = (status: string) => codingStepPresentedLabel(lang, status, executionLive, executionStatusLabel);
     // Confirmed plans keep the checklist. The start / skip / reject gate is
     // only for a plan that has not begun, even if the approval flag is stale.
-    const showPlanGate = pendingApproval && codingPlanAwaitingStart(steps);
+    // A review wait is not that gate: the bar must not approve or resume it.
+    const reviewWaiting = steps.some((step) => codingStepAwaitsReview(step));
+    const showPlanGate = pendingApproval && codingPlanAwaitingStart(steps) && !reviewWaiting;
     const title = pendingApproval
         ? localizeText(lang, "Plan", "计划", "計畫")
         : localizeText(lang, "Steps", "步骤", "步驟");
@@ -395,13 +399,14 @@ export function CodingAgentPlanChecklist({
                             {steps.length > 0 ? (
                             <ol className="capc-steps">
                                 {steps.map((st) => {
-                                    const color = codingStepStatusColor(st.status, chrome);
+                                    const shown = codingStepDisplayStatus(st);
+                                    const color = codingStepStatusColor(shown, chrome);
                                     const active = codingStepIsActive(st.status);
                                     const failed = codingStepIsFailed(st.status);
                                     // Bold and the accent pill mean "executing now". A stopped
                                     // cursor keeps its color and pause mark without that chrome.
                                     const moving = active && executionLive;
-                                    const statusText = stepLabel(st.status);
+                                    const statusText = stepLabel(shown);
                                     return (
                                         <li
                                             key={st.index}
@@ -417,7 +422,7 @@ export function CodingAgentPlanChecklist({
                                                 ...(moving ? { background: chrome.chipActiveBg } : null),
                                             }}
                                         >
-                                            <span aria-hidden className="capc-glyph"><PlanStepIcon status={st.status} live={executionLive} /></span>
+                                            <span aria-hidden className="capc-glyph"><PlanStepIcon status={shown} live={executionLive} /></span>
                                             <span className="capc-step-idx">T{st.index}</span>
                                             <span className="capc-step-main">
                                                 <span className="capc-step-title">{st.title || statusText}</span>

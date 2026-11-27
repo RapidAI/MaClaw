@@ -134,6 +134,460 @@ func TestJoinCodingUnderstandingAndBody(t *testing.T) {
 	}
 }
 
+func assertOpeningTaskHostAnalysis(t *testing.T, got, ask string) {
+	t.Helper()
+	ask = strings.TrimSpace(strings.TrimRight(strings.TrimSpace(ask), "。！？!? "))
+	if !strings.Contains(got, "第一条指令") || !strings.Contains(got, "「"+ask+"」") || !strings.Contains(got, "开发计划") || !strings.Contains(got, "确认前不改文件") {
+		t.Fatalf("opening analysis=%q ask=%q", got, ask)
+	}
+	if strings.Contains(got, "其它先不动") || strings.Contains(got, "回答「") || strings.Contains(got, "不改源代码") || strings.Contains(got, "只读不改文件") {
+		t.Fatalf("opening analysis used another template: %q", got)
+	}
+}
+
+func TestOpeningTaskFirstCommandIsAnalyzedAndKeptAboveThePlan(t *testing.T) {
+	const ask = "开发c++版本的俄罗斯广场"
+	impl := codingRequestDecision{Kind: codingRequestImplementation}
+	if !codingOpeningTaskCommand(ask, stickyCodingWorkbenchMemory{}) {
+		t.Fatal("empty session is the opening command")
+	}
+	if !codingOpeningTaskNeedsAnalysis(ask, stickyCodingWorkbenchMemory{}, impl) {
+		t.Fatal("opening implementation needs an analysis")
+	}
+	if codingOpeningTaskNeedsAnalysis(ask, stickyCodingWorkbenchMemory{}, codingRequestDecision{Kind: codingRequestInquiry}) {
+		t.Fatal("an inquiry keeps its own sentence")
+	}
+	launch := codingRequestDecision{Kind: codingRequestOperational, Acceptance: codingOperationalAcceptanceLaunch}
+	if codingOpeningTaskNeedsAnalysis(ask, stickyCodingWorkbenchMemory{}, launch) {
+		t.Fatal("a launch keeps its own sentence")
+	}
+	command := codingRequestDecision{Kind: codingRequestOperational, Acceptance: codingOperationalAcceptanceCommand}
+	if !codingOpeningTaskNeedsAnalysis(ask, stickyCodingWorkbenchMemory{}, command) {
+		t.Fatal("a host command on a new task still needs an analysis")
+	}
+	follow := stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"}
+	if codingOpeningTaskCommand("再收紧阈值", follow) {
+		t.Fatal("a named follow-up is not the opening command")
+	}
+	if codingOpeningTaskCommand(ask, stickyCodingWorkbenchMemory{TurnCount: 1}) {
+		t.Fatal("a later turn is not the opening command")
+	}
+	if codingOpeningTaskCommand(ask, stickyCodingWorkbenchMemory{FilesCreated: []string{"main.cpp"}}) {
+		t.Fatal("written files end the opening command")
+	}
+	got := fallbackCodingRequestRestatementFor(ask, stickyCodingWorkbenchMemory{}, impl)
+	assertOpeningTaskHostAnalysis(t, got, ask)
+	echo := fallbackCodingRequestRestatementFor("再收紧阈值", follow, impl)
+	if !strings.Contains(echo, "这次再收紧阈值") || !strings.Contains(echo, "其它先不动") || !strings.Contains(echo, "「系统信息查看」") {
+		t.Fatalf("follow-up should still echo: %q", echo)
+	}
+	if codingOpeningAnalysisUsable("这次开发c++版本的俄罗斯广场，其它先不动。", ask) {
+		t.Fatal("the old echo must not pass as an analysis")
+	}
+	if codingOpeningAnalysisUsable("开发c++版本的俄罗斯广场，确认要做到的结果和边界。", ask) {
+		t.Fatal("a near-copy of the command must not pass")
+	}
+	analysis := "要做一个用 C++ 编写的俄罗斯方块。完成后能在本地编译运行。只做这个游戏本身，不另加模式。方案确认前不改文件。"
+	if !codingOpeningAnalysisUsable(analysis, ask) {
+		t.Fatal("a real analysis should pass")
+	}
+
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	var tokens []string
+	published := h.publishCodingRequestUnderstanding(userID, ask, stickyCodingWorkbenchMemory{}, impl, func(s string) {
+		tokens = append(tokens, s)
+	})
+	assertOpeningTaskHostAnalysis(t, published, ask)
+	if len(tokens) != 1 || tokens[0] != published {
+		t.Fatalf("publish tokens=%q", tokens)
+	}
+	stored := h.getStickyCodingWorkbenchMemory(userID).RequirementRestatement
+	if stored != published {
+		t.Fatalf("stored=%q published=%q", stored, published)
+	}
+	refined := h.refineCodingRequestUnderstanding(userID, ask, h.getStickyCodingWorkbenchMemory(userID), impl)
+	if refined != published {
+		t.Fatalf("refine replaced the opening analysis: %q", refined)
+	}
+	plan := "## 需要确认执行计划\n\n确认后才会改文件。共 **3** 步。"
+	joined := joinCodingUnderstandingAndBody(refined, plan)
+	if !strings.HasPrefix(joined, published+"\n\n") || !strings.Contains(joined, "## 需要确认执行计划") {
+		t.Fatalf("analysis must stay above the plan: %q", joined)
+	}
+}
+
+func TestFallbackOpeningTitleClauseIsAnalyzed(t *testing.T) {
+	const title = "使用本项目的代码"
+	user := title + "，识别文件中的印章：\n与党中央保持高度一致，未发现过与中央精神相违背的言论。同意推荐该同志担任该职务。单位组织人事处。"
+	mem := stickyCodingWorkbenchMemory{SessionPlan: title}
+	if !codingOpeningTaskCommand(user, mem) {
+		t.Fatal("a title that is only this command's leading clause is still the opening command")
+	}
+	if codingOpeningTaskCommand("再收紧阈值", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"}) {
+		t.Fatal("a different stored title is not this command")
+	}
+	got := fallbackCodingRequestRestatementFor(user, mem, codingRequestDecision{Kind: codingRequestImplementation})
+	if strings.Contains(got, "先处理「"+title+"」") {
+		t.Fatalf("task title was repeated as the work: %q", got)
+	}
+	if !strings.Contains(got, "「识别文件中的印章」") {
+		t.Fatalf("the requirement after the title was dropped: %q", got)
+	}
+	if !strings.Contains(got, "「"+title+"」") || !strings.Contains(got, "限定的是做法") {
+		t.Fatalf("the leading clause should stay as a constraint: %q", got)
+	}
+	if !strings.Contains(got, "交给这个目标的材料") || !strings.Contains(got, "不复述原文") {
+		t.Fatalf("the attached body should be named as material: %q", got)
+	}
+	if !strings.Contains(got, "当前项目里能完成这件事") || !strings.Contains(got, "确认前不改文件") {
+		t.Fatalf("opening analysis missing: %q", got)
+	}
+	if strings.Contains(got, "与党中央") || strings.Contains(got, "组织人事处") {
+		t.Fatalf("the attached body leaked into the reply: %q", got)
+	}
+	if !codingOpeningTaskNeedsAnalysis(user, mem, codingRequestDecision{Kind: codingRequestImplementation}) {
+		t.Fatal("this first command should ask the model for an analysis")
+	}
+
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	published := h.publishCodingRequestUnderstanding(userID, user, mem, codingRequestDecision{Kind: codingRequestImplementation}, nil)
+	if published != got {
+		t.Fatalf("publish=%q fallback=%q", published, got)
+	}
+	pasted := "要识别文件中的印章。材料从与党中央保持高度一致，未发现过这段开始，确认前不改文件。"
+	if codingOpeningAnalysisUsable(pasted, user) {
+		t.Fatal("an analysis that quotes the supplied body must not replace the host sentence")
+	}
+	paraphrase := "用当前项目里已有的实现，识别用户给出的文书上的印章。正文只作为输入，不另做无关功能。确认前不改文件。"
+	if !codingOpeningAnalysisUsable(paraphrase, user) {
+		t.Fatal("a paraphrase that does not quote the body should stand")
+	}
+	later := "要识别文书上的印章。同意推荐该同志担任相关职务，正文只作输入。确认前不改文件。"
+	if codingOpeningAnalysisUsable(later, user) {
+		t.Fatal("quoting a later span of the body must not replace the host sentence")
+	}
+	prompt := codingOpeningAnalysisUserPrompt(user, mem)
+	if strings.Contains(prompt, "与党中央") || strings.Contains(prompt, "组织人事处") {
+		t.Fatalf("opening prompt pasted the body: %q", prompt)
+	}
+	if !strings.Contains(prompt, "识别文件中的印章") || !strings.Contains(prompt, "Constraint") || !strings.Contains(prompt, title) || !strings.Contains(prompt, "已附正文") {
+		t.Fatalf("opening prompt dropped the task: %q", prompt)
+	}
+}
+
+func TestFallbackOpeningKeepsRequirementBesideMaterial(t *testing.T) {
+	const title = "使用本项目的代码"
+	user := title + "，识别文件中的印章，并标出位置：\n" + strings.Repeat("与党中央保持高度一致。", 4)
+	got := fallbackCodingRequestRestatementFor(user, stickyCodingWorkbenchMemory{SessionPlan: title}, codingRequestDecision{Kind: codingRequestImplementation})
+	if !strings.Contains(got, "「识别文件中的印章」") || !strings.Contains(got, "「并标出位置」") {
+		t.Fatalf("the requirement beside the document was dropped: %q", got)
+	}
+	if !strings.Contains(got, "材料") || strings.Contains(got, "与党中央") {
+		t.Fatalf("document should stay material: %q", got)
+	}
+}
+
+func TestFallbackOpeningColonBeforeGoalKeepsTheGoal(t *testing.T) {
+	const title = "使用本项目的代码"
+	user := title + "：识别文件中的印章：\n" + strings.Repeat("与党中央保持高度一致。", 4)
+	got := fallbackCodingRequestRestatementFor(user, stickyCodingWorkbenchMemory{SessionPlan: title}, codingRequestDecision{Kind: codingRequestImplementation})
+	if !strings.Contains(got, "「识别文件中的印章」") || strings.Contains(got, "与党中央") {
+		t.Fatalf("the goal between two colons was lost: %q", got)
+	}
+	if !strings.Contains(got, "「"+title+"」") || !strings.Contains(got, "限定的是做法") {
+		t.Fatalf("the title should stay a constraint: %q", got)
+	}
+}
+
+func TestFallbackOpeningTitleColonDocumentIsNotTheGoal(t *testing.T) {
+	const title = "使用本项目的代码"
+	body := "与党中央保持高度一致：未发现过这段。\n" + strings.Repeat("单位组织人事处盖章。", 3)
+	user := title + "：\n" + body
+	got := fallbackCodingRequestRestatementFor(user, stickyCodingWorkbenchMemory{SessionPlan: title}, codingRequestDecision{Kind: codingRequestImplementation})
+	if strings.Contains(got, "与党中央") {
+		t.Fatalf("the document was quoted as the goal: %q", got)
+	}
+	if !strings.Contains(got, "「"+title+"」") || !strings.Contains(got, "材料") || !strings.Contains(got, "确认前不改文件") {
+		t.Fatalf("the title should be the goal and the body material: %q", got)
+	}
+	if strings.Contains(got, "限定的是做法") {
+		t.Fatalf("the title was repeated as both goal and constraint: %q", got)
+	}
+}
+
+func TestOpeningTitleDoesNotSwallowTheNextWord(t *testing.T) {
+	user := "数据库导出加水印记录并且支持一键回填到原始表格里面去，顺便把错误提示文案也统一成中文规范显示"
+	mem := stickyCodingWorkbenchMemory{SessionPlan: "数据"}
+	if codingHeadExtendsTitle("数据", "数据库导出") {
+		t.Fatal("a title prefix must stop at a boundary")
+	}
+	if codingOpeningTaskCommand(user, mem) {
+		t.Fatal("数据 must not count as the leading clause of 数据库")
+	}
+	got := fallbackCodingRequestRestatementFor(user, mem, codingRequestDecision{Kind: codingRequestImplementation})
+	if strings.Contains(got, "限定的是做法") {
+		t.Fatalf("a shorter title was peeled off the next word: %q", got)
+	}
+}
+
+func TestFallbackOpeningDocumentIsMaterialNotAnotherTask(t *testing.T) {
+	user := "识别文件中的印章：\n" + strings.Repeat("单位组织人事处盖章。", 6)
+	got := fallbackCodingRequestRestatement(user, stickyCodingWorkbenchMemory{})
+	if !strings.Contains(got, "「识别文件中的印章」") || !strings.Contains(got, "材料") || !strings.Contains(got, "确认前不改文件") {
+		t.Fatalf("document opening should name the goal and the material: %q", got)
+	}
+	if strings.Contains(got, "其余要求") || strings.Contains(got, "单位组织人事处") {
+		t.Fatalf("the document was treated as another requirement: %q", got)
+	}
+	quoted := "识别文书印章时要看单位组织人事处盖章的位置。确认前不改文件，只做这一项。"
+	if codingOpeningAnalysisUsable(quoted, user) {
+		t.Fatal("quoting the seal line from the body must not replace the host sentence")
+	}
+}
+
+func TestFallbackOpeningImageAttachmentIsTheMaterial(t *testing.T) {
+	const title = "使用本项目的代码"
+	const path = `C:\docs\stamp.png`
+	block := filePathPromptPrefix + "\n" + path + "\nFor image files, the host sends them directly to a vision-capable model when available. Analyze attached images first; do not re-capture them or use read_file on image bytes."
+	user := title + "，识别文件中的印章：\n\n" + block
+	mem := stickyCodingWorkbenchMemory{SessionPlan: title}
+	got := fallbackCodingRequestRestatementFor(user, mem, codingRequestDecision{Kind: codingRequestImplementation})
+	if !strings.Contains(got, "「识别文件中的印章」") || !strings.Contains(got, "限定的是做法") {
+		t.Fatalf("requirement dropped: %q", got)
+	}
+	if !strings.Contains(got, "附上的图片") || !strings.Contains(got, "材料") {
+		t.Fatalf("the image was not named as material: %q", got)
+	}
+	if strings.Contains(got, "其余要求") || strings.Contains(got, "冒号后的正文") || strings.Contains(got, "先处理「"+title+"」") {
+		t.Fatalf("the image was treated as more requirements or pasted prose: %q", got)
+	}
+	if strings.Contains(got, `C:\docs`) || strings.Contains(got, "stamp.png") || strings.Contains(got, "用户选择的本地文件路径") || strings.Contains(got, "For image files") {
+		t.Fatalf("the path leaked into the reply: %q", got)
+	}
+	prompt := codingOpeningAnalysisUserPrompt(user, mem)
+	if strings.Contains(prompt, `C:\docs`) || strings.Contains(prompt, "For image files") || strings.Contains(prompt, "已附正文") {
+		t.Fatalf("opening prompt kept the path block: %q", prompt)
+	}
+	if !strings.Contains(prompt, "识别文件中的印章") || !strings.Contains(prompt, "Attached images: 1") || !strings.Contains(prompt, title) {
+		t.Fatalf("opening prompt dropped the image: %q", prompt)
+	}
+	leaked := "要识别印章，材料在 C:\\docs\\stamp.png 这一张图里。确认前不改文件，只做这一项。"
+	if codingOpeningAnalysisUsable(leaked, user) {
+		t.Fatal("quoting the image path must not replace the host sentence")
+	}
+	ok := "用当前项目里已有的代码识别附上图片中的印章。图片是输入，不另做无关功能。确认前不改文件。"
+	if !codingOpeningAnalysisUsable(ok, user) {
+		t.Fatal("an analysis that names the image without its path should stand")
+	}
+	near := "使用本项目的代码，识别文件中的印章。确认前不改文件，只做这一项。"
+	if codingOpeningAnalysisUsable(near, user) {
+		t.Fatal("a copy of the typed sentence must not replace the host sentence")
+	}
+
+	ocrUser := user + "\n--- image_ocr: begin ---\n与党中央保持高度一致，未发现过这段。\n--- image_ocr: end ---"
+	quoted := "要识别印章。图里写着与党中央保持高度一致，未发现过这段。确认前不改文件。"
+	if codingOpeningAnalysisUsable(quoted, ocrUser) {
+		t.Fatal("quoting the image transcript must not replace the host sentence")
+	}
+	if strings.Contains(fallbackCodingRequestRestatementFor(ocrUser, mem, codingRequestDecision{Kind: codingRequestImplementation}), "与党中央") {
+		t.Fatal("the image transcript leaked into the host sentence")
+	}
+}
+
+func TestFallbackOpeningImageWithoutColonIsNotAnotherRequirement(t *testing.T) {
+	const title = "使用本项目的代码"
+	user := title + "，识别文件中的印章\n\n" + filePathPromptPrefix + "\nC:\\docs\\stamp.png\nFor image files, the host sends them directly."
+	got := fallbackCodingRequestRestatementFor(user, stickyCodingWorkbenchMemory{SessionPlan: title}, codingRequestDecision{Kind: codingRequestImplementation})
+	if !strings.Contains(got, "「识别文件中的印章」") || !strings.Contains(got, "附上的图片") {
+		t.Fatalf("image without a colon was dropped: %q", got)
+	}
+	if strings.Contains(got, "其余要求") || strings.Contains(got, `C:\docs`) || strings.Contains(got, "For image files") {
+		t.Fatalf("the path block became another requirement: %q", got)
+	}
+}
+
+func TestFallbackOpeningDocumentFileIsNamed(t *testing.T) {
+	user := "识别文件中的印章\n\n" + filePathPromptPrefix + "\nC:\\docs\\paper.pdf\n"
+	got := fallbackCodingRequestRestatement(user, stickyCodingWorkbenchMemory{})
+	if !strings.Contains(got, "「识别文件中的印章」") || !strings.Contains(got, "附上的文件") || !strings.Contains(got, "第一条指令") {
+		t.Fatalf("a document file should stay on the short opening: %q", got)
+	}
+	if strings.Contains(got, "附上的图片") || strings.Contains(got, "其余要求") || strings.Contains(got, `C:\docs`) {
+		t.Fatalf("the document path leaked or was called an image: %q", got)
+	}
+}
+
+func TestFallbackOpeningDocumentAndImageStayDistinct(t *testing.T) {
+	const title = "使用本项目的代码"
+	user := title + "，识别文件中的印章：\n" + strings.Repeat("与党中央保持高度一致。", 4) + "\n\n" + filePathPromptPrefix + "\nC:\\docs\\stamp.png\nFor image files, the host sends them directly."
+	got := fallbackCodingRequestRestatementFor(user, stickyCodingWorkbenchMemory{SessionPlan: title}, codingRequestDecision{Kind: codingRequestImplementation})
+	if !strings.Contains(got, "冒号后的正文") || !strings.Contains(got, "附上的图片") || !strings.Contains(got, "「识别文件中的印章」") {
+		t.Fatalf("document and image should both be material: %q", got)
+	}
+	if strings.Contains(got, "与党中央") || strings.Contains(got, `C:\docs`) {
+		t.Fatalf("document or path leaked: %q", got)
+	}
+}
+
+func TestOpeningAnalysisKeepsRequirementAlsoWrittenInTheBody(t *testing.T) {
+	user := "识别文件中的印章：\n识别文件中的印章就写在抬头。\n" + strings.Repeat("单位组织人事处盖章。", 4)
+	analysis := "要做的是识别文件中的印章，用项目里已有的代码完成。正文只作输入，不另写新功能。确认前不改文件。"
+	if !codingOpeningAnalysisUsable(analysis, user) {
+		t.Fatal("naming the requirement must stay even when the body repeats it")
+	}
+	leaked := "识别时要看单位组织人事处盖章的位置。确认前不改文件，只做这一项。"
+	if codingOpeningAnalysisUsable(leaked, user) {
+		t.Fatal("a body span that is not the requirement must still be rejected")
+	}
+}
+
+func TestFallbackOpeningTitleTrailingColonStillPeels(t *testing.T) {
+	const title = "使用本项目的代码"
+	user := title + "：识别文件中的印章：\n" + strings.Repeat("与党中央保持高度一致。", 4)
+	mem := stickyCodingWorkbenchMemory{SessionPlan: title + "："}
+	if !codingOpeningTaskCommand(user, mem) {
+		t.Fatal("a trailing colon on the stored title is still this command")
+	}
+	got := fallbackCodingRequestRestatementFor(user, mem, codingRequestDecision{Kind: codingRequestImplementation})
+	if !strings.Contains(got, "「识别文件中的印章」") || strings.Contains(got, "与党中央") {
+		t.Fatalf("the goal after a trailing-colon title was lost: %q", got)
+	}
+	if !strings.Contains(got, "限定的是做法") {
+		t.Fatalf("the title should stay a constraint: %q", got)
+	}
+}
+
+func TestFallbackShortEditWithAttachmentStaysAnEcho(t *testing.T) {
+	ask := "再收紧阈值\n\n" + filePathPromptPrefix + "\nC:\\Users\\ma139\\Documents\\notes\\threshold.pdf\n"
+	if utf8.RuneCountInString(ask) <= 48 {
+		t.Fatalf("the path block must push the raw text past the short gate: %d", utf8.RuneCountInString(ask))
+	}
+	mem := stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看", TurnCount: 1}
+	got := fallbackCodingRequestRestatement(ask, mem)
+	if !strings.Contains(got, "这次再收紧阈值") || !strings.Contains(got, "其它先不动") || !strings.Contains(got, "「系统信息查看」") {
+		t.Fatalf("short edit lost its echo: %q", got)
+	}
+	if strings.Contains(got, "其余要求") || strings.Contains(got, `C:\Users`) || strings.Contains(got, "用户选择的本地文件路径") || strings.Contains(got, "第一条指令") {
+		t.Fatalf("the file block changed the echo: %q", got)
+	}
+	if !codingRequestUnderstandingKeepsHostFallback(ask, mem, codingRequestDecision{Kind: codingRequestImplementation}) {
+		t.Fatal("the attachment must not unlock the short echo")
+	}
+	same := fallbackCodingRequestRestatement(ask, stickyCodingWorkbenchMemory{SessionPlan: "再收紧阈值", TurnCount: 1})
+	if strings.Contains(same, "在「再收紧阈值」里") {
+		t.Fatalf("the path made the title look different from the ask: %q", same)
+	}
+}
+
+func TestFallbackContinueWithAttachmentStaysAResume(t *testing.T) {
+	user := "继续\n\n" + filePathPromptPrefix + "\nC:\\docs\\stamp.png\nFor image files, the host sends them directly to a vision-capable model when available."
+	got := fallbackCodingRequestRestatement(user, stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"})
+	if !strings.Contains(got, "继续做「系统信息查看」") {
+		t.Fatalf("continue plus a file should still resume: %q", got)
+	}
+	if strings.Contains(got, "先处理「继续」") || strings.Contains(got, `C:\docs`) || strings.Contains(got, "用户选择的本地文件路径") {
+		t.Fatalf("the file block became the continue task: %q", got)
+	}
+}
+
+func TestFallbackOpeningBareDocumentNameIsAFile(t *testing.T) {
+	user := "识别文件中的印章\n\n" + filePathPromptPrefix + "\npaper.pdf\n"
+	got := fallbackCodingRequestRestatement(user, stickyCodingWorkbenchMemory{})
+	if !strings.Contains(got, "「识别文件中的印章」") || !strings.Contains(got, "附上的文件") {
+		t.Fatalf("a bare document name was dropped: %q", got)
+	}
+	if strings.Contains(got, "paper.pdf") || strings.Contains(got, "其余要求") || strings.Contains(got, "附上的图片") {
+		t.Fatalf("the bare document name leaked: %q", got)
+	}
+}
+
+func TestFallbackQuestionDropsTheAttachment(t *testing.T) {
+	user := "这个阈值现在是多少？\n\n" + filePathPromptPrefix + "\nC:\\docs\\note.pdf\n"
+	got := fallbackCodingRequestRestatementFor(user, stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"}, codingRequestDecision{Kind: codingRequestInquiry})
+	if !strings.Contains(got, "回答「这个阈值现在是多少」") || !strings.Contains(got, "只读不改文件") {
+		t.Fatalf("question lost its sentence: %q", got)
+	}
+	if strings.Contains(got, `C:\docs`) || strings.Contains(got, "用户选择的本地文件路径") {
+		t.Fatalf("the question quoted the file: %q", got)
+	}
+}
+
+func TestFallbackAttachmentOnlyNamesTheTaskAndTheImage(t *testing.T) {
+	const title = "使用本项目的代码"
+	user := filePathPromptPrefix + "\nC:\\docs\\stamp.png\nFor image files, the host sends them directly."
+	mem := stickyCodingWorkbenchMemory{SessionPlan: title}
+	got := fallbackCodingRequestRestatement(user, mem)
+	if !strings.Contains(got, "「"+title+"」") || !strings.Contains(got, "附上的图片") {
+		t.Fatalf("attachment-only opening dropped the task or the image: %q", got)
+	}
+	if strings.Contains(got, `C:\docs`) || strings.Contains(got, "用户选择的本地文件路径") || strings.Contains(got, "其余要求") || strings.Contains(got, "先处理「") {
+		t.Fatalf("attachment-only opening quoted the path: %q", got)
+	}
+	if !codingRequestUnderstandingKeepsHostFallback(user, mem, codingRequestDecision{Kind: codingRequestImplementation}) {
+		t.Fatal("attachment-only opening must stay locked")
+	}
+	prompt := codingOpeningAnalysisUserPrompt(user, mem)
+	if !strings.Contains(prompt, "Requirement: "+title) || !strings.Contains(prompt, "Attached images: 1") || strings.Contains(prompt, `C:\docs`) {
+		t.Fatalf("attachment-only prompt dropped the task or kept the path: %q", prompt)
+	}
+}
+
+func TestFallbackAttachmentOnlyWithoutTitleNamesTheFile(t *testing.T) {
+	user := filePathPromptPrefix + "\npaper.pdf\n"
+	got := fallbackCodingRequestRestatement(user, stickyCodingWorkbenchMemory{})
+	if !strings.Contains(got, "「处理附上的文件」") || !strings.Contains(got, "第一条指令") || !strings.Contains(got, "附上的文件") {
+		t.Fatalf("bare file drop was not an opening: %q", got)
+	}
+	if strings.Contains(got, "paper.pdf") || strings.Contains(got, "用户选择的本地文件路径") || strings.Contains(got, "其余要求") {
+		t.Fatalf("bare file drop quoted the name: %q", got)
+	}
+}
+
+func TestFallbackFollowUpAttachmentOnlyStaysAnEcho(t *testing.T) {
+	user := filePathPromptPrefix + "\nC:\\docs\\note.pdf\n"
+	mem := stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看", TurnCount: 1}
+	got := fallbackCodingRequestRestatement(user, mem)
+	if !strings.Contains(got, "这次处理附上的文件") || !strings.Contains(got, "其它先不动") || !strings.Contains(got, "「系统信息查看」") {
+		t.Fatalf("follow-up file drop lost the echo: %q", got)
+	}
+	if strings.Contains(got, `C:\docs`) || strings.Contains(got, "用户选择的本地文件路径") || strings.Contains(got, "其余要求") || strings.Contains(got, "第一条指令") {
+		t.Fatalf("follow-up file drop quoted the path: %q", got)
+	}
+	question := fallbackCodingRequestRestatementFor(user, mem, codingRequestDecision{Kind: codingRequestInquiry})
+	if !strings.Contains(question, "回答「处理附上的文件」") || !strings.Contains(question, "只读不改文件") {
+		t.Fatalf("attachment-only question quoted the wrong thing: %q", question)
+	}
+	if strings.Contains(question, `C:\docs`) || strings.Contains(question, "用户选择的本地文件路径") {
+		t.Fatalf("attachment-only question quoted the path: %q", question)
+	}
+}
+
+func TestFallbackOpeningShortColonKeepsTheClause(t *testing.T) {
+	user := "请核对推理优化的完成度：六条线都要有证据，不要再写新的优化代码，结果写回现有报告。不要新做一套工具。"
+	if utf8.RuneCountInString(user) <= 48 {
+		t.Fatalf("fixture is not a long command: %d", utf8.RuneCountInString(user))
+	}
+	got := fallbackCodingRequestRestatement(user, stickyCodingWorkbenchMemory{})
+	if !strings.Contains(got, "六条线都要有证据") || strings.Contains(got, "材料") {
+		t.Fatalf("a short colon clause should stay part of the requirement: %q", got)
+	}
+}
+
+func TestFallbackLongFollowUpKeepsHeadline(t *testing.T) {
+	got := fallbackCodingRequestRestatement(
+		"帮我把导出功能加上水印记录并且支持一键回填到原始表格里面去，顺便把错误提示文案也统一成中文规范显示",
+		stickyCodingWorkbenchMemory{SessionPlan: "数据导出工具", TurnCount: 1},
+	)
+	if strings.Contains(got, "第一条指令") {
+		t.Fatalf("a later command became an opening analysis: %q", got)
+	}
+	if !strings.Contains(got, "先处理「") || !strings.Contains(got, "「数据导出工具」") || !strings.Contains(got, "水印记录") {
+		t.Fatalf("follow-up headline dropped: %q", got)
+	}
+}
+
 func TestCodingSessionContextLooksGeneric(t *testing.T) {
 	if !codingSessionContextLooksGeneric("\u65b0\u5efa\u672c\u5730\u7f16\u7a0b\u4efb\u52a1-1") {
 		t.Fatal("default local task title must be generic")
@@ -446,9 +900,7 @@ func TestInquiryDecisionAnswersWithoutReadingTheWording(t *testing.T) {
 			t.Fatalf("inquiry %q should be answered from the current code: %q", ask, got)
 		}
 		plain := fallbackCodingRequestRestatement(ask, stickyCodingWorkbenchMemory{})
-		if strings.Contains(plain, "不改文件") || strings.Contains(plain, "不改源代码") {
-			t.Fatalf("the same words without an inquiry decision must not pick a read-only sentence: %q -> %q", ask, plain)
-		}
+		assertOpeningTaskHostAnalysis(t, plain, ask)
 	}
 }
 
@@ -571,22 +1023,20 @@ func TestRestatementFollowsTheDecisionNotTheWording(t *testing.T) {
 		"给图形界面加一个按钮",
 	} {
 		got := fallbackCodingRequestRestatement(text, stickyCodingWorkbenchMemory{})
-		if strings.Contains(got, "图形界面版本") || strings.Contains(got, "重新构建") || strings.Contains(got, "不改文件") || strings.Contains(got, "不改源代码") {
-			t.Fatalf("wording selected a special sentence: %q -> %q", text, got)
-		}
+		assertOpeningTaskHostAnalysis(t, got, text)
 	}
 	got := fallbackCodingRequestRestatementFor("怎么改成图形界面", stickyCodingWorkbenchMemory{SessionPlan: "控制台贪吃蛇"}, inquiry)
 	if !strings.Contains(got, "不改文件") || !strings.Contains(got, "回答「") || strings.Contains(got, "图形界面版本") {
 		t.Fatalf("inquiry should be an answer: %q", got)
 	}
 	got = fallbackCodingRequestRestatementFor("改为图形界面版", stickyCodingWorkbenchMemory{}, impl)
-	if !strings.Contains(got, "这次改为图形界面版") || !strings.Contains(got, "其它先不动") || strings.Contains(got, "图形界面版本") || strings.Contains(got, "重新构建") {
-		t.Fatalf("implementation should echo the edit: %q", got)
+	assertOpeningTaskHostAnalysis(t, got, "改为图形界面版")
+	got = fallbackCodingRequestRestatementFor("改为图形界面版", stickyCodingWorkbenchMemory{SessionPlan: "控制台贪吃蛇"}, impl)
+	if !strings.Contains(got, "这次改为图形界面版") || !strings.Contains(got, "其它先不动") || !strings.Contains(got, "「控制台贪吃蛇」") || strings.Contains(got, "图形界面版本") || strings.Contains(got, "重新构建") {
+		t.Fatalf("a later edit should still echo: %q", got)
 	}
 	got = fallbackCodingRequestRestatementFor("在图形界面里把按钮改成蓝色", stickyCodingWorkbenchMemory{}, impl)
-	if !strings.Contains(got, "蓝色") || !strings.Contains(got, "其它先不动") || strings.Contains(got, "图形界面版本") {
-		t.Fatalf("an implementation edit should stay that edit: %q", got)
-	}
+	assertOpeningTaskHostAnalysis(t, got, "在图形界面里把按钮改成蓝色")
 	got = fallbackCodingRequestRestatementFor("继续", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"}, inquiry)
 	if !strings.Contains(got, "继续做「系统信息查看」") || strings.Contains(got, "不改文件") {
 		t.Fatalf("a continue cue stays a resume: %q", got)
@@ -807,9 +1257,7 @@ func TestFallbackQuestionNamesTheAnswerInsteadOfEchoing(t *testing.T) {
 	const ask = "本程序现在支持哪些指令集"
 	inquiry := codingRequestDecision{Kind: codingRequestInquiry}
 	plain := fallbackCodingRequestRestatement(ask, stickyCodingWorkbenchMemory{SessionPlan: ask})
-	if strings.Contains(plain, "不改文件") || strings.Contains(plain, "回答「") {
-		t.Fatalf("the words alone must not become an answer: %q", plain)
-	}
+	assertOpeningTaskHostAnalysis(t, plain, ask)
 	got := fallbackCodingRequestRestatementFor(ask, stickyCodingWorkbenchMemory{SessionPlan: ask}, inquiry)
 	if strings.Contains(got, "其它先不动") || strings.Contains(got, "这次"+ask) {
 		t.Fatalf("question was echoed as an edit: %q", got)
@@ -976,45 +1424,29 @@ func TestFallbackEditThatMentionsWhichStaysAnEdit(t *testing.T) {
 		t.Fatalf("改哪些 should stay an edit: %q", got)
 	}
 	got = fallbackCodingRequestRestatement("请帮我实现哪些接口", stickyCodingWorkbenchMemory{})
-	if strings.Contains(got, "不改文件") || !strings.Contains(got, "请帮我实现哪些接口") {
-		t.Fatalf("请帮我实现哪些 should stay an edit: %q", got)
-	}
+	assertOpeningTaskHostAnalysis(t, got, "请帮我实现哪些接口")
 	got = fallbackCodingRequestRestatement("修改哪些按钮", stickyCodingWorkbenchMemory{})
-	if strings.Contains(got, "不改文件") || !strings.Contains(got, "修改哪些按钮") {
-		t.Fatalf("修改哪些 should stay an edit: %q", got)
-	}
+	assertOpeningTaskHostAnalysis(t, got, "修改哪些按钮")
 	got = fallbackCodingRequestRestatement("删除哪些临时文件", stickyCodingWorkbenchMemory{})
-	if strings.Contains(got, "不改文件") || !strings.Contains(got, "删除哪些临时文件") {
-		t.Fatalf("删除哪些 should stay an edit: %q", got)
-	}
+	assertOpeningTaskHostAnalysis(t, got, "删除哪些临时文件")
 	got = fallbackCodingRequestRestatement("写哪些配置", stickyCodingWorkbenchMemory{})
-	if strings.Contains(got, "不改文件") || !strings.Contains(got, "写哪些配置") {
-		t.Fatalf("写哪些 should stay an edit: %q", got)
-	}
+	assertOpeningTaskHostAnalysis(t, got, "写哪些配置")
 	got = fallbackCodingRequestRestatement("改好哪些按钮", stickyCodingWorkbenchMemory{})
-	if strings.Contains(got, "不改文件") || !strings.Contains(got, "改好哪些按钮") {
-		t.Fatalf("改好哪些 should stay an edit: %q", got)
-	}
+	assertOpeningTaskHostAnalysis(t, got, "改好哪些按钮")
 	got = fallbackCodingRequestRestatement("运行几个测试", stickyCodingWorkbenchMemory{})
-	if strings.Contains(got, "不改文件") || strings.Contains(got, "不改源代码") || !strings.Contains(got, "运行几个测试") {
-		t.Fatalf("wording alone must not become a launch: %q", got)
-	}
+	assertOpeningTaskHostAnalysis(t, got, "运行几个测试")
 	got = fallbackCodingRequestRestatementFor("运行几个测试", stickyCodingWorkbenchMemory{}, codingRequestDecision{Kind: codingRequestOperational})
 	if strings.Contains(got, "不改文件") || !strings.Contains(got, "不改源代码") {
 		t.Fatalf("a launch decision should say the program will be run: %q", got)
 	}
 	got = fallbackCodingRequestRestatement("删掉临时文件？", stickyCodingWorkbenchMemory{})
-	if strings.Contains(got, "不改文件") || !strings.Contains(got, "删掉临时文件") {
-		t.Fatalf("an order with a question mark should stay an edit: %q", got)
-	}
+	assertOpeningTaskHostAnalysis(t, got, "删掉临时文件？")
 	got = fallbackCodingRequestRestatement("继续？", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"})
 	if strings.Contains(got, "不改文件") || !strings.Contains(got, "继续做") {
 		t.Fatalf("继续？ should stay a continue: %q", got)
 	}
 	got = fallbackCodingRequestRestatement("支持哪些指令集？", stickyCodingWorkbenchMemory{})
-	if strings.Contains(got, "不改文件") || strings.Contains(got, "回答「") || !strings.Contains(got, "支持哪些指令集") {
-		t.Fatalf("a question mark alone must not become an answer: %q", got)
-	}
+	assertOpeningTaskHostAnalysis(t, got, "支持哪些指令集？")
 	got = fallbackCodingRequestRestatementFor("支持哪些指令集？", stickyCodingWorkbenchMemory{}, codingRequestDecision{Kind: codingRequestInquiry})
 	if !strings.Contains(got, "不改文件") || !strings.Contains(got, "回答「") {
 		t.Fatalf("an inquiry decision should be answered: %q", got)
@@ -1030,9 +1462,7 @@ func TestFallbackCompletedAspectQuestionIsNotAnEdit(t *testing.T) {
 		"写完哪些文件", "实现完了吗", "改好了吗",
 	} {
 		plain := fallbackCodingRequestRestatement(ask, stickyCodingWorkbenchMemory{})
-		if strings.Contains(plain, "不改文件") || strings.Contains(plain, "回答「") {
-			t.Fatalf("%q was answered from its wording: %q", ask, plain)
-		}
+		assertOpeningTaskHostAnalysis(t, plain, ask)
 		got := fallbackCodingRequestRestatementFor(ask, stickyCodingWorkbenchMemory{}, inquiry)
 		if strings.Contains(got, "其它先不动") || !strings.Contains(got, "不改文件") || !strings.Contains(got, "回答「") {
 			t.Fatalf("%q should be answered once the decision is inquiry: %q", ask, got)

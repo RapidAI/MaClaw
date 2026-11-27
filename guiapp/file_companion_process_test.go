@@ -12,9 +12,6 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/mac"
-	"github.com/wailsapp/wails/v2/pkg/options/windows"
 )
 
 func TestDarwinLaunchBatchEmptyStillRunsEnvironmentCheck(t *testing.T) {
@@ -142,8 +139,8 @@ func TestFileCompanionBootQueuesOverlappingOpensBeforeUIReady(t *testing.T) {
 	second := filepath.Join(dir, "two.txt")
 	third := filepath.Join(dir, "three.txt")
 	app.ctx = nil
-	app.onFileCompanionSecondInstance(options.SecondInstanceData{Args: []string{"open-file", first}})
-	app.onFileCompanionSecondInstance(options.SecondInstanceData{Args: []string{"open-file", second}})
+	onFileCompanionSecondInstance3(app, []string{"open-file", first}, "")
+	onFileCompanionSecondInstance3(app, []string{"open-file", second}, "")
 	boot := app.GetFileCompanionBoot()
 	if boot.Mode != desktopLaunchFileCompanion {
 		t.Fatalf("mode = %q", boot.Mode)
@@ -155,7 +152,7 @@ func TestFileCompanionBootQueuesOverlappingOpensBeforeUIReady(t *testing.T) {
 	if len(app.fileCompanion.emitted) != 0 {
 		t.Fatalf("boot paths were emitted again: %#v", app.fileCompanion.emitted)
 	}
-	app.onFileCompanionSecondInstance(options.SecondInstanceData{Args: []string{"open-file", third}})
+	onFileCompanionSecondInstance3(app, []string{"open-file", third}, "")
 	if len(app.fileCompanion.emitted) != 1 || len(app.fileCompanion.emitted[0]) != 1 || app.fileCompanion.emitted[0][0] != third {
 		t.Fatalf("post-ready emit = %#v", app.fileCompanion.emitted)
 	}
@@ -172,12 +169,12 @@ func TestFileCompanionUIReadyEmitsPathsQueuedAfterBoot(t *testing.T) {
 	first := filepath.Join(dir, "one.txt")
 	second := filepath.Join(dir, "two.txt")
 	app.ctx = nil
-	app.onFileCompanionSecondInstance(options.SecondInstanceData{Args: []string{"open-file", first}})
+	onFileCompanionSecondInstance3(app, []string{"open-file", first}, "")
 	boot := app.GetFileCompanionBoot()
 	if len(boot.Paths) != 1 || boot.Paths[0] != first {
 		t.Fatalf("boot paths = %#v", boot.Paths)
 	}
-	app.onFileCompanionSecondInstance(options.SecondInstanceData{Args: []string{"open-file", second}})
+	onFileCompanionSecondInstance3(app, []string{"open-file", second}, "")
 	if len(app.fileCompanion.emitted) != 0 {
 		t.Fatalf("path queued before ready was emitted early: %#v", app.fileCompanion.emitted)
 	}
@@ -204,14 +201,14 @@ func TestFileCompanionSecondInstanceRevealsAndReopens(t *testing.T) {
 	first := filepath.Join(dir, "one.txt")
 	app.seedFileCompanionPaths([]string{first})
 	app.FileCompanionUIReady()
-	app.onFileCompanionSecondInstance(options.SecondInstanceData{Args: []string{"open-file", first}})
+	onFileCompanionSecondInstance3(app, []string{"open-file", first}, "")
 	if shown != 1 {
 		t.Fatalf("shown = %d", shown)
 	}
 	if len(app.fileCompanion.emitted) != 1 || len(app.fileCompanion.emitted[0]) != 1 || app.fileCompanion.emitted[0][0] != first {
 		t.Fatalf("reopen emit = %#v", app.fileCompanion.emitted)
 	}
-	app.onFileCompanionSecondInstance(options.SecondInstanceData{Args: []string{"open-file"}})
+	onFileCompanionSecondInstance3(app, []string{"open-file"}, "")
 	if shown != 2 {
 		t.Fatalf("empty reveal shown = %d", shown)
 	}
@@ -235,7 +232,7 @@ func TestFileCompanionSecondInstanceOpensDocumentsOnly(t *testing.T) {
 	}
 	app.FileCompanionUIReady()
 	pdf := filepath.Join(dir, "next.pdf")
-	app.onFileCompanionSecondInstance(options.SecondInstanceData{Args: []string{"open-file", pdf, named}})
+	onFileCompanionSecondInstance3(app, []string{"open-file", pdf, named}, "")
 	got := app.fileCompanion.emitted
 	if len(got) != 1 || len(got[0]) != 2 || got[0][0] != pdf || got[0][1] != named {
 		t.Fatalf("emit = %#v", got)
@@ -247,10 +244,7 @@ func TestFileCompanionSecondInstanceResolvesRelativeDocumentsInTheLaunchDirector
 	app.FileCompanionUIReady()
 	dir := t.TempDir()
 	named := filepath.Join(dir, "open-file")
-	app.onFileCompanionSecondInstance(options.SecondInstanceData{
-		Args:             []string{"open-file", "notes.md", named},
-		WorkingDirectory: dir,
-	})
+	onFileCompanionSecondInstance3(app, []string{"open-file", "notes.md", named}, dir)
 	want, err := filepath.Abs(filepath.Join(dir, "notes.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -410,84 +404,6 @@ func TestFileCompanionStartupDoesNotOpenMainTranscriptOrEnvCheck(t *testing.T) {
 	}
 }
 
-func TestApplyDesktopLaunchOptionsHidesDarwinEmptyArgv(t *testing.T) {
-	app := &App{}
-	opts := &options.App{
-		StartHidden: false,
-		OnStartup:   app.startup,
-		OnDomReady:  app.domReady,
-		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId: singleInstanceUniqueID(),
-		},
-		Mac:     &mac.Options{},
-		Windows: &windows.Options{},
-	}
-	launch := classifyDesktopLaunchForOS([]string{"MaClaw"}, "darwin")
-	applyDesktopLaunchOptions(app, opts, launch)
-	if !opts.StartHidden {
-		t.Fatal("darwin empty argv did not set StartHidden")
-	}
-	if opts.SingleInstanceLock.UniqueId != "maclaw-lock" {
-		t.Fatalf("darwin empty argv left the main lock: %q", opts.SingleInstanceLock.UniqueId)
-	}
-	if opts.HideWindowOnClose {
-		t.Fatal("main window close must still be allowed to exit")
-	}
-	if opts.Mac.OnLaunchFileBatch == nil || opts.Mac.OnFileOpen == nil {
-		t.Fatal("darwin latch did not install the batch and file-open callbacks")
-	}
-	if opts.OnDomReady == nil {
-		t.Fatal("OnDomReady was replaced")
-	}
-	// The latched startup must not be App.startup. Calling it records ctx only.
-	opts.OnStartup(context.Background())
-	if app.ctx == nil || !app.darwinDocumentLatchOpen() {
-		t.Fatal("latched startup did not arm the latch")
-	}
-	if environmentCheckEntries.Load() != 0 && app.fileCompanion.startupRequested {
-		t.Fatal("latched startup committed the main app")
-	}
-}
-
-func TestApplyDesktopLaunchOptionsUsesCompanionLock(t *testing.T) {
-	app := &App{}
-	opts := &options.App{
-		Width:  100,
-		Height: 100,
-		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId: singleInstanceUniqueID(),
-		},
-		Windows: &windows.Options{WebviewUserDataPath: defaultWebviewUserDataPath()},
-	}
-	file := filepath.Join(t.TempDir(), "note.md")
-	launch := classifyDesktopLaunchForOS([]string{"MaClaw", "open-file", file}, "windows")
-	applyDesktopLaunchOptions(app, opts, launch)
-	if opts.SingleInstanceLock.UniqueId != fileCompanionLockID() {
-		t.Fatalf("lock = %q", opts.SingleInstanceLock.UniqueId)
-	}
-	if singleInstanceUniqueID() != "maclaw-lock" {
-		t.Fatalf("historical lock changed: %q", singleInstanceUniqueID())
-	}
-	if opts.Width != 1280 || opts.Height != 800 {
-		t.Fatalf("window = %dx%d", opts.Width, opts.Height)
-	}
-	if opts.StartHidden {
-		t.Fatal("open-file used the Darwin hidden latch")
-	}
-	if !opts.HideWindowOnClose {
-		t.Fatal("companion close must hide the window so open files stay in this process")
-	}
-	if goruntime.GOOS == "windows" {
-		if !strings.HasSuffix(opts.Windows.WebviewUserDataPath, "MaClaw.file-companion") {
-			t.Fatalf("webview profile = %q", opts.Windows.WebviewUserDataPath)
-		}
-	}
-	boot := app.GetFileCompanionBoot()
-	if boot.Mode != desktopLaunchFileCompanion || len(boot.Paths) != 1 || boot.Paths[0] != file {
-		t.Fatalf("boot = %#v", boot)
-	}
-}
-
 func TestStaleSingleInstanceLockIDsIncludeCompanion(t *testing.T) {
 	ids := staleSingleInstanceLockIDs()
 	if len(ids) != 2 || ids[0] != "maclaw-lock" || ids[1] != "maclaw-lock-file-companion" {
@@ -605,7 +521,7 @@ func TestFileCompanionSecondInstanceQuitRequestsQuit(t *testing.T) {
 	var shown int
 	app.processHooks.showWindow = func() { shown++ }
 
-	app.onFileCompanionSecondInstance(options.SecondInstanceData{Args: []string{"open-file", "--quit"}})
+	onFileCompanionSecondInstance3(app, []string{"open-file", "--quit"}, "")
 
 	if quits != 1 {
 		t.Fatalf("quit requests = %d, want 1", quits)
@@ -653,12 +569,7 @@ func TestSignalFileCompanionQuitSkipsTheCompanionItself(t *testing.T) {
 
 func TestFileCompanionStartupQuitRelayExitsWithoutWindow(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
-	launch := classifyDesktopLaunchForOS([]string{"MaClaw", "open-file", "--quit"}, goruntime.GOOS)
-	opts := &options.App{SingleInstanceLock: &options.SingleInstanceLock{}}
-	applyDesktopLaunchOptions(app, opts, launch)
-	if !opts.StartHidden {
-		t.Fatal("quit relay must not show a window")
-	}
+	app.seedFileCompanionQuit()
 	var quits int
 	app.processHooks.requestQuit = func(context.Context) { quits++ }
 	app.fileCompanionStartup(context.Background())
@@ -691,9 +602,7 @@ func TestLaunchFileCompanionDoesNotTouchAssistantSession(t *testing.T) {
 
 func TestFileCompanionLibraryLaunchBootsToLibraryView(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
-	launch := classifyDesktopLaunchForOS([]string{"MaClaw", "open-file", "--library"}, goruntime.GOOS)
-	opts := &options.App{SingleInstanceLock: &options.SingleInstanceLock{}}
-	applyDesktopLaunchOptions(app, opts, launch)
+	app.seedFileCompanionLibrary()
 	boot := app.GetFileCompanionBoot()
 	if !boot.Library {
 		t.Fatalf("--library boot = %#v", boot)
@@ -715,7 +624,7 @@ func TestFileCompanionSecondInstanceLibraryEmitsViewEvent(t *testing.T) {
 	var shown int
 	app.processHooks.showWindow = func() { shown++ }
 
-	app.onFileCompanionSecondInstance(options.SecondInstanceData{Args: []string{"open-file", "--library"}})
+	onFileCompanionSecondInstance3(app, []string{"open-file", "--library"}, "")
 
 	found := false
 	for _, name := range events {
@@ -743,7 +652,7 @@ func TestFileCompanionTakeLibraryViewDrainsPostBootRequest(t *testing.T) {
 	}
 	// A --library that lands after the boot read but before the window is
 	// ready must not emit an event the window has not subscribed to.
-	app.onFileCompanionSecondInstance(options.SecondInstanceData{Args: []string{"open-file", "--library"}})
+	onFileCompanionSecondInstance3(app, []string{"open-file", "--library"}, "")
 	if !app.FileCompanionTakeLibraryView() {
 		t.Fatal("take did not see the post-boot library request")
 	}

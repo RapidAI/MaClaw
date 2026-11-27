@@ -177,9 +177,7 @@ func TestRemoteGitWorktreeMergeKeepsTheWorktreeIndex(t *testing.T) {
 func remoteMergeTestTools(t *testing.T) (bash, gitBin string) {
 	t.Helper()
 	var err error
-	if bash, err = exec.LookPath("bash"); err != nil {
-		t.Skip("bash is required to run the remote merge script")
-	}
+	bash = testingUnixShell(t)
 	if gitBin, err = exec.LookPath("git"); err != nil {
 		t.Skip("git is required to run the remote merge script")
 	}
@@ -195,11 +193,9 @@ func bashPosixPath(path string) string {
 }
 
 func TestRemoteGitWorktreeMergeCommandParses(t *testing.T) {
-	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("bash is required to syntax-check the remote merge script")
-	}
+	bash := testingUnixShell(t)
 	command := remoteGitWorktreeMergeCommand("/tmp/maclaw-wt-1", "/home/testprj", 1, []string{"src/main.cpp"}, "BEGIN_marker", "END_marker")
-	out, err := exec.Command("bash", "-n", "-c", command).CombinedOutput()
+	out, err := exec.Command(bash, "-n", "-c", command).CombinedOutput()
 	if err != nil {
 		t.Fatalf("bash -n: %v\n%s\n%s", err, out, command)
 	}

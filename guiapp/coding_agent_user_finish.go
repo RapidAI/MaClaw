@@ -151,6 +151,9 @@ func formatCodingAgentResultParagraph(result v2.TaskRunResult) string {
 		}
 		return title + " did not finish."
 	case v2.TaskSkipped:
+		if mcpSkipIsReviewHandoff(result.Error) || mcpSkipIsReviewHandoff(summary) || mcpSkipIsReviewHandoff(err) {
+			return mcpReviewHandoffErrorText
+		}
 		if err != "" {
 			// A workspace-probe failure is already one sentence. Prefixing the
 			// phase title repeats the objective and brings "Skipped" back.

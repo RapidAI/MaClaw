@@ -129,7 +129,7 @@ import { formatGoalSessionPlan, suggestSessionPlanFromMessages } from "./codingS
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
 import { ContextWindowMeter } from "./ContextWindowMeter";
 import { useContextWindowUsage } from "./useContextWindowUsage";
-import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepIsFailed, codingStepPresentedLabel, codingStepStatusColor, codingChecklistAllDone, codingPlanAwaitingStart, codingStepsClockFrom, codingStepsClockIsCurrent, codingStepsSnapshotRegresses, codingSharedExecutionStatus, codingWorkbenchStepsFromPayload, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
+import { buildCodingBannerChrome, codingStepDisplayStatus, codingStepGlyph, codingStepIsActive, codingStepIsFailed, codingStepPresentedLabel, codingStepStatusColor, codingChecklistAllDone, codingPlanAwaitingStart, codingStepsClockFrom, codingStepsClockIsCurrent, codingStepsSnapshotRegresses, codingSharedExecutionStatus, codingWorkbenchStepsFromPayload, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { AssistantPureCodingEmptyState } from "./AssistantPureCodingEmptyState";
 import { NewTaskWizardWelcomePane } from "./NewTaskWizardWelcomePane";
@@ -7577,9 +7577,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                     {localizeText(lang, "Steps", "执行步骤", "執行步驟")}
                                                 </div>
                                                 {codingChecklistSteps.map((st) => {
-                                                    const icon = codingStepGlyph(st.status, taskExecutionLive);
-                                                    const color = codingStepStatusColor(st.status, codingBannerChrome);
-                                                    const statusLabel = codingStepPresentedLabel(lang, st.status, taskExecutionLive, taskExecutionStatus.label);
+                                                    const shown = codingStepDisplayStatus(st);
+                                                    const icon = codingStepGlyph(shown, taskExecutionLive);
+                                                    const color = codingStepStatusColor(shown, codingBannerChrome);
+                                                    const statusLabel = codingStepPresentedLabel(lang, shown, taskExecutionLive, taskExecutionStatus.label);
                                                     const timelineActive = codingStepIsActive(st.status) && taskExecutionLive;
                                                     // data-status=running is what the shell paints as a live row.
                                                     // Keep the raw status on data-step-status and drop that paint
@@ -7890,7 +7891,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             <SidebarToggleCluster {...sidebarToggles} lang={lang} />
                         </div>
                     )}
-                    <TaskExecutionHeading activeTab={activeTab} lang={lang} status={remoteChat ? { tone: remoteChat.canSend ? "running" : "pending", label: remoteChat.canSend ? remoteChat.machineName : localizeText(lang, remoteChat.offline ? "Offline" : "Read-only", remoteChat.offline ? "离线" : "只读", remoteChat.offline ? "離線" : "唯讀") } : (warmupChrome ? { tone: "pending", label: startupWarmup ? "" : initLabel } : taskExecutionStatus)} taskCreatedLabel={remoteChat ? "" : taskCreatedLabel} workingDirPath={remoteChat ? "" : activeTabWorkingDirPath} remoteWorkspace={remoteChat ? null : remoteWorkspace} remoteWorkspaceLabel={remoteChat ? (remoteChat.serverLabel || remoteChat.machineName) : remoteWorkspaceLabel} cloudGitRepo={remoteChat?.cloudGit?.connected ? (remoteChat.cloudGit.repo || "") : ""} title={title} />
+                    <TaskExecutionHeading activeTab={activeTab} lang={lang} status={remoteChat ? { tone: remoteChat.canSend ? "running" : "pending", label: remoteChat.canSend ? remoteChat.machineName : localizeText(lang, remoteChat.offline ? "Offline" : "Read-only", remoteChat.offline ? "离线" : "只读", remoteChat.offline ? "離線" : "唯讀") } : (warmupChrome ? { tone: "pending", label: startupWarmup ? "" : initLabel } : taskExecutionStatus)} taskCreatedLabel={remoteChat ? "" : taskCreatedLabel} workingDirPath={remoteChat ? "" : activeTabWorkingDirPath} remoteWorkspace={remoteChat ? null : remoteWorkspace} remoteWorkspaceLabel={remoteChat ? (remoteChat.serverLabel || remoteChat.machineName) : remoteWorkspaceLabel} cloudGitRepo={remoteChat?.cloudGit?.connected ? (remoteChat.cloudGit.repo || "") : ""} cloudTaskKind={remoteChat?.cloud ? (remoteChat.cloudKind || "") : ""} title={title} />
                     <div className="mc-task-execution-actions" data-testid="task-execution-actions" {...windowNoDragRegionProps()}>
                         <div className="mc-task-notification-slot" data-notification-tree="true" data-testid="task-notification-slot" {...windowNoDragRegionProps()}>
                             {/* The visible bell lives on the sidebar status row; this

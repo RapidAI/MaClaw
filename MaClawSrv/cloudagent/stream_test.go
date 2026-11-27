@@ -8,7 +8,172 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
+
+func TestPublishTurnReasoningFillsEmptyLaneOnce(t *testing.T) {
+	previous := streamCoalesce
+	streamCoalesce = 0
+	t.Cleanup(func() { streamCoalesce = previous })
+
+	var mu sync.Mutex
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	rt := openRuntime(t)
+	spec := putKind(t, rt, KindSession)
+	spec.HubLoopback = srv.URL
+	if err := rt.Put(spec); err != nil {
+		t.Fatal(err)
+	}
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.noteGrant(spec.ID, "grant-cloud")
+	host := &agentHost{rt: rt, inst: inst, task: "task-1", request: "req-1"}
+	rt.publishTurnReasoning(host, agent.LoopResult{Reasoning: "先核对天气接口"})
+	rt.publishTurnReasoning(host, agent.LoopResult{Reasoning: "不要重复"})
+	host.OnToken("\x01后来的增量")
+	rt.publish(inst, "task-1", "req-1", "response", "晴", nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	var events []string
+	for _, body := range bodies {
+		var frame map[string]any
+		if err := json.Unmarshal([]byte(body), &frame); err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, fmtString(frame["event"])+":"+fmtString(frame["text"]))
+	}
+	want := []string{"thinking:先核对天气接口", "thinking:后来的增量", "thinking:先核对天气接口后来的增量", "stream_done:", "response:晴"}
+	if len(events) != len(want) {
+		t.Fatalf("events = %v", events)
+	}
+	for i, got := range events {
+		if got != want[i] {
+			t.Fatalf("events = %v", events)
+		}
+	}
+}
+
+func TestPublishTurnReasoningAppendsUnstreamedSuffix(t *testing.T) {
+	previous := streamCoalesce
+	streamCoalesce = 0
+	t.Cleanup(func() { streamCoalesce = previous })
+
+	var mu sync.Mutex
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	rt := openRuntime(t)
+	spec := putKind(t, rt, KindSession)
+	spec.HubLoopback = srv.URL
+	if err := rt.Put(spec); err != nil {
+		t.Fatal(err)
+	}
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.noteGrant(spec.ID, "grant-cloud")
+	host := &agentHost{rt: rt, inst: inst, task: "task-1", request: "req-1"}
+	host.OnToken("\x01先 ")
+	rt.publishTurnReasoning(host, agent.LoopResult{Reasoning: "先核对"})
+	rt.publishTurnReasoning(host, agent.LoopResult{Reasoning: "另一段"})
+	rt.publish(inst, "task-1", "req-1", "response", "晴", nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	var events []string
+	for _, body := range bodies {
+		var frame map[string]any
+		if err := json.Unmarshal([]byte(body), &frame); err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, fmtString(frame["event"])+":"+fmtString(frame["text"]))
+	}
+	want := []string{"thinking:先 ", "thinking:核对", "thinking:先 核对", "stream_done:", "response:晴"}
+	if len(events) != len(want) {
+		t.Fatalf("events = %v", events)
+	}
+	for i, got := range events {
+		if got != want[i] {
+			t.Fatalf("events = %v", events)
+		}
+	}
+}
+
+func TestPublishTurnReasoningUsesHistoryWhenLiveLaneEmpty(t *testing.T) {
+	previous := streamCoalesce
+	streamCoalesce = 0
+	t.Cleanup(func() { streamCoalesce = previous })
+
+	var mu sync.Mutex
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	rt := openRuntime(t)
+	spec := putKind(t, rt, KindSession)
+	spec.HubLoopback = srv.URL
+	if err := rt.Put(spec); err != nil {
+		t.Fatal(err)
+	}
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.noteGrant(spec.ID, "grant-cloud")
+	host := &agentHost{rt: rt, inst: inst, task: "task-1", request: "req-1"}
+	rt.publishTurnReasoning(host, agent.LoopResult{HistoryDelta: []agent.ConversationEntry{{
+		Role:             "assistant",
+		ReasoningContent: "历史里的思考",
+	}}})
+	rt.publish(inst, "task-1", "req-1", "response", "晴", nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	var events []string
+	for _, body := range bodies {
+		var frame map[string]any
+		if err := json.Unmarshal([]byte(body), &frame); err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, fmtString(frame["event"])+":"+fmtString(frame["text"]))
+	}
+	want := []string{"thinking:历史里的思考", "thinking:历史里的思考", "stream_done:", "response:晴"}
+	if len(events) != len(want) {
+		t.Fatalf("events = %v", events)
+	}
+	for i, got := range events {
+		if got != want[i] {
+			t.Fatalf("events = %v", events)
+		}
+	}
+}
 
 func TestStreamPublishesViewerFrameWithoutProjectPath(t *testing.T) {
 	previous := streamCoalesce

@@ -3,8 +3,8 @@ package guiapp
 import (
 	"testing"
 
-	"github.com/wailsapp/wails/v2/pkg/maclawcapture"
-	"github.com/wailsapp/wails/v2/pkg/maclawplayer"
+	"github.com/RapidAI/CodeClaw/guiapp/internal/maclawcapture"
+	"github.com/RapidAI/CodeClaw/guiapp/internal/maclawplayer"
 )
 
 type fakePlayerHost struct {

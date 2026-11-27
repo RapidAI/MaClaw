@@ -157,6 +157,8 @@ export type RemoteAssistantSession = {
     taskName: string;
     /** Cloud agent task projected through this channel — the UI says 云端, not 对方电脑. */
     cloud?: boolean;
+    /** Cloud agent instance kind: "coding" or "session". Absent for a remote desktop. */
+    cloudKind?: string;
     /** Which maclawsrv runs this cloud task: private node address or the official service label. */
     serverLabel?: string;
     /** Coding-instance repository binding; absent for session instances. */

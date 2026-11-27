@@ -326,6 +326,7 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 	// The change set lands on the trail before any terminal, so every
 	// ending (answer, ask, failure) carries what the turn wrote.
 	rt.emitCodingDiffSummary(inst, taskID, requestID, host.fileChangeFacts())
+	rt.publishTurnReasoning(host, result)
 	if len(files) > 0 {
 		slog.Info("cloudagent turn produced files",
 			slog.String("instance", inst.meta.ID), slog.String("task", taskID),
@@ -534,6 +535,9 @@ type agentHost struct {
 	// iterationExtensions counts the extra waves this turn was granted
 	// after spending its configured iteration budget.
 	iterationExtensions int
+	// streamedThinking is the reasoning text already published for this turn.
+	// The terminal frame only sends a suffix the live deltas did not carry.
+	streamedThinking strings.Builder
 }
 
 // hostWriteEvent is one write_file call's canonical path and exact line
@@ -798,12 +802,85 @@ func cloudBashMayWriteWorkspace(argv []string, command string) bool {
 	return true
 }
 
+// syncRoot adopts a checkout that ConnectGit published. Callers hold
+// jailMu and have already waited until no other workspace write is in
+// flight, so the fold cannot rename a file another call is still using.
+// The root only moves into a child checkout; files already written under
+// the old root move with it, keeping the same relative names the book
+// and the artifact cards use. A turn constructed on that checkout still
+// folds files left in the parent workspace: git.json can land before the
+// merge, and a commit on the adopted root would otherwise miss them.
+// Another directory this turn already adopted is left alone. A wider root
+// (git disconnected) stays put for this turn so a path recorded against
+// the checkout is not orphaned.
+func (h *agentHost) syncRoot() {
+	if h == nil || h.inst == nil || h.inst.dir == "" {
+		return
+	}
+	kind := h.inst.meta.Kind
+	if kind == "" {
+		kind = KindSession
+		if h.coding {
+			kind = KindCoding
+		}
+	}
+	root, err := jailRoot(h.inst.dir, kind)
+	if err != nil {
+		return
+	}
+	root = filepath.Clean(root)
+	workspace := filepath.Clean(filepath.Join(h.inst.dir, "workspace"))
+	// insideRoot is true for a path equal to its root. A checkout is the
+	// directory strictly under the workspace.
+	checkout := root != workspace && insideRoot(workspace, root)
+	// Clean("") is ".". Decide emptiness before cleaning h.root.
+	if strings.TrimSpace(h.root) == "" {
+		if checkout {
+			mergeWorkspaceLoose(workspace, root, "", h.inst.meta.ID)
+		}
+		h.root = root
+		return
+	}
+	old := filepath.Clean(h.root)
+	if root == old {
+		if checkout {
+			mergeWorkspaceLoose(workspace, root, "", h.inst.meta.ID)
+		}
+		return
+	}
+	if !insideRoot(old, root) {
+		return
+	}
+	mergeWorkspaceLoose(old, root, "", h.inst.meta.ID)
+	h.root = root
+}
+
+// beginTurnJail adopts the published checkout, then keeps this call in
+// flight until it returns. The work itself does not hold jailMu, so a
+// file fetch is not stuck behind a compile or a push approval. ConnectGit
+// still cannot publish a new root between the snapshot and the write.
+func (h *agentHost) beginTurnJail() func() {
+	if h == nil || h.inst == nil {
+		if h != nil {
+			h.syncRoot()
+		}
+		return func() {}
+	}
+	h.inst.lockJailIdle()
+	defer h.inst.jailMu.Unlock()
+	h.syncRoot()
+	h.inst.jailInflight++
+	return h.inst.endJailWork
+}
+
 // runTool returns the tool result and whether the call failed — the second
 // value feeds the tool_finished outcome, which a result string alone
 // cannot decide (an error body and output that mentions errors look alike).
 func (h *agentHost) runTool(name, argsJSON string) (string, bool) {
 	// A stale write operand must never attach to another tool's finished event.
 	h.lastWrite = hostWriteEvent{}
+	end := h.beginTurnJail()
+	defer end()
 	switch name {
 	case "bash":
 		out, failed := h.rt.execBash(h.turn, h.inst, h.root, argsJSON)
@@ -815,7 +892,7 @@ func (h *agentHost) runTool(name, argsJSON string) (string, bool) {
 		}
 		return out, failed
 	case "read_file":
-		return h.rt.execReadFile(h.inst, argsJSON)
+		return h.rt.execReadFile(h.inst, h.root, argsJSON)
 	case "write_file":
 		out, path, created, added, removed, hasCounts, baseline, baselineOK := h.rt.execWriteFile(h.inst, h.root, argsJSON)
 		if path != "" {
@@ -831,13 +908,13 @@ func (h *agentHost) runTool(name, argsJSON string) (string, bool) {
 			Message string `json:"message"`
 		}
 		_ = json.Unmarshal([]byte(argsJSON), &body)
-		text, err := h.rt.Commit(h.turn, h.inst.meta.ID, body.Message)
+		text, err := h.rt.commitAt(h.turn, h.inst.meta.ID, h.root, body.Message)
 		if err != nil {
 			return err.Error(), true
 		}
 		return text, false
 	case "git_push":
-		text, err := h.rt.Push(h.turn, h.inst.meta.ID, h.task)
+		text, err := h.rt.pushAt(h.turn, h.inst.meta.ID, h.task, h.root)
 		if err != nil {
 			if strings.TrimSpace(text) != "" {
 				// The push parked on human approval — the tool ran its part.
@@ -857,10 +934,49 @@ func (h *agentHost) OnToken(delta string) {
 		// Reasoning deltas ride OnToken behind the sentinel. Forward them as
 		// thinking events so viewers fold them into the thinking block like
 		// the local transcript does, not into the answer body.
-		h.rt.publish(h.inst, h.task, h.request, "thinking", delta[1:], map[string]any{"state": "delta"})
+		body := delta[1:]
+		if body != "" {
+			h.streamedThinking.WriteString(body)
+			h.rt.publish(h.inst, h.task, h.request, "thinking", body, map[string]any{"state": "delta"})
+		}
 		return
 	}
 	h.rt.publish(h.inst, h.task, h.request, "token", delta, nil)
+}
+
+// publishTurnReasoning fills thinking that the live deltas never carried.
+// A finished snapshot that only repeats those deltas is left alone. A
+// snapshot that continues them publishes the missing suffix once.
+func (rt *Runtime) publishTurnReasoning(host *agentHost, result agent.LoopResult) {
+	if rt == nil || host == nil {
+		return
+	}
+	text := reasoningSnapshotDelta(host.streamedThinking.String(), agentruntime.DisplayReasoning(result))
+	if text == "" {
+		return
+	}
+	host.streamedThinking.WriteString(text)
+	rt.publish(host.inst, host.task, host.request, "thinking", text, map[string]any{"state": "delta"})
+}
+
+// reasoningSnapshotDelta returns the part of a full thought snapshot that
+// streamed deltas have not already published. A repeat contributes nothing.
+func reasoningSnapshotDelta(have, next string) string {
+	next = strings.TrimSpace(next)
+	if next == "" || strings.Contains(have, next) {
+		return ""
+	}
+	if have == "" {
+		return next
+	}
+	if strings.HasPrefix(next, have) {
+		return next[len(have):]
+	}
+	trimmed := strings.TrimSpace(have)
+	if trimmed != "" && strings.HasPrefix(next, trimmed) {
+		return strings.TrimSpace(next[len(trimmed):])
+	}
+	return ""
 }
 func (h *agentHost) OnProgress(text string) {
 	h.rt.publish(h.inst, h.task, h.request, "progress", text, nil)
@@ -952,6 +1068,8 @@ func (h *agentHost) noteFileBaseline(abs, baseline string, ok bool) {
 }
 
 func (h *agentHost) fileChangeFacts() []codingagent.FinalAnswerFileChangeFact {
+	end := h.beginTurnJail()
+	defer end()
 	if len(h.fileChanges) == 0 {
 		return nil
 	}
@@ -1030,6 +1148,8 @@ const producedScanEntries = 20000
 // any workspace file whose mtime landed inside the turn window, which is how
 // files a bash command generated still reach the card.
 func (h *agentHost) producedFiles() []string {
+	end := h.beginTurnJail()
+	defer end()
 	seen := map[string]bool{}
 	for rel := range h.files {
 		seen[rel] = true
@@ -1098,14 +1218,16 @@ func (rt *Runtime) execBash(ctx context.Context, inst *instance, root, argsJSON 
 	return string(out), false
 }
 
-func (rt *Runtime) execReadFile(inst *instance, argsJSON string) (string, bool) {
+func (rt *Runtime) execReadFile(inst *instance, root, argsJSON string) (string, bool) {
 	var body struct {
 		Path string `json:"path"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &body); err != nil {
 		return "路径无效", true
 	}
-	raw, err := rt.fetchFile(inst, body.Path)
+	// Read the root this turn just adopted. A fresh jailRoot() here would
+	// look inside a checkout the write has not moved into yet.
+	raw, err := rt.readWorkspaceFile(inst, root, body.Path)
 	if err != nil {
 		return err.Error(), true
 	}

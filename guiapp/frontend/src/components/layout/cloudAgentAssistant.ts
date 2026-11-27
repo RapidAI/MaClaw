@@ -425,6 +425,7 @@ function publishOwner() {
         projectPath: `cloud-agent:${current.item.id}`,
         taskName: current.item.name || current.item.id,
         cloud: true,
+        cloudKind: current.item.kind === 'coding' ? 'coding' : 'session',
         canSend: !!current.grant,
         offline: false,
         error: current.error,

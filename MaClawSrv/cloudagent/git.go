@@ -109,8 +109,30 @@ func (rt *Runtime) GitView(id string) GitPublic {
 	return secret.public()
 }
 
+// jailConnectHook runs after ConnectGit has waited for in-flight workspace
+// writes and taken jailMu, before the checkout is published. Tests use it
+// to show a write still in flight keeps the publish from starting.
+// Production leaves it nil. The hook runs under jailMu and must not take it.
+var jailConnectHook func()
+
+// jailInflightWaitHook runs when a publish is about to sleep because a
+// workspace write is still in flight. Tests use it as the deterministic
+// signal that the wait exists. Production leaves it nil. The hook runs
+// under jailMu and must not take it.
+var jailInflightWaitHook func()
+
+// connectGitWriteHook runs after the checkout directory is in place and
+// before git.json is written. Tests use it to fail that write. Production
+// leaves it nil. The hook runs under jailMu and must not take it.
+var connectGitWriteHook func() error
+
 // ConnectGit stores a coding credential and checks out the one primary repo.
-// A session instance is refused before any file is written.
+// A session instance is refused before any file is written. The network
+// clone finishes before the jail is locked. The lock covers only the
+// moment loose files move into the checkout and git.json appears, and it
+// starts only after every workspace write that already chose a root has
+// finished. Otherwise the turn keeps writing beside the repo and the
+// artifact fetch looks inside it.
 func (rt *Runtime) ConnectGit(ctx context.Context, id string, in GitConnect) (GitPublic, error) {
 	inst, err := rt.instance(id)
 	if err != nil {
@@ -123,11 +145,46 @@ func (rt *Runtime) ConnectGit(ctx context.Context, id string, in GitConnect) (Gi
 	if err != nil {
 		return GitPublic{}, err
 	}
-	if err := rt.checkout(ctx, inst, secret); err != nil {
+	staged, err := rt.stageClone(ctx, inst, secret)
+	if err != nil {
 		return GitPublic{}, err
 	}
-	if err := writeGit(inst.dir, secret); err != nil {
+	defer func() {
+		if staged != "" {
+			_ = os.RemoveAll(staged)
+		}
+	}()
+	inst.lockJailIdle()
+	defer inst.jailMu.Unlock()
+	if jailConnectHook != nil {
+		jailConnectHook()
+	}
+	pub, err := rt.adoptClone(ctx, inst, secret, staged)
+	if pub.consumed {
+		staged = ""
+	}
+	if err != nil {
 		return GitPublic{}, err
+	}
+	// git.json lands before loose files move. A failed write rolls the
+	// checkout back, so the agent's files stay at the paths the open jail
+	// already serves. Readers wait on jailMu and never see the gap.
+	if connectGitWriteHook != nil {
+		if err := connectGitWriteHook(); err != nil {
+			if pub.rollback != nil {
+				pub.rollback()
+			}
+			return GitPublic{}, err
+		}
+	}
+	if err := writeGit(inst.dir, secret); err != nil {
+		if pub.rollback != nil {
+			pub.rollback()
+		}
+		return GitPublic{}, err
+	}
+	if pub.merge != nil {
+		pub.merge()
 	}
 	return secret.public(), nil
 }
@@ -141,6 +198,11 @@ func (rt *Runtime) DisconnectGit(id string) error {
 	if inst.meta.Kind != KindCoding {
 		return errSessionGit
 	}
+	// Dropping git.json widens the jail back to the workspace. Wait out a
+	// write that already chose the checkout path, so the two don't publish
+	// opposite roots at the same time.
+	inst.lockJailIdle()
+	defer inst.jailMu.Unlock()
 	err = os.Remove(gitPath(inst.dir))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -293,121 +355,189 @@ func writeGit(dir string, secret gitSecret) error {
 // over any include.path a scripted config edit might add.
 const noHooks = "core.hooksPath=" + os.DevNull
 
-// checkout clones the one primary repository into workspace/<name>.
-// A second repository is refused. The token is passed only through askpass.
-func (rt *Runtime) checkout(ctx context.Context, inst *instance, secret gitSecret) error {
+// stageClone clones into a directory beside the workspace, not inside it,
+// so a turn can keep writing the old root while the network copy runs.
+// An empty path means the checkout is already present and only the
+// published identity needs a refresh. The caller deletes the staging
+// directory unless adoptClone consumed it.
+func (rt *Runtime) stageClone(ctx context.Context, inst *instance, secret gitSecret) (string, error) {
 	if _, err := exec.LookPath("git"); err != nil {
-		return errors.New("这台机器没有 git")
-	}
-	workspace := filepath.Join(inst.dir, "workspace")
-	if err := os.MkdirAll(workspace, 0o755); err != nil {
-		return err
+		return "", errors.New("这台机器没有 git")
 	}
 	name, err := repoDirName(secret.Repo)
 	if err != nil {
-		return err
+		return "", err
 	}
-	secrets := secretValues(inst.dir)
-	if token := strings.TrimSpace(secret.Token); token != "" {
-		secrets = append(secrets, token)
-	}
-	dest := filepath.Join(workspace, name)
+	dest := filepath.Join(inst.dir, "workspace", name)
 	// The stored binding decides what "already connected" means. A scripted
 	// .git directory cannot forge git.json (it lives outside the jail), so
 	// fake checkouts demote to ordinary loose files and never block a
 	// connect; a bound instance still refuses a second repository.
 	if prev, err := readGit(inst.dir); err == nil {
 		if prev.Repo != secret.Repo {
-			return errors.New("这个实例已经有一个代码库")
+			return "", errors.New("这个实例已经有一个代码库")
 		}
 		if info, statErr := os.Stat(filepath.Join(dest, ".git")); statErr == nil && info.IsDir() {
-			return setLocalIdentity(ctx, dest, secret, secrets)
+			return "", nil
 		}
 		// Bound but the checkout was lost — fall through and re-clone.
+	}
+	if err := os.MkdirAll(filepath.Join(inst.dir, "workspace"), 0o755); err != nil {
+		return "", err
+	}
+	// The staging directory sits beside the workspace, not inside it, and its
+	// name stays shorter than "workspace/<repo>". A longer name pushes git's
+	// pack files over the Windows MAX_PATH limit in tests, where the instance
+	// directory is already a deep Temp path.
+	staged := ""
+	for i := 0; i < 5; i++ {
+		id := newID("")
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		candidate := filepath.Join(inst.dir, ".c"+id)
+		if _, statErr := os.Stat(candidate); os.IsNotExist(statErr) {
+			staged = candidate
+			break
+		}
+	}
+	if staged == "" {
+		return "", errors.New("检出代码库失败")
+	}
+	args := []string{"clone"}
+	if secret.Ref != "" {
+		args = append(args, "--branch", secret.Ref)
+	}
+	args = append(args, "--", secret.Clone, staged)
+	secrets := gitSecrets(inst.dir, secret)
+	if err := withAskpass(inst.dir, secret, secrets, func(env []string) error {
+		out, runErr := gitRun(ctx, inst.dir, env, cloneTimeout, args...)
+		if runErr != nil {
+			return errors.New(scrubToken(secret, out+" "+runErr.Error()))
+		}
+		return nil
+	}); err != nil {
+		_ = os.RemoveAll(staged)
+		return "", errors.New("检出代码库失败: " + err.Error())
+	}
+	return staged, nil
+}
+
+// clonePublish is a checkout placed on disk whose binding is not written yet.
+// rollback removes that checkout and puts a stashed workspace directory back.
+// merge folds loose files in. The caller writes git.json between the two,
+// and must not call both: merge empties the stash rollback needs.
+type clonePublish struct {
+	consumed bool
+	rollback func()
+	merge    func()
+}
+
+// adoptClone places staged at workspace/<repo> and records how to undo that
+// or fold loose files in. It does not write git.json and does not merge.
+// The caller holds jailMu after lockJailIdle. consumed reports that staged
+// was renamed into the workspace and must not be deleted by the caller,
+// including when a later step restores the previous directory.
+func (rt *Runtime) adoptClone(ctx context.Context, inst *instance, secret gitSecret, staged string) (clonePublish, error) {
+	name, err := repoDirName(secret.Repo)
+	if err != nil {
+		return clonePublish{}, err
+	}
+	workspace := filepath.Join(inst.dir, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		return clonePublish{}, err
+	}
+	dest := filepath.Join(workspace, name)
+	secrets := gitSecrets(inst.dir, secret)
+	// Recheck under the lock. A second connect can win the clone race.
+	if prev, err := readGit(inst.dir); err == nil {
+		if prev.Repo != secret.Repo {
+			return clonePublish{}, errors.New("这个实例已经有一个代码库")
+		}
+		if info, statErr := os.Stat(filepath.Join(dest, ".git")); statErr == nil && info.IsDir() {
+			return clonePublish{}, setLocalIdentity(ctx, dest, secret, secrets)
+		}
+		if staged == "" {
+			return clonePublish{}, errors.New("检出代码库失败: 工作区里的代码库不见了")
+		}
+	}
+	if staged == "" {
+		return clonePublish{}, errors.New("检出代码库失败")
 	}
 	// A repo-less turn can leave a workspace directory named exactly like the
 	// repository. It is not a checkout (those were caught above), so park it
 	// aside and merge its contents back after the clone lands. The stash name
 	// is unique: a stale .pre-checkout leftover must not block the rename.
 	stash := ""
-	if _, err := os.Stat(dest); err == nil {
+	if _, err := os.Lstat(dest); err == nil {
 		// A loose FILE named like the repo parks the same way — renaming
 		// works for files too, and the sweep below carries it into the
 		// clone instead of deleting it.
 		stash = dest + ".pre-checkout-" + newID("")
 		if err := os.Rename(dest, stash); err != nil {
-			return errors.New("检出目录已经存在")
+			return clonePublish{}, errors.New("检出目录已经存在")
 		}
 	}
 	restore := func() {
-		_ = os.RemoveAll(dest)
-		if stash != "" {
-			_ = os.Rename(stash, dest)
+		if err := os.RemoveAll(dest); err != nil {
+			slog.Warn("cloudagent checkout rollback remove failed",
+				slog.String("instance", inst.meta.ID), slog.String("path", dest),
+				slog.String("reason", err.Error()))
+		}
+		if stash == "" {
+			return
+		}
+		if err := os.Rename(stash, dest); err != nil {
+			slog.Warn("cloudagent checkout rollback restore failed",
+				slog.String("instance", inst.meta.ID), slog.String("path", stash),
+				slog.String("reason", err.Error()))
 		}
 	}
-	args := []string{"clone"}
-	if secret.Ref != "" {
-		args = append(args, "--branch", secret.Ref)
-	}
-	args = append(args, "--", secret.Clone, dest)
-	if err := withAskpass(inst.dir, secret, secrets, func(env []string) error {
-		out, runErr := gitRun(ctx, workspace, env, cloneTimeout, args...)
-		if runErr != nil {
-			return errors.New(scrubToken(secret, out+" "+runErr.Error()))
-		}
-		return nil
-	}); err != nil {
+	if err := os.Rename(staged, dest); err != nil {
 		restore()
-		return errors.New("检出代码库失败: " + err.Error())
+		return clonePublish{}, errors.New("检出代码库失败: " + err.Error())
 	}
 	if err := setLocalIdentity(ctx, dest, secret, secrets); err != nil {
 		restore()
-		return err
+		return clonePublish{consumed: true}, err
 	}
-	mergeWorkspaceLoose(workspace, dest, stash, inst.meta.ID)
-	return nil
+	return clonePublish{
+		consumed: true,
+		rollback: restore,
+		merge: func() {
+			mergeWorkspaceLoose(workspace, dest, stash, inst.meta.ID)
+		},
+	}, nil
+}
+
+func gitSecrets(dir string, secret gitSecret) []string {
+	secrets := secretValues(dir)
+	if token := strings.TrimSpace(secret.Token); token != "" {
+		secrets = append(secrets, token)
+	}
+	return secrets
 }
 
 // mergeWorkspaceLoose folds pre-checkout work into the fresh clone. While no
 // repository was connected the jail root was the workspace itself, so loose
 // files sit at its top level; once the checkout lands the root moves into it
-// and unmoved files would silently leave the jail. Entries move one by one;
-// when a loose entry collides with clone content the clone keeps the name
-// and the loose copy lands beside it as <name>.pre-checkout, so nothing the
-// agent wrote is ever deleted or stranded outside the jail.
+// and unmoved files would silently leave the jail. A loose directory whose
+// name already exists in the clone is merged, so a book key such as
+// snake/game.cpp still resolves. A file collision keeps the clone's bytes
+// and parks the loose copy beside it as <name>.pre-checkout. Nothing the
+// agent wrote is deleted. A directory named .git is not placed by itself:
+// beside the real .git, or inside a folder the clone already has, `git add
+// -A` would treat it as the object store or as a nested repository and skip
+// the source files next to it. A .git nested in a directory the clone does
+// not have yet still rides along when that directory renames wholesale.
 func mergeWorkspaceLoose(workspace, dest, stash, instanceID string) {
-	move := func(from string) {
-		// A bare gitdir never merges into the clone: at the top level it
-		// would land beside the real .git and `git add -A` would sweep its
-		// objects into the index as junk files. Left in place it instead
-		// rides into the repo inside its stash dir as an embedded repo.
-		if filepath.Base(from) == ".git" {
-			return
-		}
-		target := filepath.Join(dest, filepath.Base(from))
-		// os.Rename replaces an existing target on POSIX — check first so the
-		// clone's own files win collisions on every platform.
-		if _, err := os.Lstat(target); err == nil {
-			target += ".pre-checkout"
-			if _, err := os.Lstat(target); err == nil {
-				slog.Warn("cloudagent checkout merge kept clone entry",
-					slog.String("instance", instanceID), slog.String("path", filepath.Base(from)))
-				return
-			}
-		}
-		if err := os.Rename(from, target); err != nil {
-			slog.Warn("cloudagent checkout merge skipped entry",
-				slog.String("instance", instanceID), slog.String("path", filepath.Base(from)),
-				slog.String("reason", err.Error()))
-		}
-	}
 	if stash != "" {
 		// A parked file has no entries to merge — the sweep below moves it
-		// into the repo wholesale. Only directories get emptied by move.
-		if info, err := os.Stat(stash); err == nil && info.IsDir() {
+		// into the repo wholesale. Only directories get emptied here.
+		if info, err := os.Lstat(stash); err == nil && plainDir(info) {
 			if entries, err := os.ReadDir(stash); err == nil {
 				for _, entry := range entries {
-					move(filepath.Join(stash, entry.Name()))
+					placeLoose(filepath.Join(stash, entry.Name()), dest, instanceID)
 				}
 			}
 			// Remove only when empty: colliding leftovers stay put and the
@@ -419,12 +549,87 @@ func mergeWorkspaceLoose(workspace, dest, stash, instanceID string) {
 	if err != nil {
 		return
 	}
+	destClean := filepath.Clean(dest)
 	for _, entry := range entries {
-		if filepath.Join(workspace, entry.Name()) == dest {
+		from := filepath.Join(workspace, entry.Name())
+		if filepath.Clean(from) == destClean {
 			continue
 		}
-		move(filepath.Join(workspace, entry.Name()))
+		placeLoose(from, dest, instanceID)
 	}
+}
+
+// placeLoose moves from into into. A directory whose name is exactly .git
+// stays where it is, including inside a directory being merged: renaming it
+// into the clone plants a nested repository and `git add -A` then skips the
+// source files beside it. On a case-insensitive volume ".GIT" is the same
+// directory once the target exists, so that name stays outside too. A
+// ".GIT" whose target does not exist is a different directory and still
+// moves. Directory pairs merge so relative names survive; anything else
+// that collides parks the loose entry as <name>.pre-checkout. Links are
+// not followed: a checkout symlink must not receive the loose tree.
+func placeLoose(from, into string, instanceID string) {
+	base := filepath.Base(from)
+	if base == ".git" {
+		return
+	}
+	target := filepath.Join(into, base)
+	fromClean := filepath.Clean(from)
+	if fromClean == filepath.Clean(target) || fromClean == filepath.Clean(into) {
+		return
+	}
+	targetInfo, targetErr := os.Lstat(target)
+	fromInfo, fromErr := os.Lstat(from)
+	if fromErr != nil {
+		slog.Warn("cloudagent checkout merge skipped entry",
+			slog.String("instance", instanceID), slog.String("path", from),
+			slog.String("reason", fromErr.Error()))
+		return
+	}
+	if strings.EqualFold(base, ".git") && targetErr == nil {
+		// Parking ".GIT" as .git.pre-checkout would put the foreign object
+		// store inside the work tree, where git add commits it.
+		return
+	}
+	// Two git directories are not merged: mixing object stores corrupts
+	// the clone. A nested git dir whose parent is new still renames
+	// wholesale below, because its target does not exist yet.
+	if targetErr == nil && plainDir(targetInfo) && plainDir(fromInfo) && !strings.EqualFold(base, ".git") {
+		entries, err := os.ReadDir(from)
+		if err != nil {
+			slog.Warn("cloudagent checkout merge skipped entry",
+				slog.String("instance", instanceID), slog.String("path", from),
+				slog.String("reason", err.Error()))
+			return
+		}
+		for _, entry := range entries {
+			placeLoose(filepath.Join(from, entry.Name()), target, instanceID)
+		}
+		_ = os.Remove(from)
+		return
+	}
+	if targetErr == nil {
+		target += ".pre-checkout"
+		if _, err := os.Lstat(target); err == nil {
+			slog.Warn("cloudagent checkout merge kept clone entry",
+				slog.String("instance", instanceID), slog.String("path", from))
+			return
+		}
+	} else if !os.IsNotExist(targetErr) {
+		slog.Warn("cloudagent checkout merge skipped entry",
+			slog.String("instance", instanceID), slog.String("path", from),
+			slog.String("reason", targetErr.Error()))
+		return
+	}
+	if err := os.Rename(from, target); err != nil {
+		slog.Warn("cloudagent checkout merge skipped entry",
+			slog.String("instance", instanceID), slog.String("path", from),
+			slog.String("reason", err.Error()))
+	}
+}
+
+func plainDir(info os.FileInfo) bool {
+	return info.IsDir() && info.Mode()&(os.ModeSymlink|os.ModeIrregular) == 0
 }
 
 func setLocalIdentity(ctx context.Context, repo string, secret gitSecret, secrets []string) error {
@@ -438,9 +643,17 @@ func setLocalIdentity(ctx context.Context, repo string, secret gitSecret, secret
 	return nil
 }
 
-// Commit stages tracked changes and commits with the repo-local author.
+// Commit stages the published jail and commits with the repo-local author.
 // It does not push.
 func (rt *Runtime) Commit(ctx context.Context, id, message string) (string, error) {
+	return rt.commitAt(ctx, id, "", message)
+}
+
+// commitAt commits root when the caller already adopted one. The HTTP path
+// passes an empty root and uses the published jail. A turn passes the root
+// it has been writing, so the commit stays on that tree when jailRoot names
+// a different directory. A missing git.json still refuses.
+func (rt *Runtime) commitAt(ctx context.Context, id, root, message string) (string, error) {
 	inst, err := rt.instance(id)
 	if err != nil {
 		return "", err
@@ -452,11 +665,24 @@ func (rt *Runtime) Commit(ctx context.Context, id, message string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	root, err := jailRoot(inst.dir, KindCoding)
+	root, err = resolveWorkRoot(inst, root)
 	if err != nil {
 		return "", err
 	}
 	return commitRepo(ctx, root, secret, message, secretValues(inst.dir))
+}
+
+// resolveWorkRoot keeps an adopted root when it is inside the workspace.
+// An empty root is the published jail, which is what HTTP commit and push use.
+func resolveWorkRoot(inst *instance, root string) (string, error) {
+	if strings.TrimSpace(root) == "" {
+		return jailRoot(inst.dir, KindCoding)
+	}
+	root = filepath.Clean(root)
+	if !insideRoot(filepath.Join(inst.dir, "workspace"), root) {
+		return "", errJail
+	}
+	return root, nil
 }
 
 func commitRepo(ctx context.Context, repo string, secret gitSecret, message string, secrets []string) (string, error) {
@@ -547,6 +773,12 @@ func secretCommitPath(name string) bool {
 // Push publishes the current branch only after the commit gate allows it.
 // A nil gate refuses. An unknown receipt is not success.
 func (rt *Runtime) Push(ctx context.Context, id, taskID string) (string, error) {
+	return rt.pushAt(ctx, id, taskID, "")
+}
+
+// pushAt publishes root. An empty root is the published jail. A turn passes
+// the checkout it adopted, under the same binding rule as commitAt.
+func (rt *Runtime) pushAt(ctx context.Context, id, taskID, root string) (string, error) {
 	inst, err := rt.instance(id)
 	if err != nil {
 		return "", err
@@ -558,7 +790,7 @@ func (rt *Runtime) Push(ctx context.Context, id, taskID string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	root, err := jailRoot(inst.dir, KindCoding)
+	root, err = resolveWorkRoot(inst, root)
 	if err != nil {
 		return "", err
 	}

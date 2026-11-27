@@ -1922,7 +1922,32 @@ func openAIProxyChatResponseToResponses(body []byte, model string) ([]byte, erro
 		choice := mapFromAny(choices[0])
 		msg := mapFromAny(choice["message"])
 		if msg != nil {
-			if text := openAIProxyResponsesContentToText(msg["content"]); strings.TrimSpace(text) != "" {
+			// Chat completions keep the thought beside the answer. The
+			// Responses client only renders a reasoning output item, so a
+			// cloud turn otherwise loses 思考过程 on the JSON fallback path.
+			// A content-part list can carry the same thought under type
+			// thinking; that text stays out of the answer.
+			_, contentReasoning := OpenAIChatContent(msg["content"])
+			// A hosted model can put one part of the thought in
+			// reasoning_content and another in a content thinking part.
+			// The desktop parser keeps both when neither already contains
+			// the other. Repeating the same text stays one thought.
+			reasoning := openAIMergeReasoning(openAIProxyMessageReasoning(msg), contentReasoning)
+			if reasoning != "" {
+				output = append(output, map[string]interface{}{
+					"type": "reasoning",
+					"id":   "rs_0",
+					"summary": []interface{}{map[string]interface{}{
+						"type": "summary_text",
+						"text": reasoning,
+					}},
+				})
+			}
+			// Drop thinking parts before the answer extraction. Their text is
+			// the thought above. Every other part stays on the answer path
+			// this converter already used.
+			text := openAIProxyResponsesContentToText(openAIChatWithoutThinking(msg["content"]))
+			if strings.TrimSpace(text) != "" {
 				output = append(output, map[string]interface{}{
 					"type":    "message",
 					"id":      "msg_0",
@@ -1983,6 +2008,286 @@ func openAIProxyChatResponseToResponses(body []byte, model string) ([]byte, erro
 		return nil, fmt.Errorf("marshal responses response: %w", err)
 	}
 	return data, nil
+}
+
+func openAIProxyMessageReasoning(msg map[string]interface{}) string {
+	if msg == nil {
+		return ""
+	}
+	for _, key := range []string{"reasoning_content", "reasoning", "thinking"} {
+		if text := OpenAIReasoningValue(msg[key]); strings.TrimSpace(text) != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+// OpenAIReasoningValue reads one reasoning field. Providers send a string, a
+// list of parts, or a reasoning item whose text sits under summary, thinking,
+// or content. A request control ({effort, summary:"auto"}) is not a thought:
+// its summary enum must not hide the parts beside it, and it must not become
+// the thought by itself.
+func OpenAIReasoningValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		if typed != "" {
+			return typed
+		}
+	case []any:
+		return openAIReasoningParts(len(typed), func(i int) any { return typed[i] })
+	case []map[string]any:
+		return openAIReasoningParts(len(typed), func(i int) any { return typed[i] })
+	case map[string]any:
+		for _, key := range []string{"summary", "thinking", "content", "reasoning"} {
+			child := typed[key]
+			if child == nil {
+				continue
+			}
+			if _, isString := child.(string); isString {
+				continue
+			}
+			if text := OpenAIReasoningValue(child); text != "" {
+				return text
+			}
+		}
+		if openAIReasoningControlEcho(typed) {
+			return ""
+		}
+		for _, key := range []string{"text", "thinking", "content", "reasoning", "summary"} {
+			text, ok := typed[key].(string)
+			if ok && strings.TrimSpace(text) != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func openAIReasoningParts(n int, at func(int) any) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		if text := OpenAIReasoningValue(at(i)); text != "" {
+			b.WriteString(text)
+		}
+	}
+	return b.String()
+}
+
+// OpenAIChatContent splits one chat content value into the answer and the
+// thought. A string is the answer, including ordinary narration. A list of
+// parts keeps text parts in the answer and thinking/reasoning parts in the
+// thought, so a hosted reasoning trace is not dropped and is not shown as
+// the reply.
+func OpenAIChatContent(value any) (answer, reasoning string) {
+	switch typed := value.(type) {
+	case nil:
+		return "", ""
+	case string:
+		return typed, ""
+	case []any:
+		return openAIChatContentList(len(typed), func(i int) any { return typed[i] })
+	case []map[string]any:
+		return openAIChatContentList(len(typed), func(i int) any { return typed[i] })
+	case map[string]any:
+		return openAIChatContentPart(typed)
+	default:
+		return "", ""
+	}
+}
+
+func openAIChatContentList(n int, at func(int) any) (answer, reasoning string) {
+	var answers, thoughts []string
+	for i := 0; i < n; i++ {
+		partAnswer, partThought := openAIChatContentAt(at(i))
+		if partAnswer != "" {
+			answers = append(answers, partAnswer)
+		}
+		if partThought != "" {
+			thoughts = append(thoughts, partThought)
+		}
+	}
+	return strings.Join(answers, "\n"), strings.Join(thoughts, "\n")
+}
+
+func openAIChatContentAt(value any) (answer, reasoning string) {
+	switch typed := value.(type) {
+	case string:
+		return typed, ""
+	case map[string]any:
+		return openAIChatContentPart(typed)
+	default:
+		return "", ""
+	}
+}
+
+func openAIChatContentPart(part map[string]any) (answer, reasoning string) {
+	if part == nil {
+		return "", ""
+	}
+	switch strings.ToLower(strings.TrimSpace(openAIChatString(part["type"]))) {
+	case "thinking", "reasoning", "reasoning_content":
+		if text := openAIChatThinkingPartText(part); strings.TrimSpace(text) != "" {
+			return "", text
+		}
+		return "", ""
+	case "", "text", "input_text", "output_text":
+		if text := openAIChatString(part["text"]); text != "" {
+			return text, ""
+		}
+		return openAIChatString(part["content"]), ""
+	default:
+		return "", ""
+	}
+}
+
+func openAIChatString(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+// openAIChatThinkingPartText reads one thinking part. Hosted models nest the
+// fragments in a thinking array; each fragment is its own sentence, and the
+// desktop parser joins them with a newline. Each fragment is read by the
+// shared walker, so a nested thought is kept. When the array has no text,
+// the part itself is read the same way: its own text is still the thought.
+func openAIChatThinkingPartText(part map[string]any) string {
+	if part == nil {
+		return ""
+	}
+	if n, at, ok := openAIChatSlice(part["thinking"]); ok && n > 0 {
+		texts := make([]string, 0, n)
+		for i := 0; i < n; i++ {
+			if text := OpenAIReasoningValue(at(i)); text != "" {
+				texts = append(texts, text)
+			}
+		}
+		if len(texts) > 0 {
+			return strings.Join(texts, "\n")
+		}
+	}
+	return OpenAIReasoningValue(part)
+}
+
+func openAIChatSlice(value any) (n int, at func(int) any, ok bool) {
+	switch typed := value.(type) {
+	case []any:
+		return len(typed), func(i int) any { return typed[i] }, true
+	case []map[string]any:
+		return len(typed), func(i int) any { return typed[i] }, true
+	default:
+		return 0, nil, false
+	}
+}
+
+// openAIMergeReasoning keeps two thoughts that say different things and
+// drops a repeat. A longer copy that already contains the shorter one wins.
+func openAIMergeReasoning(explicit, extra string) string {
+	if strings.TrimSpace(explicit) == "" {
+		explicit = ""
+	}
+	if strings.TrimSpace(extra) == "" {
+		extra = ""
+	}
+	switch {
+	case explicit == "":
+		return extra
+	case extra == "", explicit == extra, strings.Contains(explicit, extra):
+		return explicit
+	case strings.Contains(extra, explicit):
+		return extra
+	default:
+		return explicit + "\n" + extra
+	}
+}
+
+// openAIChatWithoutThinking removes thinking parts so the answer extractor
+// does not treat their text as the reply. A string answer is unchanged.
+// An empty list becomes nil, whether it arrived empty or every part was a
+// thought. An empty non-nil slice is not an empty answer: the extractor
+// marshals it as the two characters "[]" and the cloud turn shows that as
+// the reply. A list that still has other parts is returned with the
+// thinking parts removed; a list that never had one is returned unchanged.
+func openAIChatWithoutThinking(value any) any {
+	switch typed := value.(type) {
+	case []any:
+		if len(typed) == 0 {
+			return nil
+		}
+		kept, dropped := openAIChatKeptParts(len(typed), func(i int) any { return typed[i] })
+		if !dropped {
+			return value
+		}
+		if len(kept) == 0 {
+			return nil
+		}
+		return kept
+	case []map[string]any:
+		if len(typed) == 0 {
+			return nil
+		}
+		kept, dropped := openAIChatKeptParts(len(typed), func(i int) any { return typed[i] })
+		if !dropped {
+			return value
+		}
+		if len(kept) == 0 {
+			return nil
+		}
+		return kept
+	case map[string]any:
+		if openAIChatValueIsThinking(typed) {
+			return nil
+		}
+		return typed
+	default:
+		return value
+	}
+}
+
+func openAIChatKeptParts(n int, at func(int) any) (kept []any, dropped bool) {
+	kept = make([]any, 0, n)
+	for i := 0; i < n; i++ {
+		item := at(i)
+		if openAIChatValueIsThinking(item) {
+			dropped = true
+			continue
+		}
+		kept = append(kept, item)
+	}
+	return kept, dropped
+}
+
+func openAIChatValueIsThinking(value any) bool {
+	part, ok := value.(map[string]any)
+	if !ok || part == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(openAIChatString(part["type"]))) {
+	case "thinking", "reasoning", "reasoning_content":
+		return true
+	default:
+		return false
+	}
+}
+
+// openAIReasoningControlEcho reports a request reasoning control. The response
+// shape carries a summary list; the request shape carries an effort and a
+// summary enum. A real thought string next to that effort still counts.
+func openAIReasoningControlEcho(obj map[string]any) bool {
+	if _, ok := obj["effort"]; !ok {
+		return false
+	}
+	for _, key := range []string{"text", "thinking", "content", "reasoning"} {
+		if text, ok := obj[key].(string); ok && strings.TrimSpace(text) != "" {
+			return false
+		}
+	}
+	summary, _ := obj["summary"].(string)
+	switch strings.ToLower(strings.TrimSpace(summary)) {
+	case "auto", "concise", "detailed":
+		return true
+	default:
+		return false
+	}
 }
 
 func openAIProxyChatUsageToResponsesUsage(raw interface{}) interface{} {

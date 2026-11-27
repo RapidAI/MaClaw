@@ -71,6 +71,16 @@
     saveContentAuditConfigFailed: { zh: '\u4fdd\u5b58\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5931\u8d25: ', en: 'Save content audit config failed: ' },
     smartRouteAllEnabled: { zh: '\u5df2\u5f00\u542f\u5168\u5458\u667a\u80fd\u8def\u7531', en: 'Smart Route enabled for all users' },
     lastLoginLabel: { zh: '\u6700\u540e\u767b\u5f55', en: 'Last login' },
+    registeredAtLabel: { zh: '\u6ce8\u518c\u65e5\u671f', en: 'Registered' },
+    registeredRangeLabel: { zh: '\u6ce8\u518c\u65f6\u95f4', en: 'Registered' },
+    registeredFromLabel: { zh: '\u5f00\u59cb\u65e5\u671f', en: 'From' },
+    registeredRangeTo: { zh: '\u81f3', en: 'to' },
+    registeredToLabel: { zh: '\u7ed3\u675f\u65e5\u671f', en: 'To' },
+    registeredPresetToday: { zh: '\u4eca\u5929', en: 'Today' },
+    registeredPreset7: { zh: '\u8fd17\u5929', en: '7 days' },
+    registeredPreset30: { zh: '\u8fd130\u5929', en: '30 days' },
+    clearRegisteredRange: { zh: '\u6e05\u9664', en: 'Clear' },
+    noRegisteredAt: { zh: '\u6682\u65e0\u6ce8\u518c\u65e5\u671f', en: 'No registration date' },
     pcClientsLabel: { zh: '\u7535\u8111\u7aef', en: 'PC' },
     mobileClientsLabel: { zh: '\u79fb\u52a8\u7aef', en: 'Mobile' },
     noLoginRecord: { zh: '\u6682\u65e0\u767b\u5f55\u8bb0\u5f55', en: 'No login record' },
@@ -177,6 +187,14 @@
     return groups;
   }
 
+  function countBoundUserTypes(items) {
+    var counts = { regular: 0, virtual: 0 };
+    (items || []).forEach(function(item) {
+      counts[governanceUserType(item)] += 1;
+    });
+    return counts;
+  }
+
   function promptGovernanceAdminPassword(title, message, confirmLabel) {
     if (!document || !document.createElement || !document.body) {
       return Promise.resolve(prompt(message));
@@ -257,6 +275,108 @@
     var date = new Date(value || '');
     return isNaN(date.getTime()) ? '' : date.toLocaleString();
   }
+
+  function pad2(value) {
+    return (value < 10 ? '0' : '') + value;
+  }
+
+  // Local calendar day, the same YYYY-MM-DD the date inputs use.
+  function formatRegisteredDay(value) {
+    var date = value instanceof Date ? value : new Date(value || '');
+    if (isNaN(date.getTime())) return '';
+    return date.getFullYear() + '-' + pad2(date.getMonth() + 1) + '-' + pad2(date.getDate());
+  }
+
+  function boundUserRegisteredRaw(item) {
+    return String(item && (item.created_at || item.CreatedAt) || '').trim();
+  }
+
+  var registeredInfoCache = typeof WeakMap === 'function' ? new WeakMap() : null;
+  var emptyRegistered = { raw: '', ms: 0, day: '', stamp: '' };
+
+  // One parse per user object. Filter, sort, and the card all read it.
+  function registeredInfo(item) {
+    if (!item || typeof item !== 'object') return emptyRegistered;
+    var raw = boundUserRegisteredRaw(item);
+    if (registeredInfoCache) {
+      var cached = registeredInfoCache.get(item);
+      if (cached && cached.raw === raw) return cached;
+    }
+    var ms = new Date(raw || '').getTime();
+    if (isNaN(ms)) ms = 0;
+    var info = { raw: raw, ms: ms, day: '', stamp: '' };
+    if (ms) {
+      var date = new Date(ms);
+      info.day = formatRegisteredDay(date);
+      info.stamp = info.day + ' ' + pad2(date.getHours()) + ':' + pad2(date.getMinutes());
+    }
+    if (registeredInfoCache) registeredInfoCache.set(item, info);
+    return info;
+  }
+
+  // A bound has to be a real local calendar day. The shape check drops
+  // "soon"; the round trip drops 2026-02-31, which Date would otherwise roll
+  // into March and then compare as a day no registration stamp can match.
+  function cleanRegisteredDay(value) {
+    value = String(value || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return '';
+    var parts = value.split('-');
+    var date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), 12, 0, 0, 0);
+    if (isNaN(date.getTime())) return '';
+    return formatRegisteredDay(date) === value ? value : '';
+  }
+
+  function normalizeRegisteredRange(fromDay, toDay) {
+    fromDay = cleanRegisteredDay(fromDay);
+    toDay = cleanRegisteredDay(toDay);
+    if (fromDay && toDay && fromDay > toDay) {
+      return { from: toDay, to: fromDay };
+    }
+    return { from: fromDay, to: toDay };
+  }
+
+  function shiftLocalDay(days) {
+    var date = new Date();
+    date.setHours(12, 0, 0, 0);
+    date.setDate(date.getDate() + days);
+    return formatRegisteredDay(date);
+  }
+
+  function boundUserMatchesRegisteredRange(item, fromDay, toDay) {
+    var range = normalizeRegisteredRange(fromDay, toDay);
+    if (!range.from && !range.to) return true;
+    var day = registeredInfo(item).day;
+    if (!day) return false;
+    if (range.from && day < range.from) return false;
+    if (range.to && day > range.to) return false;
+    return true;
+  }
+
+  function renderBoundUserRegisteredAt(item) {
+    var label = gt('registeredAtLabel');
+    var value = registeredInfo(item).stamp || gt('noRegisteredAt');
+    return '<div class="item-meta" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)" title="' + escapeHtml(label + ': ' + value) + '">' + escapeHtml(label) + ': ' + escapeHtml(value) + '</div>';
+  }
+
+  global._setBoundUsersRegisteredRange = function(fromDay, toDay) {
+    var range = normalizeRegisteredRange(fromDay, toDay);
+    global._boundUsersRegisteredFrom = range.from;
+    global._boundUsersRegisteredTo = range.to;
+    global._boundUsersPage = 1;
+    if (typeof global._renderBoundUsersPage === 'function') global._renderBoundUsersPage();
+  };
+
+  global._applyBoundUsersRegisteredPreset = function(days) {
+    days = Number(days) || 1;
+    if (days < 1) days = 1;
+    var from = shiftLocalDay(1 - days);
+    var to = shiftLocalDay(0);
+    if (global._boundUsersRegisteredFrom === from && global._boundUsersRegisteredTo === to) {
+      global._setBoundUsersRegisteredRange('', '');
+      return;
+    }
+    global._setBoundUsersRegisteredRange(from, to);
+  };
 
   // Client platforms are grouped for the card: PC covers the desktop OSes,
   // Mobile covers phone/tablet OSes, anything else stays in a fallback group.
@@ -488,6 +608,8 @@
     global._boundUsersPage = global._boundUsersPage || 1;
     global._boundUsersSearch = global._boundUsersSearch || '';
     global._boundUsersReferredOnly = !!global._boundUsersReferredOnly;
+    global._boundUsersRegisteredFrom = global._boundUsersRegisteredFrom || '';
+    global._boundUsersRegisteredTo = global._boundUsersRegisteredTo || '';
     if (!allItems.length) {
       root.innerHTML = hint(tr('emptyBoundUsers'));
       return;
@@ -505,27 +627,81 @@
     const items = global._boundUsersAll || [];
     const query = (global._boundUsersSearch || '').trim().toLowerCase();
     const referredOnly = !!global._boundUsersReferredOnly;
-    const filtered = (query || referredOnly) ? items.filter(function(item) {
+    var registeredRange = normalizeRegisteredRange(global._boundUsersRegisteredFrom, global._boundUsersRegisteredTo);
+    global._boundUsersRegisteredFrom = registeredRange.from;
+    global._boundUsersRegisteredTo = registeredRange.to;
+    const registeredFrom = registeredRange.from;
+    const registeredTo = registeredRange.to;
+    const registeredFiltered = !!(registeredFrom || registeredTo);
+    var listFiltered = !!(query || referredOnly || registeredFiltered);
+    var filtered = listFiltered ? items.filter(function(item) {
       if (referredOnly && !item.referral) return false;
+      if (!boundUserMatchesRegisteredRange(item, registeredFrom, registeredTo)) return false;
       if (!query) return true;
       return boundUserMatchesSearch(item, query);
     }) : items;
+    if (registeredFiltered) {
+      filtered.sort(function(a, b) {
+        var delta = registeredInfo(b).ms - registeredInfo(a).ms;
+        if (delta) return delta;
+        return String(a && a.email || '').localeCompare(String(b && b.email || ''));
+      });
+    }
     const pageSize = 36;
     const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
     if (global._boundUsersPage > totalPages) global._boundUsersPage = totalPages;
     if (global._boundUsersPage < 1) global._boundUsersPage = 1;
     const start = (global._boundUsersPage - 1) * pageSize;
     const pageItems = filtered.slice(start, start + pageSize);
-    const searchHtml = '<div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
-      + '<input id="boundUsersSearchInput" placeholder="' + gt('boundUsersSearchPlaceholder') + '" value="' + escapeHtml(global._boundUsersSearch || '') + '" style="max-width:260px;height:34px" oninput="window._boundUsersSearch=this.value;window._boundUsersPage=1;clearTimeout(window._busDeb);window._busDeb=setTimeout(_renderBoundUsersPage,200)">'
-      + '<label class="toggle-label" style="font-size:11px;white-space:nowrap"><input type="checkbox" ' + (referredOnly ? 'checked' : '') + ' onchange="window._boundUsersReferredOnly=this.checked;window._boundUsersPage=1;_renderBoundUsersPage()"><span>' + escapeHtml(gt('referredOnly')) + '</span></label>'
-      + '<button type="button" class="btn-secondary" id="syncVerifiedPhoneRoutesBtn" style="height:34px;font-size:12px;padding:0 12px" onclick="syncVerifiedPhoneRoutes(this)">' + escapeHtml(gt('syncPhoneRoutes')) + '</button>'
+    // professional.css sets button{min-height:38px}. A height-only inline
+    // style loses to that, so the chips have to set min-height themselves
+    // or they sit taller than the 32px date fields.
+    var toolbarButtonStyle = 'height:32px;min-height:32px;font-size:12px;padding:0 8px;letter-spacing:0;text-transform:none';
+    const clearRangeHtml = registeredFiltered
+      ? '<button type="button" class="btn-ghost" style="' + toolbarButtonStyle + '" onclick="window._setBoundUsersRegisteredRange(\'\',\'\')">' + escapeHtml(gt('clearRegisteredRange')) + '</button>'
+      : '';
+    function registeredPresetButton(days, label) {
+      var start = shiftLocalDay(1 - days);
+      var end = shiftLocalDay(0);
+      var active = registeredFrom === start && registeredTo === end;
+      var style = toolbarButtonStyle;
+      if (active) style += ';background:#fff0f2;color:#c24155;border-color:rgba(239,106,124,.45)';
+      return '<button type="button" class="' + (active ? 'btn-secondary' : 'btn-ghost') + '" data-registered-preset="' + days + '"' + (active ? ' data-active="1"' : '') + ' style="' + style + '" onclick="window._applyBoundUsersRegisteredPreset(' + days + ')">' + escapeHtml(label) + '</button>';
+    }
+    // Date inputs sit outside a <label>: the page label rule is display:block,
+    // uppercase, and letter-spaced, and every input is width:100% with 12px
+    // padding. Those rules clip a native date field and break the toolbar row.
+    // The cluster must not set font-size either: input{font:inherit} would
+    // shrink the calendar text to the caption size. The 13px size is set on
+    // the date input itself so the field can be narrower without clipping.
+    // Presets stay in the same cluster so a wrap does not leave them on their own.
+    var dateInputStyle = 'width:148px;max-width:148px;height:32px;padding:0 4px;letter-spacing:0;text-transform:none;font-size:13px;font-weight:600;flex:0 0 auto';
+    var rangeCaptionStyle = 'font-size:11px;font-weight:700';
+    const searchHtml = '<div style="margin-bottom:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+      + '<input id="boundUsersSearchInput" placeholder="' + gt('boundUsersSearchPlaceholder') + '" value="' + escapeHtml(global._boundUsersSearch || '') + '" style="width:190px;max-width:190px;height:32px;padding:0 8px;font-size:13px;flex:1 1 160px" oninput="window._boundUsersSearch=this.value;window._boundUsersPage=1;window._boundUsersFocusSearch=1;clearTimeout(window._busDeb);window._busDeb=setTimeout(_renderBoundUsersPage,200)">'
+      + '<span style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;letter-spacing:0;text-transform:none;color:var(--muted);flex:0 1 auto">'
+      + '<span style="' + rangeCaptionStyle + '">' + escapeHtml(gt('registeredRangeLabel')) + '</span>'
+      + '<input type="date" id="boundUsersRegisteredFrom" aria-label="' + escapeHtml(gt('registeredFromLabel')) + '" value="' + escapeHtml(registeredFrom) + '" style="' + dateInputStyle + '" onchange="window._setBoundUsersRegisteredRange(this.value, window._boundUsersRegisteredTo)">'
+      + '<span style="' + rangeCaptionStyle + '">' + escapeHtml(gt('registeredRangeTo')) + '</span>'
+      + '<input type="date" id="boundUsersRegisteredTo" aria-label="' + escapeHtml(gt('registeredToLabel')) + '" value="' + escapeHtml(registeredTo) + '" style="' + dateInputStyle + '" onchange="window._setBoundUsersRegisteredRange(window._boundUsersRegisteredFrom, this.value)">'
+      + registeredPresetButton(1, gt('registeredPresetToday'))
+      + registeredPresetButton(7, gt('registeredPreset7'))
+      + registeredPresetButton(30, gt('registeredPreset30'))
+      + clearRangeHtml
+      + '</span>'
+      + '<span data-bound-users-side style="display:inline-flex;align-items:center;gap:6px;flex:0 0 auto">'
+      + '<label class="toggle-label" style="margin:0;font-size:11px;white-space:nowrap;text-transform:none"><input type="checkbox" ' + (referredOnly ? 'checked' : '') + ' onchange="window._boundUsersReferredOnly=this.checked;window._boundUsersPage=1;_renderBoundUsersPage()"><span>' + escapeHtml(gt('referredOnly')) + '</span></label>'
+      + '<button type="button" class="btn-secondary" id="syncVerifiedPhoneRoutesBtn" style="height:32px;min-height:32px;font-size:12px;padding:0 8px" onclick="syncVerifiedPhoneRoutes(this)">' + escapeHtml(gt('syncPhoneRoutes')) + '</button>'
+      + '</span>'
       + '</div>';
     var grouped = groupBoundUsers(pageItems);
-    var gridStyle = 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px';
+    var typeCounts = listFiltered ? countBoundUserTypes(filtered) : null;
+    var gridStyle = 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px';
     var sections = ['regular', 'virtual'].map(function(type) {
       var list = grouped[type] || [];
       if (!list.length) return '';
+      var matched = typeCounts ? typeCounts[type] : list.length;
+      var countText = matched > list.length ? (list.length + '/' + matched) : String(list.length);
       var cards = list.map(function(item) {
         var smartRoute = item.smart_route;
         var toggleId = 'sr_' + item.id;
@@ -535,13 +711,13 @@
           : '<span class="badge info" style="padding:4px 8px;font-size:10px">' + escapeHtml(gt('regularUsers')) + '</span>';
         var actionLabel = item.is_virtual_employee ? gt('virtualUserDeleteLabel') : gt('unbindUser');
         var primaryPhone = boundUserPhones(item)[0] || '';
-        var unbindBtn = '<button class="btn-danger" style="height:24px;font-size:10px;padding:0 8px" data-email="' + escapeHtml(String(item.email || '')) + '" data-tenant-id="' + escapeHtml(String(item.tenant_id || '')) + '" data-user-id="' + escapeHtml(String(item.id || '')) + '" data-phone="' + escapeHtml(String(primaryPhone || '')) + '" data-is-virtual="' + (item.is_virtual_employee ? 'true' : 'false') + '" onclick="unbindBoundUser(this.dataset.email, this.dataset.tenantId, this.dataset.userId, this.dataset.phone)">' + escapeHtml(actionLabel) + '</button>';
+        var unbindBtn = '<button class="btn-danger" style="height:24px;min-height:24px;font-size:10px;padding:0 8px" data-email="' + escapeHtml(String(item.email || '')) + '" data-tenant-id="' + escapeHtml(String(item.tenant_id || '')) + '" data-user-id="' + escapeHtml(String(item.id || '')) + '" data-phone="' + escapeHtml(String(primaryPhone || '')) + '" data-is-virtual="' + (item.is_virtual_employee ? 'true' : 'false') + '" onclick="unbindBoundUser(this.dataset.email, this.dataset.tenantId, this.dataset.userId, this.dataset.phone)">' + escapeHtml(actionLabel) + '</button>';
         var verifiedStar = item.email_verified ? '<span title="' + escapeHtml(gt('emailVerifiedTooltip')) + '" style="color:#f59e0b;font-size:13px;margin-left:4px;cursor:default">&#9733;</span>' : '';
         var referralTitle = item.referral ? gt('referredUserTooltip') + (item.referral.inviter_display_name ? ' | ' + item.referral.inviter_display_name + ' | ' + referralRegistrationTime(item.referral.registered_at) : '') : '';
         var referralBadge = item.referral ? '<span class="badge info" tabindex="0" title="' + escapeHtml(referralTitle) + '" style="padding:4px 8px;font-size:10px;background:#fdf2f8;color:#b23c68;border-color:#f5c7d8">' + escapeHtml(gt('referredUser')) + '</span>' : '';
         var displayName = boundUserDisplayName(item);
-        return '<div class="item" style="padding:10px 12px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06);box-shadow:none">'
-          + '<div style="display:flex;flex-direction:column;gap:8px;min-width:0">'
+        return '<div class="item" style="padding:8px 10px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06);box-shadow:none">'
+          + '<div style="display:flex;flex-direction:column;gap:6px;min-width:0">'
           + '<div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">' + escapeHtml(displayName) + verifiedStar + '</div>'
           + renderBoundUserContacts(item)
           + '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0">'
@@ -554,19 +730,24 @@
           + '</div>'
           + renderCreditsSummary(item)
           + '<div class="item-meta mono" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">' + escapeHtml(item.sn || tr('na')) + '</div>'
+          + renderBoundUserRegisteredAt(item)
           + renderBoundUserLastLogin(item)
           + '</div></div>';
       }).join('');
-      return '<div style="grid-column:1 / -1;margin-top:4px"><div class="item-title" style="font-size:12px;margin-bottom:8px">' + escapeHtml(governanceUserTypeLabel(type)) + ' (' + list.length + ')</div><div class="user-grid-wrap" style="' + gridStyle + '">' + cards + '</div></div>';
+      return '<div style="grid-column:1 / -1;margin-top:4px"><div class="item-title" style="font-size:12px;margin-bottom:8px">' + escapeHtml(governanceUserTypeLabel(type)) + ' (' + countText + ')</div><div class="user-grid-wrap" style="' + gridStyle + '">' + cards + '</div></div>';
     }).join('');
     var pagerHtml = '';
     var showCount = filtered.length > 0 ? (start + 1) + '-' + (start + pageItems.length) + ' / ' + filtered.length : '0 / 0';
+    // A range that fits on this page already shows its count on the section
+    // header. The pager is for another page, or for a search that has no
+    // section total of its own.
     if (totalPages > 1 || query) {
-      pagerHtml = '<div class="pager" style="margin-top:8px;display:flex;align-items:center;justify-content:center;gap:6px"><button class="btn-secondary" style="height:28px;font-size:11px;padding:0 10px" onclick="window._boundUsersPage=Math.max(1,window._boundUsersPage-1);_renderBoundUsersPage()" ' + (global._boundUsersPage <= 1 ? 'disabled' : '') + '>Prev</button><span style="font-size:11px">' + showCount + '</span><button class="btn-secondary" style="height:28px;font-size:11px;padding:0 10px" onclick="window._boundUsersPage=Math.min(' + totalPages + ',window._boundUsersPage+1);_renderBoundUsersPage()" ' + (global._boundUsersPage >= totalPages ? 'disabled' : '') + '>Next</button></div>';
+      pagerHtml = '<div class="pager" style="margin-top:8px;display:flex;align-items:center;justify-content:center;gap:6px"><button class="btn-secondary" style="height:28px;min-height:28px;font-size:11px;padding:0 10px" onclick="window._boundUsersPage=Math.max(1,window._boundUsersPage-1);_renderBoundUsersPage()" ' + (global._boundUsersPage <= 1 ? 'disabled' : '') + '>Prev</button><span style="font-size:11px">' + showCount + '</span><button class="btn-secondary" style="height:28px;min-height:28px;font-size:11px;padding:0 10px" onclick="window._boundUsersPage=Math.min(' + totalPages + ',window._boundUsersPage+1);_renderBoundUsersPage()" ' + (global._boundUsersPage >= totalPages ? 'disabled' : '') + '>Next</button></div>';
     }
     root.innerHTML = searchHtml + (pageItems.length ? sections : '<div class="hint">' + gt('noMatches') + '</div>') + pagerHtml;
     var searchInput = document.getElementById('boundUsersSearchInput');
-    if (searchInput && query) {
+    if (searchInput && global._boundUsersFocusSearch) {
+      global._boundUsersFocusSearch = 0;
       searchInput.focus();
       searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
     }

@@ -11785,6 +11785,7 @@ describe('cloud task view in the main panel (local-task parity)', () => {
                 projectPath: 'cloud-agent:inst-1',
                 taskName: '演唱会策划书',
                 cloud: true,
+                cloudKind: 'coding',
                 serverLabel: '官方云端服务',
                 canSend: true,
                 offline: false,
@@ -11810,6 +11811,8 @@ describe('cloud task view in the main panel (local-task parity)', () => {
         renderPanel({ lang: 'zh-Hans', state: { messages: [], sending: false, streaming: false, ready: true } });
         openCloudView();
         expect(screen.getByTestId('task-execution-header')).toBeTruthy();
+        expect(screen.getByTestId('task-execution-task-kind').textContent).toBe('编程');
+        expect(screen.getByTestId('task-execution-task-kind').getAttribute('data-task-kind')).toBe('coding');
         expect(screen.getByRole('button', { name: '暂停任务' })).toBeTruthy();
         expect(screen.getByTestId('task-tab-switcher-btn')).toBeTruthy();
         expect(screen.getByTestId('task-bug-report-btn')).toBeTruthy();

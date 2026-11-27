@@ -5228,13 +5228,10 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 				} else {
 					return "", fmt.Errorf("missing Unix shell for bash step\n%v\nplease install Git for Windows: https://git-scm.com/download/win", err)
 				}
+			} else if shPath, err := resolveUnixShell(); err == nil {
+				shellName = shPath
 			} else {
-				if shPath, err := exec.LookPath("sh.exe"); err == nil {
-					// Skip WSL bash on Windows (runtime check only)
-					shellName = shPath
-				} else {
-					return "", fmt.Errorf("missing Unix shell for bash step and app is nil")
-				}
+				return "", fmt.Errorf("missing Unix shell for bash step and app is nil")
 			}
 			// [Bug #1 fix] Use temp script file instead of bash -c on Windows.
 			// bash -c "..." with double quotes causes backslash escaping issues
