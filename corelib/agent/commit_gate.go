@@ -1277,8 +1277,13 @@ func argvPushesGitOnce(tokens []string, depth int) bool {
 	}
 	// $x -replace rhs is an expression, not a program. & $x -replace stays a
 	// call. Words after the rhs are a separate statement ("git push").
+	// $dest = "E:\..." is the same kind of statement: = is not a git
+	// subcommand, and a $ in the value must not look like git $alias.
 	if !invoked {
 		if tail, ok := skipPowerShellValue(tokens); ok {
+			return expressionTailPushes(tail, depth+1)
+		}
+		if tail, ok := skipPowerShellAssignment(tokens); ok {
 			return expressionTailPushes(tail, depth+1)
 		}
 	}
@@ -1416,6 +1421,29 @@ func skipPowerShellValue(tokens []string) ([]string, bool) {
 		return operatorRHSTail(tokens[2:]), true
 	}
 	return nil, false
+}
+
+// skipPowerShellAssignment drops $name = value. PowerShell assignment is its
+// own statement, so the words after the value are the next command. A call
+// such as & $git = push is not an assignment and stays on the caller path.
+// The value may be several words ($a = New-Item -Force), so a later command
+// is still scanned by expressionTailPushes.
+func skipPowerShellAssignment(tokens []string) ([]string, bool) {
+	if len(tokens) < 2 || tokens[1] != "=" || !powershellAssignmentTarget(tokens[0]) {
+		return nil, false
+	}
+	return tokens[2:], true
+}
+
+func powershellAssignmentTarget(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" || strings.ContainsAny(token, " \t") {
+		return false
+	}
+	if strings.HasPrefix(token, "$") || strings.HasPrefix(token, "@") {
+		return true
+	}
+	return len(token) >= 3 && token[0] == '%' && strings.Contains(token[1:], "%")
 }
 
 // operatorRHSTail drops the right-hand side. A comma, glued or alone, keeps
@@ -4045,6 +4073,12 @@ func gitPushArgvHops(args []string, hops int) bool {
 		if powershellOperator(arg) {
 			// Git rejects these. Skipping -replace made the next word, such as
 			// the regex '[:.].*$', look like the subcommand.
+			return false
+		}
+		if arg == "=" {
+			// = is PowerShell assignment, not a git subcommand. git = push
+			// does not run push. The call form & $git = push is a parse
+			// error, not an indirect push either.
 			return false
 		}
 		if strings.HasPrefix(arg, "-") {

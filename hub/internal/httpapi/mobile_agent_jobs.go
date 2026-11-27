@@ -323,6 +323,29 @@ func mobileAgentJobUpdate(jobID string, mutate func(*mobileAgentJobRecord)) {
 	})
 }
 
+// mobileAgentJobAppendProgressLocked records one thinking line.
+// Caller must already hold mobileKnowledgePurgeState.RLock. The agent loop
+// holds that lock for the whole run and emits progress from inside it.
+// Taking the read lock again deadlocks once unbind is waiting for the write
+// lock: Go's RWMutex does not allow a new reader while a writer is queued.
+// Polling reads the map; skip realtime here so this path never re-enters the
+// purge lock or a network write.
+func mobileAgentJobAppendProgressLocked(jobID, line string) {
+	if jobID == "" || strings.TrimSpace(line) == "" {
+		return
+	}
+	mobileAgentJobs.Lock()
+	job, ok := mobileAgentJobs.jobs[jobID]
+	if !ok || !mobileOwnerWriteAllowedLocked(job.TenantID, job.OwnerID) {
+		mobileAgentJobs.Unlock()
+		return
+	}
+	job.Progress = mobileAppendProgress(job.Progress, line)
+	job.UpdatedAt = time.Now().UTC()
+	mobileAgentJobs.jobs[jobID] = job
+	mobileAgentJobs.Unlock()
+}
+
 func mobileRunAgentJob(jobID string, principal *auth.ViewerPrincipal, officialLLM http.Handler) {
 	mobileAgentJobUpdate(jobID, func(j *mobileAgentJobRecord) {
 		j.Status = mobileAgentJobStatusRunning
@@ -399,9 +422,8 @@ func mobileRunAgentJob(jobID string, principal *auth.ViewerPrincipal, officialLL
 		if line == "" {
 			return
 		}
-		mobileAgentJobUpdate(jobID, func(j *mobileAgentJobRecord) {
-			j.Progress = mobileAppendProgress(j.Progress, line)
-		})
+		// mobileRunAgentLoop already holds the purge read lock.
+		mobileAgentJobAppendProgressLocked(jobID, line)
 	}
 	answer, requestID, runErr := mobileRunAgentLoop(ctx, baseReq, principal, officialLLM, delegated, useDelegated, chatMessages, emit, mobileTrustedAgentAttachments(principal, job.DocumentID, job.RecordingID))
 	if runErr != nil {

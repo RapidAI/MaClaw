@@ -223,6 +223,12 @@ func TestClassifyCommitCallShapes(t *testing.T) {
 		{"bash", `{"command":"%COMSPEC% /c git status"}`, CommitUnclassified},
 		{"bash", `{"command":"$git push"}`, CommitHuman},
 		{"bash", `{"command":"$git status"}`, CommitUnclassified},
+		{"bash", `{"command":"$dest = \"E:\\workprj\\maclaw\\.maclaw-tmp\\BR-20261126-5FD6BB1A7A22\""}`, CommitUnclassified},
+		{"bash", `{"command":"$dest = \"E:\\foo\"; curl.exe -fL -o \"$dest\\diagnostics.zip\" \"https://example.invalid/a.zip\""}`, CommitUnclassified},
+		{"bash", `{"command":"$dest = \"E:\\foo\"; git push"}`, CommitHuman},
+		{"bash", `{"command":"$git = push"}`, CommitUnclassified},
+		{"bash", `{"command":"& $git = push"}`, CommitUnclassified},
+		{"bash", `{"command":"& $git push"}`, CommitHuman},
 		{"bash", `{"command":"echo $env:ComSpec"}`, CommitUnclassified},
 		{"bash", `{"command":"switch (1) { 1 {git push} }"}`, CommitHuman},
 		{"bash", `{"command":"switch (1) { default {git status} }"}`, CommitUnclassified},
@@ -879,6 +885,45 @@ func TestApplyCommitGateChecklistRefusesWithoutAsking(t *testing.T) {
 	}
 	if got := executeAuthorizedLoopToolCall(host, "bash", `{"command":"npm test"}`, "call"); got.Result != "ran" || len(host.toolCalls) != 1 {
 		t.Fatalf("npm test result=%+v calls=%#v", got, host.toolCalls)
+	}
+}
+
+// BR-20261126-7888C6E263E3: an open checklist treated
+// `$dest = "E:\...\BR-..."` plus curl/Expand-Archive as an indirect git push
+// and refused the bash call before it ran. The live download token is not
+// part of the parser input, so the fixture uses example.invalid.
+func TestApplyCommitGateOpenChecklistRunsDiagnosticsDownload(t *testing.T) {
+	download := `$dest = "E:\workprj\maclaw\.maclaw-tmp\BR-20261126-5FD6BB1A7A22"; New-Item -ItemType Directory -Force -Path $dest | Out-Null; curl.exe -fL --max-time 180 -o "$dest\diagnostics.zip" "https://example.invalid/diagnostics.zip"; if ($LASTEXITCODE -ne 0) { Write-Output "CURL_FAIL $LASTEXITCODE"; exit $LASTEXITCODE }; $item = Get-Item "$dest\diagnostics.zip"; Expand-Archive -Path "$dest\diagnostics.zip" -DestinationPath "$dest\unzipped" -Force`
+	pushAfter := `$dest = "E:\workprj\maclaw\.maclaw-tmp\BR-20261126-5FD6BB1A7A22"; git push`
+	argsOf := func(command string) string {
+		t.Helper()
+		raw, err := json.Marshal(map[string]any{"command": command, "timeout": 240})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	downloadArgs := argsOf(download)
+	pushAfterArgs := argsOf(pushAfter)
+	for _, full := range []bool{false, true} {
+		host := newCommitHost(t)
+		host.checklist = true
+		host.fullControl = full
+		if class, _ := classifyCommitCall("bash", downloadArgs, host.root, host.temp); class != CommitUnclassified {
+			t.Fatalf("full=%v download class=%v", full, class)
+		}
+		got := executeAuthorizedLoopToolCall(host, "bash", downloadArgs, "call-download")
+		if got.Result != "ran" || len(host.toolCalls) != 1 || strings.Contains(got.Result, "步骤清单") {
+			t.Fatalf("full=%v download result=%+v calls=%#v", full, got, host.toolCalls)
+		}
+		blocked := executeAuthorizedLoopToolCall(host, "bash", `{"command":"git push"}`, "call-push")
+		if !strings.Contains(blocked.Result, "步骤清单") || strings.Contains(blocked.Result, "人的批准") == full || len(host.toolCalls) != 1 {
+			t.Fatalf("full=%v push result=%+v calls=%#v", full, blocked, host.toolCalls)
+		}
+		still := executeAuthorizedLoopToolCall(host, "bash", pushAfterArgs, "call-assign-push")
+		if !strings.Contains(still.Result, "步骤清单") || len(host.toolCalls) != 1 {
+			t.Fatalf("full=%v assign-then-push result=%+v calls=%#v", full, still, host.toolCalls)
+		}
 	}
 }
 
