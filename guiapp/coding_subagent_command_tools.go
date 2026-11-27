@@ -307,10 +307,18 @@ func codingWindowsPipelineStopExitCode(command string, exitErr *exec.ExitError, 
 	if exitErr.ProcessState != nil {
 		exitCode = exitErr.ProcessState.ExitCode()
 	}
-	if exitCode == -1 {
+	// Windows stores the process status as uint32. A wrapper that called
+	// exit -1 therefore reports 0xFFFFFFFF (4294967295), not the Go sentinel
+	// -1. Treating only -1 as "not recovered" turns that real failure into
+	// success. The early-stop case is the one that exits 0.
+	if windowsProcessStatusIsMinusOne(exitCode) {
 		return 0, false
 	}
 	return exitCode, true
+}
+
+func windowsProcessStatusIsMinusOne(exitCode int) bool {
+	return exitCode == -1 || uint32(exitCode) == 0xFFFFFFFF
 }
 
 func windowsCodingBashInvocation(command string) (string, []string) {

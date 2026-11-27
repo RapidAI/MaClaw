@@ -7922,8 +7922,8 @@ func TestExecuteCodingBashWindowsNativeExitMinusOneFails(t *testing.T) {
 		"command": `cmd /c exit -1`,
 	}, nil)
 
-	if result.Kind != codingCommandResultExitError || result.ExitCode == 0 {
-		t.Fatalf("a completed native exit of -1 must still fail, got %#v", result)
+	if result.Kind != codingCommandResultExitError || !windowsProcessStatusIsMinusOne(result.ExitCode) {
+		t.Fatalf("a completed native exit of -1 must still fail as -1, got %#v", result)
 	}
 }
 
