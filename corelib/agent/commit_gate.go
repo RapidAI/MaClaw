@@ -1271,7 +1271,11 @@ func argvPushesGitOnce(tokens []string, depth int) bool {
 	}
 	prepared := flattenPowerShellArrays(stripEnvAssignments(tokens))
 	invoked := len(prepared) > 0 && (prepared[0] == "&" || prepared[0] == ".")
-	tokens = foldPowerShellArgs(stripCallOperators(prepared))
+	tokens = stripCallOperators(prepared)
+	if !invoked {
+		tokens = splitPowerShellAssignment(tokens)
+	}
+	tokens = foldPowerShellArgs(tokens)
 	if len(tokens) == 0 || strings.HasPrefix(tokens[0], "#") {
 		return false
 	}
@@ -1423,16 +1427,91 @@ func skipPowerShellValue(tokens []string) ([]string, bool) {
 	return nil, false
 }
 
-// skipPowerShellAssignment drops $name = value. PowerShell assignment is its
-// own statement, so the words after the value are the next command. A call
-// such as & $git = push is not an assignment and stays on the caller path.
-// The value may be several words ($a = New-Item -Force), so a later command
-// is still scanned by expressionTailPushes.
+// skipPowerShellAssignment drops an assignment whose right-hand side
+// PowerShell runs: $name = value, $name += value, [type]$name = value,
+// $obj.Name = value, and $n[0] = value. Words after that value are the next
+// command. A call such as & $git = push is not an assignment and stays on
+// the caller path. git = push is a git argument, not an assignment. The
+// value may be several words ($a = New-Item -Force), so a later command is
+// still scanned by expressionTailPushes.
+// splitPowerShellAssignment separates forms the shell tokenizer keeps
+// together: $x+=git, and [int] $n = git. Comparison tokens are left alone.
+func splitPowerShellAssignment(tokens []string) []string {
+	if len(tokens) == 0 {
+		return tokens
+	}
+	if op := gluedPowerShellAssignmentOp(tokens[0]); op != "" && strings.Contains(tokens[0], op) && op != tokens[0] {
+		target := tokens[0][:strings.Index(tokens[0], op)]
+		if powershellAssignmentTarget(target) {
+			out := make([]string, 0, len(tokens)+2)
+			out = append(out, target, op, tokens[0][strings.Index(tokens[0], op)+len(op):])
+			return append(out, tokens[1:]...)
+		}
+	}
+	if joined, rest, ok := joinTypedPowerShellTarget(tokens); ok {
+		out := make([]string, 0, len(tokens))
+		out = append(out, joined)
+		return append(out, rest...)
+	}
+	return tokens
+}
+
+// joinTypedPowerShellTarget glues a cast or attribute prefix to the variable
+// it constrains. [int] $n = git and [ValidateNotNull()] [int] $n = git are
+// one assignment target. [int] git is a conversion, not an assignment.
+func joinTypedPowerShellTarget(tokens []string) (string, []string, bool) {
+	if len(tokens) < 3 || !strings.HasPrefix(tokens[0], "[") || !strings.HasSuffix(tokens[0], "]") {
+		return "", nil, false
+	}
+	i := 0
+	var b strings.Builder
+	for i < len(tokens)-2 && strings.HasPrefix(tokens[i], "[") && strings.HasSuffix(tokens[i], "]") {
+		b.WriteString(tokens[i])
+		i++
+	}
+	if i == 0 || i+1 >= len(tokens) || !powershellAssignmentOp(tokens[i+1]) || !powershellAssignmentTarget(tokens[i]) {
+		return "", nil, false
+	}
+	b.WriteString(tokens[i])
+	return b.String(), tokens[i+1:], true
+}
+
 func skipPowerShellAssignment(tokens []string) ([]string, bool) {
-	if len(tokens) < 2 || tokens[1] != "=" || !powershellAssignmentTarget(tokens[0]) {
+	if len(tokens) < 2 {
+		return nil, false
+	}
+	if op := gluedPowerShellAssignmentOp(tokens[0]); op != "" && strings.Contains(tokens[0], op) {
+		target := tokens[0][:strings.Index(tokens[0], op)]
+		if !powershellAssignmentTarget(target) {
+			return nil, false
+		}
+		rest := tokens[0][strings.Index(tokens[0], op)+len(op):]
+		return append([]string{rest}, tokens[1:]...), true
+	}
+	if !powershellAssignmentOp(tokens[1]) || !powershellAssignmentTarget(tokens[0]) {
 		return nil, false
 	}
 	return tokens[2:], true
+}
+
+func gluedPowerShellAssignmentOp(token string) string {
+	for _, op := range []string{"+=", "-=", "*=", "/=", "%=", "="} {
+		at := strings.Index(token, op)
+		if at > 0 && at+len(op) <= len(token) {
+			return op
+		}
+	}
+	return ""
+}
+
+
+func powershellAssignmentOp(token string) bool {
+	switch token {
+	case "=", "+=", "-=", "*=", "/=", "%=":
+		return true
+	default:
+		return false
+	}
 }
 
 func powershellAssignmentTarget(token string) bool {
@@ -1441,9 +1520,77 @@ func powershellAssignmentTarget(token string) bool {
 		return false
 	}
 	if strings.HasPrefix(token, "$") || strings.HasPrefix(token, "@") {
-		return true
+		// A glued operator is not part of the name. $x+=git is a target; $x+git is not.
+		if op := gluedPowerShellAssignmentOp(token); op != "" && strings.Contains(token, op) && op != token {
+			token = token[:strings.Index(token, op)]
+		}
+		return powershellAssignableExpr(token)
+	}
+	if strings.HasPrefix(token, "[") {
+		rest, ok := stripPowerShellAttributes(token)
+		return ok && powershellAssignmentTarget(rest)
 	}
 	return len(token) >= 3 && token[0] == '%' && strings.Contains(token[1:], "%")
+}
+
+// stripPowerShellAttributes drops a leading cast or validation attribute.
+// [int[]]$n and [ValidateNotNull()][int]$n both leave $n. The attribute ends
+// at its matching bracket, so an array cast is not cut at the first ]. A
+// bracket that is not an attribute, such as $n[0], stays on the caller.
+func stripPowerShellAttributes(token string) (string, bool) {
+	rest := token
+	stripped := false
+	for strings.HasPrefix(rest, "[") {
+		end := matchingPowerShellBracket(rest)
+		if end <= 1 {
+			return "", false
+		}
+		rest = rest[end+1:]
+		stripped = true
+	}
+	if !stripped || rest == "" {
+		return "", false
+	}
+	return rest, true
+}
+
+func matchingPowerShellBracket(token string) int {
+	if len(token) == 0 || token[0] != '[' {
+		return -1
+	}
+	depth := 0
+	for i := 0; i < len(token); i++ {
+		switch token[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// powershellAssignableExpr accepts a variable and the property or index
+// PowerShell can assign through. $obj.Name and $n[0] run the right-hand side.
+// A quote, parenthesis, or scriptblock is not an assignment target.
+func powershellAssignableExpr(token string) bool {
+	for i := 0; i < len(token); {
+		switch token[i] {
+		case '.', '[':
+			return true
+		case '$', '@', ':', '_':
+			i++
+		default:
+			if !psIdentByte(token[i]) {
+				return false
+			}
+			i++
+		}
+	}
+	return true
 }
 
 // operatorRHSTail drops the right-hand side. A comma, glued or alone, keeps
@@ -4224,6 +4371,11 @@ func stripEnvAssignments(args []string) []string {
 	i := 0
 	for i < len(args) {
 		arg := args[i]
+		// $x+=git is a PowerShell assignment, not NAME=value. Leaving it here
+		// lets the assignment scan see the command on the right.
+		if powershellAssignmentTarget(arg) {
+			break
+		}
 		eq := strings.IndexByte(arg, '=')
 		if eq <= 0 || strings.HasPrefix(arg, "-") || strings.ContainsAny(arg[:eq], "/\\") {
 			break

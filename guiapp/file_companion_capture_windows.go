@@ -17,8 +17,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/wailsapp/wails/v2/pkg/maclawcapture"
-	"github.com/wailsapp/wails/v2/pkg/maclawplayer"
+	"github.com/RapidAI/CodeClaw/guiapp/internal/maclawcapture"
+	"github.com/RapidAI/CodeClaw/guiapp/internal/maclawplayer"
 	"golang.org/x/sys/windows"
 )
 

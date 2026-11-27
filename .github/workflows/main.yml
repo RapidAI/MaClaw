@@ -88,6 +88,13 @@ jobs:
             for attempt in 1 2 3; do sudo timeout 900 apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev && break || sleep 10; done
             echo "GUIHOST_TAGS=" >> $GITHUB_ENV
           fi
+          # wails3 (shipped runtime) links gtk4 + WebKitGTK 6.0 on top of the
+          # legacy gtk3 stack. The webkit2_41/4.0 tags are v2-era; wails3 uses
+          # its gtk4 default unless the gtk3 tag is set, so install it on every
+          # linux runner (guard: older runners may lack the package).
+          if apt-cache show libwebkitgtk-6.0-dev >/dev/null 2>&1; then
+            for attempt in 1 2 3; do sudo timeout 900 apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev && break || sleep 10; done
+          fi
 
       - name: Compile GUI host package
         run: GOFLAGS="-tags=$GUIHOST_TAGS" go test ./guiapp -run 'Test(SharedAgentLoopCallbacksEmitRuntimeEvents|RunAgentLoopSharedDelegatesThroughRuntimeContract|GUIRuntimeDescribesDeterministicToolSurface|GUIAndSrv)' -count=1 -race
@@ -1075,6 +1082,13 @@ jobs:
             for attempt in 1 2 3; do sudo timeout 900 apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev && break || sleep 10; done
             echo "TP_WAILS_TAGS=desktop,production,oem_qianxin" >> $GITHUB_ENV
           fi
+          # wails3 (shipped runtime) links gtk4 + WebKitGTK 6.0 on top of the
+          # legacy gtk3 stack. The webkit2_41/4.0 tags are v2-era; wails3 uses
+          # its gtk4 default unless the gtk3 tag is set, so install it on every
+          # linux runner (guard: older runners may lack the package).
+          if apt-cache show libwebkitgtk-6.0-dev >/dev/null 2>&1; then
+            for attempt in 1 2 3; do sudo timeout 900 apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev && break || sleep 10; done
+          fi
 
       - name: Build TigerProxy Linux
         if: matrix.goos == 'linux'
@@ -1756,6 +1770,13 @@ jobs:
             echo "WEBKIT_SONAME=libwebkit2gtk-4.0.so.37" >> $GITHUB_ENV
             echo "WEBKIT_PKG=libwebkit2gtk-4.0-37" >> $GITHUB_ENV
           fi
+          # wails3 (shipped runtime) links gtk4 + WebKitGTK 6.0 on top of the
+          # legacy gtk3 stack. The webkit2_41/4.0 tags are v2-era; wails3 uses
+          # its gtk4 default unless the gtk3 tag is set, so install it on every
+          # linux runner (guard: older runners may lack the package).
+          if apt-cache show libwebkitgtk-6.0-dev >/dev/null 2>&1; then
+            for attempt in 1 2 3; do sudo timeout 900 apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev && break || sleep 10; done
+          fi
           if [ -n "$BRAND_TAG" ]; then TAGS="${TAGS},${BRAND_TAG}"; fi
           echo "WEBKIT_TAGS=${TAGS}" >> $GITHUB_ENV
           # patchelf: RPATH on the AppDir copy. xvfb + file: smoke the artifact.
@@ -2005,6 +2026,13 @@ jobs:
             echo "WEBKIT_SONAME=libwebkit2gtk-4.0.so.37" >> $GITHUB_ENV
             echo "WEBKIT_PKG=libwebkit2gtk-4.0-37" >> $GITHUB_ENV
             echo "WEBKIT_API=4.0" >> $GITHUB_ENV
+          fi
+          # wails3 (shipped runtime) links gtk4 + WebKitGTK 6.0 on top of the
+          # legacy gtk3 stack. The webkit2_41/4.0 tags are v2-era; wails3 uses
+          # its gtk4 default unless the gtk3 tag is set, so install it on every
+          # linux runner (guard: older runners may lack the package).
+          if apt-cache show libwebkitgtk-6.0-dev >/dev/null 2>&1; then
+            for attempt in 1 2 3; do sudo timeout 900 apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev && break || sleep 10; done
           fi
           if [ -n "$BRAND_TAG" ]; then TAGS="${TAGS},${BRAND_TAG}"; fi
           echo "WEBKIT_TAGS=${TAGS}" >> $GITHUB_ENV
@@ -2424,6 +2452,13 @@ jobs:
             for attempt in 1 2 3; do sudo timeout 900 apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.0-dev && break || sleep 10; done
             webkit_pkg=webkit2gtk-4.0
             wails_tags=""
+          fi
+          # wails3 (shipped runtime) links gtk4 + WebKitGTK 6.0 on top of the
+          # legacy gtk3 stack. The webkit2_41/4.0 tags are v2-era; wails3 uses
+          # its gtk4 default unless the gtk3 tag is set, so install it on every
+          # linux runner (guard: older runners may lack the package).
+          if apt-cache show libwebkitgtk-6.0-dev >/dev/null 2>&1; then
+            for attempt in 1 2 3; do sudo timeout 900 apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev && break || sleep 10; done
           fi
           pkg-config --modversion gtk+-3.0 gio-unix-2.0 "$webkit_pkg"
           echo "CLAWMATE_WAILS_BUILD_TAGS=$wails_tags" >> "$GITHUB_ENV"

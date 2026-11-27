@@ -34,6 +34,12 @@ import (
 // emitEvent guard (a.ctx.Value("events")) keeps working unchanged.
 const eventsCtxKey = "events"
 
+// launchCompanionMode records that this process booted as the file-companion
+// (its own single-instance lock, its own WebView2 profile and its own
+// startup/dom-ready hooks). Set in Main before application.New, read by the
+// service lifecycle wrappers.
+var launchCompanionMode bool
+
 // withEventsCtx reproduces the v2 startup context: the emitEvent funnel
 // checks ctx.Value("events") for non-nil before emitting.
 func withEventsCtx(ctx context.Context) context.Context {
@@ -43,6 +49,10 @@ func withEventsCtx(ctx context.Context) context.Context {
 // ServiceStartup makes *App a wails3 service, routing into the existing v2
 // startup hook unchanged.
 func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
+	if launchCompanionMode {
+		a.fileCompanionStartup(withEventsCtx(ctx))
+		return nil
+	}
 	a.startup(withEventsCtx(ctx))
 	return nil
 }
@@ -146,7 +156,13 @@ func Main(v string) {
 	// which create_core_webview2_environment reads at environment creation.
 	// v2 parity (main.go): clear WebView2 caches when the embedded frontend
 	// fingerprint changes — stale caches on upgraded installs white-screen.
+	// WebView2 profile selection: the companion keeps its own profile
+	// (v2 fileCompanionWebviewUserDataPath parity), the main window uses the
+	// brand-scoped one.
 	webviewUserDataPath := defaultWebviewUserDataPath()
+	if launchCompanionMode {
+		webviewUserDataPath = fileCompanionWebviewUserDataPath()
+	}
 	clearWebviewAssetCacheIfNeeded(webviewUserDataPath)
 	gpuDisabled := webviewGPUDisabled(webviewUserDataPath)
 	if gpuDisabled {
@@ -155,6 +171,7 @@ func Main(v string) {
 	visualHosting := useVisualHostingWails3()
 	bootLog("wails3 gpuDisabled=%v visualHosting=%v remote=%v", gpuDisabled, visualHosting, perfSessionIsRemote())
 	launch := classifyDesktopLaunch(args)
+	launchCompanionMode = launch.Mode == desktopLaunchFileCompanion
 	winWidth, winHeight := envCheckWidth, envCheckHeight
 	hideOnClose := false
 	if launch.Mode == desktopLaunchFileCompanion {
@@ -197,14 +214,26 @@ func Main(v string) {
 			// the user's existing profile instead of a fresh default.
 			WebviewUserDataPath: webviewUserDataPath,
 		},
-		SingleInstance: &application.SingleInstanceOptions{
-			// Brand-scoped: TigerClaw/MetaStaff must not share MaClaw's
-			// single-instance lock (see main.go v2 comment).
-			UniqueID: singleInstanceUniqueID(),
-			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
-				onSecondInstanceLaunch3(app, data.Args[1:])
-			},
-		},
+		SingleInstance: func() *application.SingleInstanceOptions {
+			opts := &application.SingleInstanceOptions{
+				// Brand-scoped: TigerClaw/MetaStaff must not share MaClaw's
+				// single-instance lock (see main.go v2 comment).
+				UniqueID: singleInstanceUniqueID(),
+				OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
+					onSecondInstanceLaunch3(app, data.Args[1:])
+				},
+			}
+			if launchCompanionMode {
+				// The companion has its own lock and its own relay: a second
+				// open-file launch routes into the running companion (v2
+				// applyDesktopLaunchOptions parity).
+				opts.UniqueID = launch.LockID
+				opts.OnSecondInstanceLaunch = func(data application.SecondInstanceData) {
+					onFileCompanionSecondInstance3(app, data.Args[1:], data.WorkingDir)
+				}
+			}
+			return opts
+		}(),
 	})
 	wruntime.SetApplication(v3app)
 	runningWails3App = v3app
@@ -255,7 +284,13 @@ func Main(v string) {
 
 	// v2 OnDomReady equivalent.
 	win.OnWindowEvent(events.Common.WindowRuntimeReady, func(event *application.WindowEvent) {
-		go app.domReady(app.ctx)
+		go func() {
+			if launchCompanionMode {
+				app.fileCompanionDomReady(app.ctx)
+				return
+			}
+			app.domReady(app.ctx)
+		}()
 	})
 
 	if app.IsAutoStart {
@@ -317,4 +352,52 @@ func onSecondInstanceLaunch3(app *App, args []string) {
 		wruntime.WindowSetAlwaysOnTop(app.ctx, true)
 		wruntime.WindowSetAlwaysOnTop(app.ctx, false)
 	}()
+}
+
+// onFileCompanionSecondInstance3 is the v3 relay for second launches while
+// the file-companion is the running instance: routes quit/notice/library/
+// open-file into the live companion (v2 onFileCompanionSecondInstance
+// parity). args must exclude the executable path.
+func onFileCompanionSecondInstance3(app *App, args []string, workingDir string) {
+	launch := classifyDesktopLaunch(append([]string{"maclaw"}, args...))
+	if launch.Mode != desktopLaunchFileCompanion {
+		return
+	}
+	if launch.Quit {
+		logFileCompanion("second instance quit request")
+		app.requestCompanionQuit()
+		return
+	}
+	if launch.Notice != "" {
+		logFileCompanion("second instance notice=%s", launch.Notice)
+		app.presentCompanionPaperNotice(launch.Notice)
+		return
+	}
+	if launch.Library {
+		logFileCompanion("second instance library view")
+		app.requestFileCompanionLibraryView()
+		app.revealFileCompanionWindow()
+		return
+	}
+	// This process cwd is the install directory. On Windows and Linux the
+	// new process sends its own cwd. Darwin's payload is the executable
+	// directory, so a relative document stays relative there.
+	launchDir := workingDir
+	if goruntime.GOOS == "darwin" {
+		launchDir = ""
+	}
+	paths := make([]string, 0, len(launch.Paths))
+	for _, path := range launch.Paths {
+		doc, ok := fileCompanionDocumentArg(path, launchDir)
+		if !ok {
+			continue
+		}
+		paths = append(paths, doc)
+	}
+	logFileCompanion("second instance paths=%d", len(paths))
+	app.enqueueFileCompanionOpen(paths, launch.Place)
+	app.revealFileCompanionWindow()
+	if len(paths) == 0 {
+		app.notifyFileCompanionShow()
+	}
 }

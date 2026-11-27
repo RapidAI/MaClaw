@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/wailsapp/wails/v2/pkg/maclawcapture"
+	"github.com/RapidAI/CodeClaw/guiapp/internal/maclawcapture"
 )
 
 const fileCompanionWebCaptureEvery = 3 * time.Second
