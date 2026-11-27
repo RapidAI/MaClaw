@@ -22,7 +22,7 @@ const srcRoot = join(root, 'src');
 // Ratchets: frozen at the first sweep. Refresh intentionally (after review)
 // alongside the migration that lowers them.
 const INLINE_BUTTON_BASELINE = 59; // style={{fontSize,padding}} buttons, 2026-11-25: cloud git connect moved to scoped CSS
-const HIGH_Z_NOTRITIONAL_BASELINE = 20; // raw zIndex >= 1000 outside tests, 2026-11-03 sweep
+const HIGH_Z_NOTRITIONAL_BASELINE = 21; // raw zIndex >= 1000 outside tests; 2026-11-27: chat media context menu (top-most fixed overlay, above the 99999 status/devices popovers)
 
 const findings = [];
 const push = (rel, line, text) => findings.push(`${rel}:${line}: ${text}`);
