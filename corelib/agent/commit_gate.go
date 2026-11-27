@@ -1449,6 +1449,13 @@ func splitPowerShellAssignment(tokens []string) []string {
 			return append(out, tokens[1:]...)
 		}
 	}
+	if len(tokens) >= 2 && powershellAssignmentTarget(tokens[0]) {
+		if op, value, ok := splitLeadingAssignmentOp(tokens[1]); ok {
+			out := make([]string, 0, len(tokens)+1)
+			out = append(out, tokens[0], op, value)
+			return append(out, tokens[2:]...)
+		}
+	}
 	if joined, rest, ok := joinTypedPowerShellTarget(tokens); ok {
 		out := make([]string, 0, len(tokens))
 		out = append(out, joined)
@@ -1470,10 +1477,31 @@ func joinTypedPowerShellTarget(tokens []string) (string, []string, bool) {
 		b.WriteString(tokens[i])
 		i++
 	}
-	if i == 0 || i+1 >= len(tokens) || !powershellAssignmentOp(tokens[i+1]) || !powershellAssignmentTarget(tokens[i]) {
+	if i == 0 || i >= len(tokens) || !powershellAssignmentTarget(tokens[i]) {
 		return "", nil, false
 	}
-	b.WriteString(tokens[i])
+	name := tokens[i]
+	if op := gluedPowerShellAssignmentOp(name); op != "" && strings.Contains(name, op) && op != name {
+		target := name[:strings.Index(name, op)]
+		if !powershellAssignmentTarget(target) {
+			return "", nil, false
+		}
+		b.WriteString(target)
+		rest := []string{op, name[strings.Index(name, op)+len(op):]}
+		return b.String(), append(rest, tokens[i+1:]...), true
+	}
+	if i+1 >= len(tokens) {
+		return "", nil, false
+	}
+	if op, value, ok := splitLeadingAssignmentOp(tokens[i+1]); ok {
+		b.WriteString(name)
+		rest := []string{op, value}
+		return b.String(), append(rest, tokens[i+2:]...), true
+	}
+	if !powershellAssignmentOp(tokens[i+1]) {
+		return "", nil, false
+	}
+	b.WriteString(name)
 	return b.String(), tokens[i+1:], true
 }
 
@@ -1534,6 +1562,15 @@ func skipPowerShellAssignment(tokens []string) ([]string, bool) {
 		return nil, false
 	}
 	return tokens[2:], true
+}
+
+func splitLeadingAssignmentOp(token string) (string, string, bool) {
+	for _, op := range []string{"+=", "-=", "*=", "/=", "%=", "="} {
+		if strings.HasPrefix(token, op) && len(token) > len(op) && token[len(op)] != ',' {
+			return op, token[len(op):], true
+		}
+	}
+	return "", "", false
 }
 
 func gluedPowerShellAssignmentOp(token string) string {
