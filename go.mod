@@ -8,7 +8,6 @@ require (
 	github.com/VantageDataChat/GoExcel v0.0.0-20261110213740-d7496429564d
 	github.com/VantageDataChat/GoPDF2 v0.0.0-20261122010741-da94f9f909ae
 	github.com/Vantagics/GoPPT v0.0.0-20261122015305-b3f19c56417e
-	github.com/acarl005/stripansi v0.0.0-20180116102854-5a71ef0e047d
 	github.com/alexbrainman/odbc v0.0.0-20250601004241-49e6b2bc0cf0
 	github.com/braheezy/shine-mp3 v0.1.0
 	github.com/charmbracelet/bubbles v1.0.0
@@ -20,7 +19,6 @@ require (
 	github.com/go-ego/gse v1.0.2
 	github.com/go-lark/lark/v2 v2.0.0-beta.6
 	github.com/go-sql-driver/mysql v1.9.3
-	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hajimehoshi/go-mp3 v0.3.4
@@ -34,7 +32,6 @@ require (
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/pkg/sftp v1.13.10
 	github.com/refraction-networking/utls v1.8.2
-	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06
 	github.com/shakinm/xlsReader v0.9.12
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c
@@ -46,7 +43,6 @@ require (
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/crypto v0.57.0
 	golang.org/x/image v0.45.0
-	golang.org/x/mod v0.41.0
 	golang.org/x/net v0.60.0
 	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.48.0
@@ -58,21 +54,17 @@ require (
 )
 
 require (
-	atomicgo.dev/cursor v0.2.0 // indirect
-	atomicgo.dev/keyboard v0.2.9 // indirect
-	atomicgo.dev/schedule v0.1.0 // indirect
-	github.com/Masterminds/semver v1.5.0 // indirect
-	github.com/containerd/console v1.0.5 // indirect
-	github.com/gookit/color v1.6.0 // indirect
-	github.com/jackmordaunt/icns v1.0.0 // indirect
-	github.com/leaanthony/winicon v1.0.0 // indirect
-	github.com/lithammer/fuzzysearch v1.1.8 // indirect
-	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
-	github.com/pterm/pterm v0.12.82 // indirect
-	github.com/tc-hib/winres v0.3.1 // indirect
-	github.com/wzshiming/ctc v1.2.3 // indirect
-	github.com/wzshiming/winseq v0.0.0-20200112104235-db357dc107ae // indirect
-	golang.org/x/tools v0.51.0 // indirect
+	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
+	github.com/bep/debounce v1.2.1 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.16 // indirect
+	github.com/labstack/echo/v4 v4.16.1 // indirect
+	github.com/labstack/gommon v0.5.0 // indirect
+	github.com/leaanthony/go-ansi-parser v1.6.1 // indirect
+	github.com/leaanthony/u v1.1.1 // indirect
+	github.com/mattn/go-colorable v0.1.15 // indirect
+	github.com/tkrajina/go-reflector v0.5.8 // indirect
+	github.com/valyala/bytebufferpool v1.0.0 // indirect
+	github.com/valyala/fasttemplate v1.2.2 // indirect
 )
 
 require (
@@ -163,7 +155,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/samber/lo v1.49.1
+	github.com/samber/lo v1.49.1 // indirect
 	github.com/tevino/abool v0.0.0-20220530134649-2bfc934cb23c // indirect
 	github.com/vcaesar/cedar v0.30.0 // indirect
 	github.com/viterin/partial v1.1.0 // indirect
