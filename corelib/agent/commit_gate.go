@@ -3358,13 +3358,6 @@ func braceOpens(command string, i int) bool {
 	return powershellInvokesBlock(command, i) || scriptblockRuns(command, i)
 }
 
-func isBraceGroupClose(command string, i int) bool {
-	if i <= 0 || i >= len(command) || command[i] != '}' {
-		return false
-	}
-	return isShellBoundary(command[i-1])
-}
-
 func isShellSpace(ch byte) bool {
 	return ch == ' ' || ch == '\t' || ch == '\n'
 }
@@ -3461,13 +3454,33 @@ func braceBodyRuns(command string, open int) bool {
 	if powershellInvokesBlock(command, open) || scriptblockRuns(command, open) {
 		return true
 	}
-	// Bash runs { cmd; } when the braces are separate words.
+	// Bash runs { cmd; } only when the braces are separate words and the list
+	// ends with ;, &, or a newline. { git push } is a PowerShell value and a
+	// bash syntax error, so the space alone must not make the body run.
 	if open+1 < len(command) && isShellSpace(command[open+1]) {
-		if end, ok := matchingBrace(command, open); ok && isBraceGroupClose(command, end) {
+		if end, ok := matchingBrace(command, open); ok && bashListTerminated(command, end) {
 			return true
 		}
 	}
 	return false
+}
+
+// bashListTerminated reports the terminator bash requires before a group close.
+// Spaces may sit between that terminator and }.
+func bashListTerminated(command string, close int) bool {
+	j := close - 1
+	for j >= 0 && (command[j] == ' ' || command[j] == '\t' || command[j] == '\r') {
+		j--
+	}
+	if j < 0 {
+		return false
+	}
+	switch command[j] {
+	case ';', '&', '\n':
+		return true
+	default:
+		return false
+	}
 }
 
 // scriptblockRuns reports a block PowerShell invokes. -split runs its

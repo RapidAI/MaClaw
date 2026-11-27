@@ -123,6 +123,8 @@ func TestClassifyCommitCallShapes(t *testing.T) {
 		{"bash", `{"command":"$(cd /tmp; git push)"}`, CommitHuman},
 		{"bash", `{"command":"(cd /tmp; git push)"}`, CommitHuman},
 		{"bash", `{"command":"{ git push; }"}`, CommitHuman},
+		{"bash", `{"command":"{ git push }"}`, CommitUnclassified},
+		{"bash", `{"command":"$sb = { git push }"}`, CommitUnclassified},
 		{"bash", `{"command":"(git status)"}`, CommitUnclassified},
 		{"bash", `{"command":"{ git status; }"}`, CommitUnclassified},
 		{"bash", `{"command":"echo {foo; git push"}`, CommitHuman},
