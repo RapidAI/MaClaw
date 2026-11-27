@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -569,11 +568,13 @@ func quotedPowerShellExecutable(command string) bool {
 }
 
 // windowsCodingPipeConsumerWaitPatterns turn the early exit of a truncating
-// pipeline consumer into a full read. `Select-Object -First N` and the array
-// slice `[0..N]` stop the pipeline once they have N objects, which kills
-// the upstream native command and leaves $LASTEXITCODE at -1 even when the
-// command itself succeeded. -Wait keeps the consumer reading so the native
-// command ends on its own and reports its real exit status.
+// pipeline consumer into a full read. `Select-Object -First N` stops the
+// upstream command once it has N objects and leaves $LASTEXITCODE at -1 even
+// when that command succeeded. -Wait keeps the consumer reading so the native
+// command ends on its own and reports its real exit status. An array slice is
+// not a pipeline stop. Windows PowerShell 5.1 already clamps a range to the
+// indexed array and keeps its start index; rewriting it drops that start and
+// can walk backwards.
 var windowsCodingPipeConsumerWaitPatterns = []struct {
 	pattern *regexp.Regexp
 	fix     func(match []string) string
@@ -592,16 +593,6 @@ var windowsCodingPipeConsumerWaitPatterns = []struct {
 			return regexp.MustCompile(`(?i)(\bSelect-Object\b[^|;\n]*?-First(?:\s+|:)\d+)\s-Wait\b`).MatchString(command)
 		},
 	},
-	{
-		pattern: regexp.MustCompile(`(\[)\s*(\d+)\s*\.\.\s*(\d+)\s*(\])`),
-		fix: func(match []string) string {
-			end, err := strconv.Atoi(match[3])
-			if err != nil {
-				return match[0]
-			}
-			return fmt.Sprintf("[Math]::Min(%d, $_.Count - 1)]", end)
-		},
-	},
 }
 
 // keepCodingPowerShellPipeReaders makes a truncating pipeline consumer read
@@ -612,11 +603,51 @@ func keepCodingPowerShellPipeReaders(command string) string {
 		if rule.alreadyApplied != nil && rule.alreadyApplied(command) {
 			continue
 		}
-		command = rule.pattern.ReplaceAllStringFunc(command, func(found string) string {
-			return rule.fix(rule.pattern.FindStringSubmatch(found))
-		})
+		command = replaceUnquotedCodingCommand(command, rule.pattern, rule.fix)
 	}
 	return command
+}
+
+// replaceUnquotedCodingCommand rewrites only code, not text inside quotes.
+// A range or Select-Object switch that is sample output must stay literal.
+func replaceUnquotedCodingCommand(command string, pattern *regexp.Regexp, fix func(match []string) string) string {
+	runes := []rune(command)
+	var b strings.Builder
+	b.Grow(len(command))
+	var quote rune
+	start := 0
+	rewrite := func(end int) {
+		if end <= start {
+			return
+		}
+		segment := string(runes[start:end])
+		b.WriteString(pattern.ReplaceAllStringFunc(segment, func(found string) string {
+			return fix(pattern.FindStringSubmatch(found))
+		}))
+	}
+	// Indexes are rune offsets. A byte index would split a multibyte
+	// character and could rewrite the quote protecting the match.
+	for i, r := range runes {
+		if quote != 0 {
+			if r == quote {
+				b.WriteString(string(runes[start : i+1]))
+				quote = 0
+				start = i + 1
+			}
+			continue
+		}
+		if r == '\'' || r == '"' {
+			rewrite(i)
+			quote = r
+			start = i
+		}
+	}
+	if quote != 0 {
+		b.WriteString(string(runes[start:]))
+		return b.String()
+	}
+	rewrite(len(runes))
+	return b.String()
 }
 
 func wrapCodingPowerShellCommand(psCommand string) string {

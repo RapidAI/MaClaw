@@ -7402,9 +7402,19 @@ func TestKeepCodingPowerShellPipeReadersAddsWait(t *testing.T) {
 			want:    `dir | Select-Object Name,Length`,
 		},
 		{
-			name:    "array slice is clamped",
-			command: `$lines[0..2]`,
-			want:    `$lines[Math]::Min(2, $_.Count - 1)]`,
+			name:    "array slice keeps its start index",
+			command: `$lines[1..4]`,
+			want:    `$lines[1..4]`,
+		},
+		{
+			name:    "property slice stays literal",
+			command: `$result.Lines[0..2]`,
+			want:    `$result.Lines[0..2]`,
+		},
+		{
+			name:    "quoted range stays literal",
+			command: `Write-Output '$lines[0..2]'`,
+			want:    `Write-Output '$lines[0..2]'`,
 		},
 		{
 			name:    "plain index untouched",
