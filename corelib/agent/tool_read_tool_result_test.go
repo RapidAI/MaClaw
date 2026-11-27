@@ -109,8 +109,8 @@ func TestRegisterCoreTools_IncludesReadToolResult(t *testing.T) {
 			if strings.Contains(desc, "small limit") {
 				t.Fatalf("description still tells the model to prefer a tiny page: %s", desc)
 			}
-			if !strings.Contains(desc, "Omit limit") || !strings.Contains(desc, "next_offset") {
-				t.Fatalf("description must state the default page and the continuation offset: %s", desc)
+			if !strings.Contains(desc, "Omit limit") || !strings.Contains(desc, "next_offset") || !strings.Contains(desc, "keep the query") {
+				t.Fatalf("description must state the default page, the continuation offset, and that a search keeps its query: %s", desc)
 			}
 			parameters, _ := fn["parameters"].(map[string]interface{})
 			properties, _ := parameters["properties"].(map[string]interface{})

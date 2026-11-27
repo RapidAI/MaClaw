@@ -16,10 +16,12 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -33,6 +35,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
+
+	regexpSyntax "regexp/syntax"
 )
 
 // TurnRouter is an optional LoopCallbacks extension for per-turn model routing.
@@ -4625,7 +4629,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				log.Printf("[agent-loop] commit %q repeated with the same arguments; telling the model the result stands", name)
 				note := fmt.Sprintf("[系统] 工具 %s 已用相同参数成功执行，该结果仍然有效。不要用相同参数再调用它。若任务还要继续，改参数或做下一步；若已经完成，直接回答。", name)
 				if ImmutableToolResultRead(name) {
-					note = "[系统] read_tool_result 这一页已经返回。不要用相同的 id 和 offset 再读。结果里 truncated 为 false 时，用已有内容继续任务。为 true 时，把 offset 设成结果里 next_offset 那一行的整数，并省略 limit。"
+					note = "[系统] read_tool_result 这一页已经返回。没有 query 时，不要用相同的 id 和 offset 再读。有 query 时，不要用相同的 id、query 和 offset 再读；换一个 query 是另一次搜索。结果里 truncated 为 false 时，用已有内容继续任务。为 true 时，把 offset 设成结果里 next_offset 那一行的整数，保留 header 里的 query，并省略 limit。丢掉 query 会改成字节翻页，不是这次搜索的下一页。"
 				}
 				conversation = append(conversation, map[string]interface{}{
 					"role":    "user",
@@ -5619,23 +5623,16 @@ func advertisedReadContinuation(call toolCallRecord) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	rest, ok := strings.CutPrefix(page, "read_tool_result\n")
+	handle, current, query, ok := parseSpilledPageIdentity(page)
 	if !ok {
-		return "", false
-	}
-	handle, offsetText, ok := strings.Cut(rest, "\n")
-	if !ok || handle == "" {
-		return "", false
-	}
-	current, err := strconv.Atoi(offsetText)
-	if err != nil {
 		return "", false
 	}
 	next, ok := headerNextOffset(call.result)
 	if !ok || next <= current {
 		return "", false
 	}
-	return "read_tool_result\n" + handle + "\n" + strconv.Itoa(next), true
+	// The next search window is the same observation, not a byte page.
+	return formatSpilledPageIdentity(handle, next, query), true
 }
 
 // headerServedOffset is the offset line in a read_tool_result header.
@@ -5716,8 +5713,10 @@ func repeatedCommitStops(noted map[string]struct{}, id string, seen int) bool {
 // repeatedSuccessfulCommit reports that the latest call is a commit whose
 // arguments and receipt already occurred in this turn. Polls are ignored.
 // The identity is stable across JSON key order. A spilled page is the handle
-// plus the byte offset: limit is normalized away before the read, so a model
-// that alternates limit=1 and an omitted limit is still the same page.
+// plus the byte offset, and the normalized search query when one was used.
+// limit is normalized away before the read, so a model that alternates
+// limit=1 and an omitted limit is still the same page. A different query is
+// a different observation: search does not page by offset alone.
 func repeatedSuccessfulCommit(calls []toolCallRecord) (id string, seen int) {
 	if len(calls) == 0 {
 		return "", 0
@@ -5785,7 +5784,169 @@ func spilledPageIdentity(call toolCallRecord) (string, bool) {
 	if served, ok := headerServedOffset(call.result); ok && served < offset {
 		offset = served
 	}
-	return "read_tool_result\n" + id + "\n" + strconv.Itoa(offset), true
+	return formatSpilledPageIdentity(id, offset, spilledSearchQuery(args, call.result)), true
+}
+
+// formatSpilledPageIdentity is the stored page. A search is not a byte page:
+// the same handle and offset with a different query is a different observation.
+// An empty query keeps the historical id/offset identity so byte-page
+// continuation keys stay stable. The query is quoted so a newline inside it
+// cannot split the identity.
+func formatSpilledPageIdentity(id string, offset int, query string) string {
+	page := "read_tool_result\n" + id + "\n" + strconv.Itoa(offset)
+	if query == "" {
+		return page
+	}
+	return page + "\n" + strconv.Quote(query)
+}
+
+func parseSpilledPageIdentity(page string) (handle string, offset int, query string, ok bool) {
+	rest, found := strings.CutPrefix(page, "read_tool_result\n")
+	if !found {
+		return "", 0, "", false
+	}
+	handle, rest, found = strings.Cut(rest, "\n")
+	if !found || handle == "" {
+		return "", 0, "", false
+	}
+	offsetText, quoted, hasQuery := strings.Cut(rest, "\n")
+	n, err := strconv.Atoi(offsetText)
+	if err != nil {
+		return "", 0, "", false
+	}
+	if !hasQuery {
+		return handle, n, "", true
+	}
+	unquoted, err := strconv.Unquote(quoted)
+	if err != nil {
+		return "", 0, "", false
+	}
+	return handle, n, unquoted, true
+}
+
+// spilledSearchQuery is the observation readSearchOpened actually ran.
+// That search trims, then matches and pages with the raw bytes. Case
+// spellings of one (?i) class are one page only when folding does not change
+// those bytes: a shorter fold shifts the overlap window and the next offset.
+// The header is the fallback when the args omit a query that the result
+// already names. Only the header is scanned.
+func spilledSearchQuery(args map[string]interface{}, result string) string {
+	query := toolresult.ParseArgsString(args, "query")
+	if strings.TrimSpace(query) == "" {
+		query = headerSearchQuery(result)
+	}
+	return normalizeSpilledSearchQuery(query)
+}
+
+func normalizeSpilledSearchQuery(query string) string {
+	query = strings.TrimSpace(query)
+	// readSearchOpened rejects the raw query before compiling (?i). A folded
+	// form that shrinks under 4096 bytes is a different observation: the long
+	// spelling is an error, and joining it to the accepted spelling stops the
+	// next search as if both had returned the same page.
+	if len(query) > maxSpilledSearchQueryBytes {
+		return query
+	}
+	folded := foldSpilledSearchQuery(query)
+	// Search pages by the raw query bytes, not the folded class. Kelvin is
+	// three bytes and folds to "K"; treating those as one page makes the
+	// next overlap window and next_offset look like the same observation.
+	if len(folded) != len(query) {
+		return query
+	}
+	// regexp.Compile("(?i)"+QuoteMeta(query)) is the observation. A local
+	// SimpleFold walk that disagrees with that compile, or that grows past
+	// the pattern-size limit and makes Compile fail, is not that page.
+	if !spilledSearchFoldCompiles(query, folded) {
+		return query
+	}
+	return folded
+}
+
+func foldSpilledSearchQuery(query string) string {
+	var b strings.Builder
+	b.Grow(len(query))
+	for _, r := range query {
+		b.WriteRune(foldedSearchRune(r))
+	}
+	return b.String()
+}
+
+// spilledSearchFoldCompiles reports that the folded spelling is the page
+// readSearchOpened actually searches. That path is regexp.Compile, which
+// parses with syntax.Perl and then Simplify. Regexp.String keeps the raw
+// pattern, so "I" and "i" look different even though (?i) searches one class.
+// A fold that does not parse must stay distinct from an accepted shorter
+// spelling of the same SimpleFold class.
+func spilledSearchFoldCompiles(raw, folded string) bool {
+	left, err := compiledSearchPattern(raw)
+	if err != nil {
+		return false
+	}
+	right, err := compiledSearchPattern(folded)
+	if err != nil {
+		return false
+	}
+	return left.Equal(right)
+}
+
+func compiledSearchPattern(query string) (*regexpSyntax.Regexp, error) {
+	re, err := regexpSyntax.Parse("(?i)"+regexp.QuoteMeta(query), regexpSyntax.Perl)
+	if err != nil {
+		return nil, err
+	}
+	return re.Simplify(), nil
+}
+
+// regexpFoldMin and regexpFoldMax are the runes Go's regexp (?i) folds.
+// regexp/syntax.minFoldRune returns any rune outside that span unchanged,
+// even when unicode.SimpleFold has a partner. Folding those partners into
+// one page treats two searches as one observation.
+const (
+	regexpFoldMin rune = 0x0041
+	regexpFoldMax rune = 0x1e943
+	// maxSpilledSearchQueryBytes matches toolresult's raw query cap. Folding
+	// must not run on a query that search rejects before regexp.Compile.
+	maxSpilledSearchQueryBytes = 4096
+)
+
+// foldedSearchRune is the representative regexp (?i) compiles for r.
+// That compiler walks unicode.SimpleFold and keeps the minimum, but only
+// inside [regexpFoldMin, regexpFoldMax]. strings.ToLower(U+0130) is ASCII i,
+// and (?i) does not match those spellings. Final sigma and capital sigma
+// are one (?i) class and must stay one page.
+func foldedSearchRune(r rune) rune {
+	if r < regexpFoldMin || r > regexpFoldMax {
+		return r
+	}
+	best := r
+	for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+		if next < best {
+			best = next
+		}
+	}
+	return best
+}
+
+func headerSearchQuery(result string) string {
+	fence := strings.Index(result, "\n---\n")
+	header := result
+	if fence >= 0 {
+		header = result[:fence]
+	}
+	for _, line := range strings.Split(header, "\n") {
+		line = strings.TrimSpace(line)
+		rest, ok := strings.CutPrefix(line, "query:")
+		if !ok {
+			continue
+		}
+		quoted := strings.TrimSpace(rest)
+		if unquoted, err := strconv.Unquote(quoted); err == nil {
+			return unquoted
+		}
+		return quoted
+	}
+	return ""
 }
 
 func commitIdentity(call toolCallRecord) string {
@@ -7045,7 +7206,9 @@ type toolOutcome struct {
 //   - "未知工具"         → im_tool_execution.go, subagent callbacks
 //   - "参数解析失败"     → im_tool_execution.go, tui callbacks
 //   - "错误:"           → various tool handlers
-//   - "Error:"          → various tool handlers
+//   - "Error:" / "error:" → tool handlers. read_tool_result uses the
+//     lowercase spelling. Matching only "Error:" recorded that failure
+//     as a successful page.
 func classifyToolResult(result string) toolOutcome {
 	snippet := truncateRunesSuffix(result, 300)
 
@@ -7060,14 +7223,19 @@ func classifyToolResult(result string) toolOutcome {
 		"工具执行异常", // im_tool_execution.go panic recovery
 		"未知工具",   // im_tool_execution.go, subagent callbacks
 		"参数解析失败", // im_tool_execution.go, tui callbacks
-		"错误:",    // various tool handlers
-		"Error:", // various tool handlers
+		"错误:", // various tool handlers
 	}
 	trimmed := strings.TrimSpace(result)
 	for _, prefix := range errorPrefixes {
 		if strings.HasPrefix(trimmed, prefix) {
 			return toolOutcome{kind: toolOutcomeError, snippet: snippet}
 		}
+	}
+	// read_tool_result and the isolated runtime emit lowercase "error:".
+	// Only that spelling and "Error:" are structured markers. EqualFold
+	// also matched "ERROR:", which successful command output can print.
+	if strings.HasPrefix(trimmed, "error:") || strings.HasPrefix(trimmed, "Error:") {
+		return toolOutcome{kind: toolOutcomeError, snippet: snippet}
 	}
 	// Also check for [错误] appearing mid-result (e.g. bash output + error).
 	if strings.Contains(result, "\n[错误]") {

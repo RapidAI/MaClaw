@@ -425,8 +425,13 @@ func FormatReadResult(r ReadResult) string {
 	b.WriteString(r.Content)
 	b.WriteString("\n--- end ---\n")
 	if r.Truncated {
-		fmt.Fprintf(&b, "hint: truncated is true. Call read_tool_result with this id and offset=%d. Omit limit. Do not send offset=%d.\n",
-			r.NextOffset, r.Offset)
+		if r.Query != "" {
+			fmt.Fprintf(&b, "hint: truncated is true. Call read_tool_result with this id, query %q, and offset=%d. Omit limit. Do not send offset=%d and do not drop the query.\n",
+				r.Query, r.NextOffset, r.Offset)
+		} else {
+			fmt.Fprintf(&b, "hint: truncated is true. Call read_tool_result with this id and offset=%d. Omit limit. Do not send offset=%d.\n",
+				r.NextOffset, r.Offset)
+		}
 	} else if r.Query != "" {
 		fmt.Fprintf(&b, "hint: search complete for query %q. Do not repeat the same id, query, and offset %d.\n", r.Query, r.Offset)
 	} else {

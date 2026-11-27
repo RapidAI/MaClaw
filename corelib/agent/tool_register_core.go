@@ -188,7 +188,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"Re-read one page of a spilled tool_result handle by id from a prior [tool_result_handle] footer. "+
 				"Omit limit: one call returns a full page (default %d bytes). "+
 				"Use query for a keyword/path/error to return bounded matching excerpts instead of paging the full result. limit is a byte cap, not a count of items. "+
-				"When the result says truncated: true, call again with offset set to next_offset. Do not repeat the same id and offset.",
+				"When the result says truncated: true, call again with offset set to next_offset and keep the query when that result names one. Do not repeat the same id, query, and offset.",
 			toolresult.DefaultReadLimit,
 		),
 		Properties: map[string]interface{}{

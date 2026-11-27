@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/chat_ui.dart' show ChatComposer, ChatRole, MessageBubble;
 import '../../core/locale.dart';
+import '../../core/theme.dart';
 import '../../core/ui_kit.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -21,7 +22,7 @@ import '../../core/asr_fallback.dart';
 import '../../core/native_voice.dart';
 import '../../core/platform.dart';
 import '../../core/providers.dart';
-import '../../core/speech_text.dart';
+import '../../core/speech_readback.dart';
 import '../../core/mic_recorder.dart';
 import '../../core/voice_engine.dart';
 import 'assistant_api.dart';
@@ -32,6 +33,12 @@ class _Msg {
   String text;
   bool pending;
   bool failed = false;
+
+  /// Live thinking trace while the job runs (`progress` from the job status):
+  /// one short line per tool step. The answer replaces it, so it is cleared —
+  /// not kept — once the reply lands: the person asked for the result, not a
+  /// log of how it was produced.
+  List<String> thinking = const [];
 
   /// Bound document this user turn carried (displayed as a chip).
   final String attachment;
@@ -109,6 +116,10 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     }
     if (supportsVoiceOutput) {
       _tts = FlutterTts();
+      // Constructor replaces the process-wide channel handler. Register
+      // before any await so a reply still speaking on another page ends,
+      // and this page keeps the wrapper around its own completion handler.
+      noteSystemTtsReceiver(_tts!);
       unawaited(_tts!.setLanguage('zh-CN').then((_) {}).catchError((_) {}));
     }
   }
@@ -192,10 +203,18 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         await Future<void>.delayed(_pollInterval);
         if (!mounted) return;
         job = await api.getJob(job.jobId);
+        // The trace is shown only while the turn runs; it disappears with
+        // the answer so a finished reply reads as one block.
+        if (!mounted || !pending.pending) break;
+        if (job.progress.isNotEmpty &&
+            !_sameLines(pending.thinking, job.progress)) {
+          setState(() => pending.thinking = job.progress);
+        }
       }
       if (!mounted) return;
       setState(() {
         pending.pending = false;
+        pending.thinking = const [];
         if (job.isReady && job.answer.trim().isNotEmpty) {
           pending.text = job.answer;
         } else {
@@ -210,6 +229,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       if (!mounted) return;
       setState(() {
         pending.pending = false;
+        pending.thinking = const [];
         pending.failed = true;
         pending.text = error.toString();
       });
@@ -219,6 +239,15 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         _scrollToEnd();
       }
     }
+  }
+
+  /// 轮询回来的进度只在变化时 setState，避免每 1.6 秒重建整页。
+  static bool _sameLines(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   void _retry(_Msg failed) {
@@ -857,19 +886,13 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   Future<void> _speakOnce(_Msg m) async {
     if (!_readOut || !supportsVoiceOutput || _spoken.contains(m.id)) return;
     _spoken.add(m.id);
-    final text = plainTextForSpeech(m.text);
-    if (text.isEmpty) return;
-    final engine = ref.read(voiceEngineProvider);
-    if (await engine.useKokoro) {
-      final err = await engine.speakKokoro(text, onDone: () {});
-      if (err == null) return;
-    }
-    try {
-      await _tts?.stop();
-      await _tts?.speak(text);
-    } on Object {
-      // TTS is best-effort — the answer is already on screen.
-    }
+    // 分段队列：边合成边播，第一段出声不再等整段合成完。
+    await speakReplyReadback(
+      ref.read(voiceEngineProvider),
+      m.text,
+      onDone: () {},
+      systemTts: () => _tts,
+    );
   }
 
   void _newChat() {
@@ -1023,10 +1046,22 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
               ),
             ),
           if (m.pending)
-            const SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 1),
+                  child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+                if (m.thinking.isNotEmpty) ...[
+                  const SizedBox(width: AppSpacing.sm),
+                  Flexible(child: _ThinkingTrace(lines: m.thinking)),
+                ],
+              ],
             )
           else if (m.isUser)
             Text(m.text)
@@ -1041,6 +1076,64 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           ],
         ],
       ),
+    );
+  }
+}
+
+/// 等待期间的思考过程：一条浅色竖线上滚动的步骤行，最后一行高亮。
+/// 结果一落地这一块整个撤掉（调用方把 thinking 清空），不留日志。
+class _ThinkingTrace extends StatelessWidget {
+  const _ThinkingTrace({required this.lines});
+
+  final List<String> lines;
+
+  /// 同时显示的行数：再多就只保留末尾，避免气泡撑满整屏。
+  static const _visible = 3;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final shown = lines.length > _visible
+        ? lines.sublist(lines.length - _visible)
+        : lines;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.psychology_outlined,
+              size: 13,
+              color: scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              context.S.rtThinkingStreaming,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: scheme.primary,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
+        for (var i = 0; i < shown.length; i++)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text(
+              shown[i],
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: i == shown.length - 1
+                    ? scheme.onSurface
+                    : scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

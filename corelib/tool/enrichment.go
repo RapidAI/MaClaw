@@ -219,7 +219,7 @@ Typical usage: Read source code, config files, logs`,
 - offset (int, optional): Omit on the first read. When the previous read says truncated is true, set this to the integer on its next_offset line
 - limit (int, optional): Omit. One page is %d bytes; a smaller value is raised to that page. Maximum %d
 - query (string, optional): Literal keyword/path/error. Returns bounded matching excerpts with match_offset values instead of a sequential page.
-How to use: When a tool result shows [tool_result_handle], call read_tool_result(id=...) once and omit limit. Add query when a keyword is known. If truncated is false, use that page. If truncated is true, call again with offset set to the integer on the next_offset line. Do not repeat the same id and offset.`, toolresult.DefaultReadLimit, toolresult.MaxReadLimit),
+How to use: When a tool result shows [tool_result_handle], call read_tool_result(id=...) once and omit limit. Add query when a keyword is known. If truncated is false, use that page. If truncated is true, call again with offset set to the integer on the next_offset line and keep the query when that result names one. Do not repeat the same id, query, and offset.`, toolresult.DefaultReadLimit, toolresult.MaxReadLimit),
 
 	"FileRead": `Parameters:
 - path (string, required): 要读取的文件路径，可为绝对路径或相对当前项目目录的路径

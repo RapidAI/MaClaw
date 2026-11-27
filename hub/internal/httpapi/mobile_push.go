@@ -559,7 +559,17 @@ func mobilePushNonEmpty(parts ...string) []string {
 // mobilePushOnRealtimeEvent enqueues pending + optionally delivers remote push
 // when the viewer has no live realtime socket (or remote is always preferred for terminal).
 func mobilePushOnRealtimeEvent(tenantID, userID string, event map[string]any, realtimeClients int) {
-	if event == nil || !mobileOwnerWriteAllowed(tenantID, userID) {
+	if event == nil {
+		return
+	}
+	// Non-terminal frames are live progress. Reject them before taking the
+	// purge read lock: the agent loop already holds that lock while it emits,
+	// and a queued unbind write lock would deadlock a new reader.
+	status := mobileExtractEventStatus(event)
+	if !mobileIsTerminalStatus(status) {
+		return
+	}
+	if !mobileOwnerWriteAllowed(tenantID, userID) {
 		return
 	}
 	typ, _ := event["type"].(string)
@@ -568,10 +578,6 @@ func mobilePushOnRealtimeEvent(tenantID, userID string, event map[string]any, re
 	case "ssh_task", "ssh_file_operation", "document_task", "digital_employee_task",
 		"assistant_job", "agent_job":
 	default:
-		return
-	}
-	status := mobileExtractEventStatus(event)
-	if !mobileIsTerminalStatus(status) {
 		return
 	}
 	taskID := mobileExtractEventTaskID(event)

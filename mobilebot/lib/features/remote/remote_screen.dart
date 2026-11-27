@@ -10,6 +10,7 @@ import '../../core/ui_kit.dart';
 import '../bots/bots_controller.dart' show failureMessage;
 import 'remote_api.dart';
 import 'remote_models.dart';
+import 'remote_task_screen.dart' show taskStateBadge;
 import 'task_spaces.dart';
 
 final remoteApiProvider = Provider<RemoteControlApi?>((ref) {
@@ -189,6 +190,13 @@ class _RemoteBody extends ConsumerWidget {
               _IncomingInviteCard(grant: grant, machines: snapshot.machines),
             const SizedBox(height: AppSpacing.lg),
           ],
+          const _ScopeSwitch(),
+          Text(
+            context.S.rcCloudSeparateHint,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
           SectionHeader(title: context.S.rcSectionMachines),
           if (usable.isEmpty)
             Card(
@@ -212,6 +220,100 @@ class _RemoteBody extends ConsumerWidget {
           const SizedBox(height: AppSpacing.md),
           if (selected != null) _TaskSection(grant: selected),
         ],
+      ),
+    );
+  }
+}
+
+/// Top-of-page split: this machine's tasks stay on the page; cloud tasks
+/// are the account-level list and open beside remote, not inside a grant.
+class _ScopeSwitch extends StatelessWidget {
+  const _ScopeSwitch();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppSpacing.lg),
+      child: Row(
+        children: [
+          Expanded(
+            child: _ScopeChip(
+              icon: Icons.connected_tv_outlined,
+              label: context.S.rcMachineTasks,
+              selected: true,
+              onTap: null,
+            ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: _ScopeChip(
+              icon: Icons.cloud_outlined,
+              label: context.S.rcCloudTasks,
+              selected: false,
+              onTap: () => GoRouter.maybeOf(context)?.push('/cloud'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ScopeChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  const _ScopeChip({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final fg = selected ? scheme.primary : scheme.onSurfaceVariant;
+    return Material(
+      color: selected
+          ? scheme.primaryContainer.withValues(alpha: 0.55)
+          : scheme.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        side: BorderSide(
+          color: selected
+              ? scheme.primary.withValues(alpha: 0.45)
+              : scheme.outlineVariant.withValues(alpha: 0.7),
+        ),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.sm,
+            vertical: AppSpacing.sm + 2,
+          ),
+          child: Row(
+            children: [
+              Icon(icon, size: 18, color: fg),
+              const SizedBox(width: AppSpacing.xs),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    color: fg,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -847,7 +949,7 @@ class _TaskSection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SectionHeader(
-          title: context.S.rcTasksTitle,
+          title: context.S.rcMachineTasks,
           trailing: grant.canOperate
               ? FilledButton.tonalIcon(
                   onPressed: () => _createRemoteTask(context, grant),
@@ -1156,33 +1258,43 @@ class _TaskCard extends ConsumerWidget {
 
   /// activeStatus 的终态 → (kind, label, color)。kind 是给图标选择用的
   /// 语义键（与本地化文本解耦）；label 走翻译。
+  ///
+  /// 三处都和桌面侧栏同一套语义：
+  /// - 有快照：按 status 的关键词归结到已完成/失败/取消/中断/运行中；
+  /// - 无快照但 `has_output` 为真：桌面侧栏（taskStatusBucketFor）就是这样
+  ///   把普通对话画成「已完成」的，手机不能再画成「待开始」；
+  /// - 两者都空：从未跑过、也没有产出，什么都不显示，不再是误导性的
+  ///   「待开始」。
   (String, String, Color) _stateOf(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final S = context.S;
-    final status = task.activeStatus.toLowerCase();
-    if (task.running) {
+    // 列表与详情共用 taskStateBadge：两处各写一套映射时，同一个任务
+    // 会在两个页面上显示不同状态。
+    final badge = taskStateBadge(context, task);
+    if (badge == null) {
       return (
-        'running',
-        task.activePhase.isNotEmpty ? task.activePhase : S.rcStateRunning,
-        scheme.primary,
+        'none',
+        '',
+        Theme.of(context).colorScheme.onSurfaceVariant,
       );
     }
-    if (status.contains('fail') || status.contains('error')) {
-      return ('failed', S.stStateFailed, const Color(0xFFD64545));
-    }
-    if (status.contains('cancel')) {
-      return ('cancelled', S.rcStateCancelled, scheme.onSurfaceVariant);
-    }
-    if (status.contains('interrupt')) {
-      return ('interrupted', S.rcStateInterrupted, const Color(0xFFD97B42));
-    }
+    return (
+      _stateKind(task),
+      badge.label,
+      badge.color,
+    );
+  }
+
+  /// 给图标选择用的语义键，判定和 taskStateBadge 一致。
+  String _stateKind(RemoteTask task) {
+    final status = task.activeStatus.toLowerCase();
+    if (task.running) return 'running';
+    if (status.contains('fail') || status.contains('error')) return 'failed';
+    if (status.contains('cancel')) return 'cancelled';
+    if (status.contains('interrupt')) return 'interrupted';
     if (status.contains('completed') || status.contains('done')) {
-      return ('completed', S.stStateCompleted, const Color(0xFF6AA84F));
+      return 'completed';
     }
-    if (task.activeStatus.isNotEmpty) {
-      return ('other', task.activeStatus, scheme.onSurfaceVariant);
-    }
-    return ('notStarted', S.rcStateNotStarted, scheme.onSurfaceVariant);
+    if (task.activeStatus.isNotEmpty) return 'other';
+    return task.hasOutput ? 'completed' : 'none';
   }
 
   @override
@@ -1283,14 +1395,15 @@ class _TaskCard extends ConsumerWidget {
                                     color: typeColor,
                                     maxWidth: maxChip,
                                   ),
-                                  _metaChip(
-                                    label: stateLabel,
-                                    color: stateColor,
-                                    maxWidth: maxChip,
-                                    icon: task.running
-                                        ? Icons.circle
-                                        : _stateIcon(stateKind),
-                                  ),
+                                  if (stateLabel.isNotEmpty)
+                                    _metaChip(
+                                      label: stateLabel,
+                                      color: stateColor,
+                                      maxWidth: maxChip,
+                                      icon: task.running
+                                          ? Icons.circle
+                                          : _stateIcon(stateKind),
+                                    ),
                                   if (task.pendingReview)
                                     _metaChip(
                                       label: context.S.rcPendingReview,

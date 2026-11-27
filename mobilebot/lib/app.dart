@@ -28,6 +28,8 @@ import 'features/bots/bot_models.dart';
 import 'features/bots/bot_settings_screen.dart';
 import 'features/bots/bots_controller.dart';
 import 'features/bots/bots_screen.dart';
+import 'features/cloud/cloud_models.dart';
+import 'features/cloud/cloud_screen.dart';
 import 'features/remote/remote_models.dart';
 import 'features/remote/remote_screen.dart';
 import 'features/remote/remote_task_screen.dart';
@@ -115,6 +117,7 @@ final _routerProvider = Provider<GoRouter>((ref) {
             builder: (_, _) => const AssistantScreen(),
           ),
           GoRoute(path: '/remote', builder: (_, _) => const RemoteScreen()),
+          GoRoute(path: '/cloud', builder: (_, _) => const CloudScreen()),
           GoRoute(path: '/status', builder: (_, _) => const StatusScreen()),
           GoRoute(path: '/account', builder: (_, _) => const AccountScreen()),
         ],
@@ -164,6 +167,31 @@ final _routerProvider = Provider<GoRouter>((ref) {
                   FilledButton.tonal(
                     onPressed: () => context.go('/rooms'),
                     child: Text(context.S.backToRooms),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+      GoRoute(
+        path: '/cloud/task',
+        builder: (context, state) {
+          final extra = state.extra;
+          if (extra is ({CloudInstance instance, CloudTask task})) {
+            return CloudTaskScreen(instance: extra.instance, task: extra.task);
+          }
+          return Scaffold(
+            appBar: AppBar(),
+            body: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(context.S.errorTaskNotFound),
+                  const SizedBox(height: 12),
+                  FilledButton.tonal(
+                    onPressed: () => context.go('/cloud'),
+                    child: Text(context.S.backToCloud),
                   ),
                 ],
               ),
@@ -344,7 +372,7 @@ class _CenterTabIcon extends StatelessWidget {
   }
 }
 
-/// Bottom navigation shell: Bot 列表 / 工作状态 / 我的.
+/// Bottom navigation shell: Bot / 远控 / 云端 / 助手 / 状态 / 我的.
 class _HomeShell extends ConsumerStatefulWidget {
   final Widget child;
 
@@ -355,14 +383,22 @@ class _HomeShell extends ConsumerStatefulWidget {
 }
 
 class _HomeShellState extends ConsumerState<_HomeShell> {
-  static const _tabs = ['/', '/remote', '/assistant', '/status', '/account'];
+  static const _tabs = [
+    '/',
+    '/remote',
+    '/cloud',
+    '/assistant',
+    '/status',
+    '/account',
+  ];
   Timer? _updateTimer;
 
   int _indexOf(String location) {
     if (location.startsWith('/remote')) return 1;
-    if (location.startsWith('/assistant')) return 2;
-    if (location.startsWith('/status')) return 3;
-    if (location.startsWith('/account')) return 4;
+    if (location.startsWith('/cloud')) return 2;
+    if (location.startsWith('/assistant')) return 3;
+    if (location.startsWith('/status')) return 4;
+    if (location.startsWith('/account')) return 5;
     return 0;
   }
 
@@ -447,6 +483,11 @@ class _HomeShellState extends ConsumerState<_HomeShell> {
               icon: Icon(Icons.connected_tv_outlined),
               selectedIcon: Icon(Icons.connected_tv),
               label: context.S.tabRemote,
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.cloud_outlined),
+              selectedIcon: Icon(Icons.cloud),
+              label: context.S.tabCloud,
             ),
             NavigationDestination(
               icon: _CenterTabIcon(icon: Icons.auto_awesome_outlined),

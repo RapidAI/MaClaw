@@ -20,6 +20,7 @@ import '../../core/asr_fallback.dart';
 import '../../core/native_voice.dart';
 import '../../core/platform.dart';
 import '../../core/providers.dart';
+import '../../core/speech_readback.dart';
 import '../../core/speech_text.dart';
 import '../../core/voice_engine.dart';
 import '../../core/chat_ui.dart' show ChatComposer, ChatRole, MessageBubble;
@@ -448,10 +449,17 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     if (!supportsVoiceInput || !supportsVoiceOutput) return;
     final S = context.S;
     final tts = _tts ??= FlutterTts();
+    // Constructor replaces the process-wide channel handler. Register before
+    // the language await so the other page's in-flight readback still ends.
+    noteSystemTtsReceiver(tts);
     try {
       await tts.setLanguage('zh-CN');
       tts.setCompletionHandler(_onVoiceTurnDone);
       tts.setErrorHandler((_) => _onVoiceTurnDone());
+      // setCompletionHandler replaces the wrapper installed above. Re-wrap
+      // before the next await, or a reply still speaking on the other page
+      // ends and this page's own completion handler is gone.
+      noteSystemTtsReceiver(tts);
       // 基线：开启时已有回复不再朗读，只读开启后的新回复。
       _lastSpokenMsgId = _latestAssistantId(ref.read(botChatProvider));
     } catch (_) {
@@ -1057,24 +1065,28 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     }
   }
 
+  /// 分段播报：Kokoro 边合成边播，第一段出声不再等整段合成完；失败落到系统 TTS。
+  /// 无论哪条路径结束都走 [_onVoiceTurnDone]，恢复聆听。
   Future<void> _speak(String text) async {
     final engine = ref.read(voiceEngineProvider);
-    if (await engine.useKokoro) {
-      _ttsBusy = true;
-      if (mounted) setState(() {});
-      final err = await engine.speakKokoro(text, onDone: _onVoiceTurnDone);
-      if (err == null) return;
-      _ttsBusy = false; // Kokoro 失败 → 落到系统 TTS
-    }
-    final tts = _tts;
-    if (tts == null) return;
     _ttsBusy = true;
     if (mounted) setState(() {});
-    try {
-      await tts.stop();
-      await tts.speak(text);
-    } catch (_) {
+    final err = await speakReplyReadback(
+      engine,
+      text,
+      onDone: () {
+        if (mounted) {
+          _onVoiceTurnDone();
+        } else {
+          _ttsBusy = false;
+        }
+      },
+      systemTts: () => _tts,
+    );
+    if (err != null && err.isNotEmpty) {
+      // 两条路径都没出声：解除忙态，否则麦克风再也不开。
       _ttsBusy = false;
+      if (mounted) setState(() {});
       _scheduleVoiceRelisten();
     }
   }
