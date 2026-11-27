@@ -44,6 +44,7 @@ const browseWriteChunkMaxBytes = 640 << 10
 
 var (
 	errBrowsePackLimit   = errors.New("目录太大，暂不支持打包下载")
+	errBrowsePackEmpty   = errors.New("没有可导出的文件")
 	errBrowseWriteOffset = errors.New("写入位置与文件大小不一致，请重新上传")
 	errBrowseWriteTooBig = errors.New("单次写入的数据太大")
 )
@@ -171,7 +172,7 @@ func (rt *Runtime) browseReadFile(inst *instance, rel string, maxBytes int64) (j
 	}
 	// Lstat like serveFile: a path swapped for a symlink or special file
 	// must not leak an unrelated target. A miss inside the checkout can
-	// still be a file written beside it before the jail root moved.
+	// still be a file left beside it before ConnectGit merged the workspace.
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		if alt, altInfo, ok := strandedRegular(inst.dir, root, canonicalArtifactRel(root, path)); ok {
@@ -343,7 +344,7 @@ func (rt *Runtime) browsePackDir(inst *instance, rel string) (json.RawMessage, e
 			}
 			file, err := os.Open(path)
 			if err != nil {
-				return nil
+				return errors.New("这个文件暂时读取失败")
 			}
 			_, copyErr := io.Copy(tw, file)
 			file.Close()
@@ -385,6 +386,9 @@ func (rt *Runtime) browsePackDir(inst *instance, rel string) (json.RawMessage, e
 	}
 	if err := gz.Close(); err != nil {
 		return nil, err
+	}
+	if files == 0 {
+		return nil, errBrowsePackEmpty
 	}
 	if int64(buf.Len()) > browsePackMaxBytes {
 		return nil, errBrowsePackLimit

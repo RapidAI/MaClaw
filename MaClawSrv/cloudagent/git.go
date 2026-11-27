@@ -177,14 +177,23 @@ func (rt *Runtime) ConnectGit(ctx context.Context, id string, in GitConnect) (Gi
 			return GitPublic{}, err
 		}
 	}
+	// git.json is the publication bit. Merge stays after it: a failed write
+	// rolls the checkout back before any loose file has moved, so the open
+	// jail and the book still name the same paths. Once the binding is
+	// durable, merge and the book rewrite are the same critical section.
+	// Readers hold jailMu and never see the checkout with the old card paths.
 	if err := writeGit(inst.dir, secret); err != nil {
 		if pub.rollback != nil {
 			pub.rollback()
 		}
 		return GitPublic{}, err
 	}
+	var moved map[string]string
 	if pub.merge != nil {
-		pub.merge()
+		moved = pub.merge()
+	}
+	if err := inst.book.retargetProducedPaths(moved); err != nil {
+		return GitPublic{}, err
 	}
 	return secret.public(), nil
 }
@@ -430,7 +439,9 @@ func (rt *Runtime) stageClone(ctx context.Context, inst *instance, secret gitSec
 type clonePublish struct {
 	consumed bool
 	rollback func()
-	merge    func()
+	// merge folds loose files into the checkout and returns old book key →
+	// key the file actually landed at. Only collisions differ.
+	merge func() map[string]string
 }
 
 // adoptClone places staged at workspace/<repo> and records how to undo that
@@ -504,8 +515,8 @@ func (rt *Runtime) adoptClone(ctx context.Context, inst *instance, secret gitSec
 	return clonePublish{
 		consumed: true,
 		rollback: restore,
-		merge: func() {
-			mergeWorkspaceLoose(workspace, dest, stash, inst.meta.ID)
+		merge: func() map[string]string {
+			return mergeWorkspaceLoose(workspace, dest, stash, inst.meta.ID)
 		},
 	}, nil
 }
@@ -523,21 +534,36 @@ func gitSecrets(dir string, secret gitSecret) []string {
 // files sit at its top level; once the checkout lands the root moves into it
 // and unmoved files would silently leave the jail. A loose directory whose
 // name already exists in the clone is merged, so a book key such as
-// snake/game.cpp still resolves. A file collision keeps the clone's bytes
-// and parks the loose copy beside it as <name>.pre-checkout. Nothing the
+// snake/game.cpp still resolves when the file itself does not collide. A
+// file collision keeps the clone's bytes and parks the loose copy as
+// <name>.pre-checkout; that rename is returned so the book key follows
+// the file. A directory parked wholesale is the same rename. Nothing the
 // agent wrote is deleted. A directory named .git is not placed by itself:
 // beside the real .git, or inside a folder the clone already has, `git add
 // -A` would treat it as the object store or as a nested repository and skip
 // the source files next to it. A .git nested in a directory the clone does
 // not have yet still rides along when that directory renames wholesale.
-func mergeWorkspaceLoose(workspace, dest, stash, instanceID string) {
+// mergeWorkspaceLoose returns book-key renames for files placeLoose parked
+// under a different relative name. Keys are slash paths relative to dest,
+// which is the jail root once git.json publishes.
+func mergeWorkspaceLoose(workspace, dest, stash, instanceID string) map[string]string {
+	renames := map[string]string{}
+	note := func(from, target string) {
+		oldKey := canonicalArtifactRel(dest, from)
+		newKey := canonicalArtifactRel(dest, target)
+		if oldKey == "" || newKey == "" || oldKey == newKey {
+			return
+		}
+		renames[oldKey] = newKey
+	}
 	if stash != "" {
 		// A parked file has no entries to merge — the sweep below moves it
 		// into the repo wholesale. Only directories get emptied here.
 		if info, err := os.Lstat(stash); err == nil && plainDir(info) {
 			if entries, err := os.ReadDir(stash); err == nil {
 				for _, entry := range entries {
-					placeLoose(filepath.Join(stash, entry.Name()), dest, instanceID)
+					from := filepath.Join(stash, entry.Name())
+					placeLoose(from, dest, instanceID, note)
 				}
 			}
 			// Remove only when empty: colliding leftovers stay put and the
@@ -547,7 +573,7 @@ func mergeWorkspaceLoose(workspace, dest, stash, instanceID string) {
 	}
 	entries, err := os.ReadDir(workspace)
 	if err != nil {
-		return
+		return renames
 	}
 	destClean := filepath.Clean(dest)
 	for _, entry := range entries {
@@ -555,8 +581,9 @@ func mergeWorkspaceLoose(workspace, dest, stash, instanceID string) {
 		if filepath.Clean(from) == destClean {
 			continue
 		}
-		placeLoose(from, dest, instanceID)
+		placeLoose(from, dest, instanceID, note)
 	}
+	return renames
 }
 
 // placeLoose moves from into into. A directory whose name is exactly .git
@@ -568,7 +595,9 @@ func mergeWorkspaceLoose(workspace, dest, stash, instanceID string) {
 // moves. Directory pairs merge so relative names survive; anything else
 // that collides parks the loose entry as <name>.pre-checkout. Links are
 // not followed: a checkout symlink must not receive the loose tree.
-func placeLoose(from, into string, instanceID string) {
+// note records a book-key change when the file does not land at the name
+// the open jail recorded. nil is fine for callers that do not keep a book.
+func placeLoose(from, into string, instanceID string, note func(from, target string)) {
 	base := filepath.Base(from)
 	if base == ".git" {
 		return
@@ -603,7 +632,7 @@ func placeLoose(from, into string, instanceID string) {
 			return
 		}
 		for _, entry := range entries {
-			placeLoose(filepath.Join(from, entry.Name()), target, instanceID)
+			placeLoose(filepath.Join(from, entry.Name()), target, instanceID, note)
 		}
 		_ = os.Remove(from)
 		return
@@ -625,6 +654,12 @@ func placeLoose(from, into string, instanceID string) {
 		slog.Warn("cloudagent checkout merge skipped entry",
 			slog.String("instance", instanceID), slog.String("path", from),
 			slog.String("reason", err.Error()))
+		return
+	}
+	// A clean rename keeps the book key. A .pre-checkout suffix is the
+	// collision case: the card must follow the name that landed.
+	if note != nil && strings.HasSuffix(filepath.Base(target), ".pre-checkout") {
+		note(filepath.Join(into, base), target)
 	}
 }
 

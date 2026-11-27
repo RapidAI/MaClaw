@@ -347,6 +347,95 @@ func (b *book) producedPaths() map[string]bool {
 	return out
 }
 
+// retargetProducedPaths rewrites recorded artifact keys inside one transaction.
+// ConnectGit calls it in the same critical section that publishes git.json,
+// after placeLoose has renamed a colliding deliverable. A card that still
+// names the pre-merge path would fetch a file the checkout no longer has.
+// renames maps the old canonical slash key to the key the file now has.
+// An empty map is a no-op. A missing old key is left alone.
+func (b *book) retargetProducedPaths(renames map[string]string) error {
+	if b == nil || b.db == nil || len(renames) == 0 {
+		return nil
+	}
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.Query(`SELECT id, files FROM messages WHERE files != ''`)
+	if err != nil {
+		return err
+	}
+	type row struct{ id, raw string }
+	var pending []row
+	for rows.Next() {
+		var item row
+		if err := rows.Scan(&item.id, &item.raw); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		pending = append(pending, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	for _, item := range pending {
+		var list []string
+		if json.Unmarshal([]byte(item.raw), &list) != nil {
+			continue
+		}
+		changed := false
+		for i, path := range list {
+			next := retargetArtifactKey(renames, path)
+			if next == "" || next == path {
+				continue
+			}
+			list[i] = next
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		raw, err := json.Marshal(list)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE messages SET files = ? WHERE id = ?`, string(raw), item.id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// retargetArtifactKey applies one rename, or the longest parked directory
+// prefix. placeLoose parks a colliding directory wholesale, so a book key
+// snake/game.cpp must follow snake → snake.pre-checkout without a per-file row.
+func retargetArtifactKey(renames map[string]string, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || len(renames) == 0 {
+		return ""
+	}
+	if next, ok := renames[path]; ok {
+		return next
+	}
+	bestLen := -1
+	best := ""
+	for oldKey, newKey := range renames {
+		if oldKey == "" || newKey == "" || oldKey == newKey {
+			continue
+		}
+		if path == oldKey || strings.HasPrefix(path, oldKey+"/") {
+			if len(oldKey) > bestLen {
+				bestLen = len(oldKey)
+				best = newKey + path[len(oldKey):]
+			}
+		}
+	}
+	return best
+}
+
 // Finish writes the assistant reply only while the turn is still running.
 // An interrupted turn is left as it is, so a late model result is not a replay.
 // wrote is true only when this call moved the turn out of running. files are

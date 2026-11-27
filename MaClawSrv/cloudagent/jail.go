@@ -156,6 +156,7 @@ func strandedRegular(instDir, jail, rel string) (string, os.FileInfo, bool) {
 	return path, info, true
 }
 
+
 func secretBase(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
 	return base == "git.json" || base == "llm.json"
