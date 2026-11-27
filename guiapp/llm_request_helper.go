@@ -103,6 +103,11 @@ type simpleLLMRequestOptions struct {
 	// and abort the read that was supposed to continue. Detach-and-return is
 	// for callers that will retry and adopt the same read.
 	AwaitResponse bool
+	// YieldSlotOnPreempt keeps an in-flight body when a foreground request
+	// takes the lane. The lease cancel hook releases the scheduler slot and
+	// leaves the read up. Callers that are not the consumer must leave this
+	// false: preemption still aborts a request nobody is waiting on.
+	YieldSlotOnPreempt bool
 	// RouteDeadlineIsHeaderOnly means an owned route deadline on ctx bounds
 	// time-to-headers only. Once that deadline has fired, the body is still
 	// this caller's result. A cancel of the pre-timeout parent still aborts
@@ -250,7 +255,7 @@ func doSimpleLLMRequestWithOptionsLegacy(ctx context.Context, cfg corelib.Maclaw
 		return nil, acquireErr
 	}
 	scheduledCtx, scheduledCancel := context.WithCancel(ctx)
-	lease.SetCancel(scheduledCancel)
+	armLLMLeaseCancel(lease, scheduledCancel, opts.YieldSlotOnPreempt)
 
 	ch := make(chan simpleLLMVariantResult, 1)
 	go func() {
@@ -298,6 +303,23 @@ func doSimpleLLMRequestWithOptionsLegacy(ctx context.Context, cfg corelib.Maclaw
 		}
 		return finishLegacyBudgetFired(lease, scheduledCancel, timeout, context.DeadlineExceeded)
 	}
+}
+
+// armLLMLeaseCancel installs the scheduler preemption hook. A consumer that
+// yields its slot keeps the body: the hook only releases the lease, and it
+// does so off the scheduler lock because Release takes that lock. Every other
+// caller still aborts the read so an unconsumed request cannot outlive the lane.
+func armLLMLeaseCancel(lease *llmSchedulerLease, abort context.CancelFunc, yieldSlot bool) {
+	if lease == nil {
+		return
+	}
+	if !yieldSlot {
+		lease.SetCancel(abort)
+		return
+	}
+	lease.SetCancel(func() {
+		go lease.Release()
+	})
 }
 
 // finishLegacyBudgetFired tears the in-flight read down (this variant has no
@@ -406,7 +428,7 @@ func doSimpleLLMRequestForeground(ctx context.Context, cfg corelib.MaclawLLMConf
 	}
 	detachedCtx, detachCancel := context.WithCancel(detachParent)
 	scheduledCtx, scheduledCancel := context.WithCancel(detachedCtx)
-	lease.SetCancel(scheduledCancel)
+	armLLMLeaseCancel(lease, scheduledCancel, opts.YieldSlotOnPreempt)
 
 	ch := make(chan simpleLLMVariantResult, 1)
 	go func() {

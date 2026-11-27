@@ -1,9 +1,9 @@
 package guiapp
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
-
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
@@ -55,5 +55,32 @@ func TestSQLiteCommitApprovalStoreSurvivesReopenAndSettlesAtomically(t *testing.
 	}
 	if _, found, _ := reopened.lookup(note.TaskKey, note.Fingerprint); found {
 		t.Fatal("once decision was not consumed")
+	}
+}
+
+
+func TestLookupFailureDoesNotDropStoredDeny(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	taskKey := "desktop\nuser\nunreadable"
+	fingerprint := "mailbox_send\nto\nnone"
+	if err := storeCommitForApp(app, taskKey, fingerprint, agent.CommitDeny); err != nil {
+		t.Fatal(err)
+	}
+	dbPath, ok := commitApprovalDBPath(app)
+	if !ok {
+		t.Fatal("app did not select an approval store")
+	}
+	if err := os.Remove(dbPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dbPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	decision, found, err := lookupCommitStateForApp(app, taskKey, fingerprint)
+	if err == nil || found || decision != "" {
+		t.Fatalf("unreadable ledger looked missing: decision=%q found=%v err=%v", decision, found, err)
+	}
+	if names := commitLockedNamesForApp(app, false, taskKey); len(names) == 0 {
+		t.Fatal("unreadable deny list unlocked every human tool")
 	}
 }

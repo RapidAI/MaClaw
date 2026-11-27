@@ -10,7 +10,9 @@ package guiapp
 // 4. Dedup check against existing experiences
 // 5. Save to coding knowledge store
 //
-// The extraction is best-effort: LLM timeout/failure/parse error -> skip silently.
+// The extraction is best-effort: a transport failure or parse error skips
+// silently. A scheduler slot budget or a foreground preemption yields the
+// lane and still keeps the in-flight body.
 
 import (
 	"context"
@@ -34,6 +36,10 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
+	// experienceExtractionTimeout is how long one extraction may occupy a
+	// background scheduler slot. It is not a deadline on the queue wait or
+	// the body: the caller is the consumer, so a slow reply keeps reading
+	// after the slot is yielded.
 	experienceExtractionTimeout = 15 * time.Second
 	experienceMaxPerExtraction  = 2
 
@@ -338,8 +344,10 @@ func (r *SubAgentTaskRunner) doExtractAndSave(
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), experienceExtractionTimeout)
-	defer cancel()
+	// The slot budget is enforced inside the LLM helper. This goroutine is the
+	// consumer of that body, so the same duration must not also cancel the
+	// queue wait or the read. A caller cancel still arrives through ctx.
+	ctx := context.Background()
 
 	// Resolve the durable evidence binding before spending an LLM call. A
 	// cancelled/interrupted task (or a path that never entered the ledger) is
@@ -372,7 +380,8 @@ func (r *SubAgentTaskRunner) doExtractAndSave(
 		return
 	}
 
-	// Use a separate context for persistence (LLM call may have consumed most of the timeout).
+	// Persistence has its own bound. The extraction read is already finished,
+	// and a slow store must not be tied to the scheduler slot budget.
 	saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer saveCancel()
 
@@ -1247,7 +1256,10 @@ func doExperienceLLMRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, me
 	for _, m := range messages {
 		ifaces = append(ifaces, m)
 	}
-	resp, err := doSimpleLLMRequest(ctx, attachLightweightHubHint(cfg, llm.TaskSummary), ifaces, httpClient, experienceExtractionTimeout)
+	resp, err := doSimpleLLMRequestWithOptions(ctx, attachLightweightHubHint(cfg, llm.TaskSummary), ifaces, httpClient, experienceExtractionTimeout, simpleLLMRequestOptions{
+		AwaitResponse:      true,
+		YieldSlotOnPreempt: true,
+	})
 	if err != nil {
 		return "", err
 	}

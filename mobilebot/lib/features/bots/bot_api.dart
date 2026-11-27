@@ -772,11 +772,18 @@ class BotApi {
   /// `POST /api/v1/bots/{id}/desktop-file` — read one file the reply left on
   /// the computer, by the path the reply recorded (`local_file_paths`).
   /// Hub only serves paths inside the desktop work tree or Desktop.
-  Future<BotReplyFile> desktopFile(String botId, String path) async {
+  Future<BotReplyFile> desktopFile(
+    String botId,
+    String path, {
+    String name = '',
+  }) async {
     final data = await _client.guard(
       () => _client.dio.post<Map<String, dynamic>>(
         _botPath(botId, '/desktop-file'),
-        data: {'path': path},
+        data: {
+          'path': path,
+          if (name.isNotEmpty) 'name': name,
+        },
         options: _client.opts(sendTimeout: const Duration(seconds: 20)),
       ),
     );

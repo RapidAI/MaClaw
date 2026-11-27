@@ -733,6 +733,9 @@ func (s *Service) settleAdmittedDesktopRun(tenantID, userID, botID, runID string
 	state.mediaFetched = true
 	state.mu.Unlock()
 	if keepErr := s.keepDesktopRunMedia(tenantID, userID, botID, runID, reply.Images, reply.Files); keepErr != nil {
+		// A failed keep must not lose the reply: the client that settled the
+		// run carries the same bytes back through /desktop-file, which then
+		// keeps them under a name that does not depend on the run id.
 		log.Printf("[desktop-run-media] keep run=%s: %v", runID, keepErr)
 	}
 	if err != nil {

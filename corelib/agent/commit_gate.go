@@ -1447,7 +1447,13 @@ func splitPowerShellAssignment(tokens []string) []string {
 			out := make([]string, 0, len(tokens)+2)
 			out = append(out, target, op, tokens[0][strings.Index(tokens[0], op)+len(op):])
 			return append(out, tokens[1:]...)
+	if op, target, value, ok := splitGluedPowerShellAssignment(tokens[0]); ok && powershellAssignmentTarget(target) {
+		out := make([]string, 0, len(tokens)+3)
+		out = append(out, target, op)
+		if value != "" {
+			out = append(out, value)
 		}
+		return append(out, tokens[1:]...)
 	}
 	if len(tokens) >= 2 && powershellAssignmentTarget(tokens[0]) {
 		if op, value, ok := splitLeadingAssignmentOp(tokens[1]); ok {
@@ -1460,6 +1466,31 @@ func splitPowerShellAssignment(tokens []string) []string {
 		out := make([]string, 0, len(tokens))
 		out = append(out, joined)
 		return append(out, rest...)
+	}
+	// [type] $name and [type] $name+=value. The operator may be its own token
+	// or still glued to the variable. Nested casts such as [string[]] are one
+	// token, so the constraint is the prefix, not "the token ends with ]".
+	if len(tokens) >= 2 && powershellTypeConstraint(tokens[0]) {
+		target := tokens[1]
+		rest := tokens[2:]
+		op := ""
+		if glued, bare, value, ok := splitGluedPowerShellAssignment(target); ok && powershellAssignmentTarget(bare) {
+			op = glued
+			target = bare
+			if value != "" {
+				rest = append([]string{value}, tokens[2:]...)
+			} else {
+				rest = tokens[2:]
+			}
+		} else if len(tokens) >= 3 && powershellAssignmentOp(tokens[2]) && powershellAssignmentTarget(target) {
+			op = tokens[2]
+			rest = tokens[3:]
+		}
+		if op != "" {
+			out := make([]string, 0, len(tokens)+1)
+			out = append(out, tokens[0]+target, op)
+			return append(out, rest...)
+		}
 	}
 	return tokens
 }
@@ -1557,6 +1588,16 @@ func skipPowerShellAssignment(tokens []string) ([]string, bool) {
 			return nil, false
 		}
 		return rest[1:], true
+	if _, target, value, ok := splitGluedPowerShellAssignment(tokens[0]); ok {
+		if !powershellAssignmentTarget(target) {
+			return nil, false
+		}
+		// $x+=git push tokenizes as "$x+=git", "push". The command words
+		// after the operator still have to be scanned.
+		if value == "" {
+			return tokens[1:], true
+		}
+		return append([]string{value}, tokens[1:]...), true
 	}
 	if !powershellAssignmentOp(tokens[1]) || !powershellAssignmentTarget(tokens[0]) {
 		return nil, false
@@ -1578,9 +1619,24 @@ func gluedPowerShellAssignmentOp(token string) string {
 		at := strings.Index(token, op)
 		if at > 0 && at+len(op) <= len(token) {
 			return op
+// splitGluedPowerShellAssignment splits $n+=git into $n, +=, git.
+// The operator is the leftmost assignment operator, and += wins over =
+// at the same position. A suffix scan would leave $n+=gi as the target.
+func splitGluedPowerShellAssignment(token string) (op, target, value string, ok bool) {
+	bestAt, bestLen := -1, 0
+	for _, candidate := range []string{"+=", "-=", "*=", "/=", "%=", "="} {
+		at := strings.Index(token, candidate)
+		if at <= 0 {
+			continue
+		}
+		if bestAt < 0 || at < bestAt || (at == bestAt && len(candidate) > bestLen) {
+			bestAt, bestLen = at, len(candidate)
 		}
 	}
-	return ""
+	if bestAt < 0 {
+		return "", "", "", false
+	}
+	return token[bestAt : bestAt+bestLen], token[:bestAt], token[bestAt+bestLen:], true
 }
 
 
@@ -1612,6 +1668,11 @@ func powershellAssignmentTarget(token string) bool {
 	if strings.HasPrefix(token, "[") {
 		rest, ok := stripPowerShellAttributes(token)
 		return ok && powershellAssignmentTarget(rest)
+		// [string[]]$a and [nullable[int]]$n close at the matching bracket.
+		// IndexByte would stop inside the array or generic parameter.
+		if end := powershellTypeConstraintEnd(token); end > 1 && end+1 < len(token) {
+			return powershellAssignmentTarget(token[end+1:])
+		}
 	}
 	return len(token) >= 3 && token[0] == '%' && strings.Contains(token[1:], "%")
 }
@@ -1657,12 +1718,31 @@ func matchingPowerShellBracket(token string) int {
 		switch ch {
 		case '\'', '"':
 			quote = ch
+// powershellTypeConstraint reports a PowerShell cast prefix such as [int]
+// or [nullable[int]]. A bare [0] index is not a cast.
+func powershellTypeConstraint(token string) bool {
+	token = strings.TrimSpace(token)
+	end := powershellTypeConstraintEnd(token)
+	return end > 1 && end == len(token)-1
+}
+
+func powershellTypeConstraintEnd(token string) int {
+	if token == "" || token[0] != '[' {
+		return -1
+	}
+	depth := 0
+	for i := 0; i < len(token); i++ {
+		switch token[i] {
 		case '[':
 			depth++
 		case ']':
 			depth--
 			if depth == 0 {
 				return i
+			}
+
+			if depth < 0 {
+				return -1
 			}
 		}
 	}
@@ -1699,7 +1779,6 @@ func powershellAssignableExpr(token string) bool {
 	}
 	return true
 }
-
 // operatorRHSTail drops the right-hand side. A comma, glued or alone, keeps
 // the next word in that operand, so both `$x -replace 'a', 'b' git push` and
 // `$x -replace 'a' , 'b' git push` still see git push.

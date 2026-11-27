@@ -332,6 +332,25 @@ class BotReplyFile {
 /// its own disk and records only their paths (`local_file_paths`) — a phone
 /// cannot open those, so it fetches the bytes by path (desktop-file).
 /// Paths other than plain absolute ones are refused by the desktop reader.
+/// The reply's delivered files as `{name, mime, data}` entries. The desktop
+/// sends them under `files`; older payloads used `DesktopFiles`. Only entries
+/// that actually carry bytes are kept — a name with no data cannot be shown.
+List<BotReplyFile> desktopFilesFrom(Map<String, dynamic> data) {
+  final out = <BotReplyFile>[];
+  for (final key in ['files', 'Files', 'desktopFiles', 'DesktopFiles']) {
+    final list = data[key];
+    if (list is! List) continue;
+    for (final item in list) {
+      if (item is! Map) continue;
+      final file = BotReplyFile.fromJson(Map<String, dynamic>.from(item));
+      if (file.data.trim().isEmpty) continue;
+      out.add(file);
+    }
+    if (out.isNotEmpty) return out;
+  }
+  return out;
+}
+
 List<String> localFilePathsFrom(Map<String, dynamic> data) {
   final paths = <String>[];
   for (final value in [
@@ -380,9 +399,14 @@ class BotReply {
   final List<BotReplyImage> images;
   final List<BotReplyFile> files;
 
+  /// The files this reply delivered, with bytes, as the desktop sent them.
+  /// The desktop agent writes on its own Windows/macOS paths; Hub cannot read
+  /// those, so these bytes are the only copy a phone gets (`desktop-files`).
+  final List<BotReplyFile> desktopFiles;
+
   /// Files the computer left on its own disk for this reply (`local_file_paths`).
-  /// It carries no bytes; a client that did not produce them fetches the
-  /// file by path through `POST .../desktop-file`.
+  /// A path alone does not identify a file Hub can read; it is kept so the
+  /// reply can say which file went missing when no bytes arrived.
   final List<String> localFilePaths;
   final BotPhase? phase;
 
@@ -395,6 +419,7 @@ class BotReply {
     this.question = const BotQuestion(),
     this.images = const [],
     this.files = const [],
+    this.desktopFiles = const [],
     this.localFilePaths = const [],
     this.phase,
   });
@@ -425,6 +450,7 @@ class BotReply {
       for (final item in syncList(json['files']))
         if (item is Map) BotReplyFile.fromJson(Map<String, dynamic>.from(item)),
     ],
+    desktopFiles: desktopFilesFrom(json),
     localFilePaths: localFilePathsFrom(json),
     phase: BotPhaseWire.fromWire(syncText(json['phase'])),
   );

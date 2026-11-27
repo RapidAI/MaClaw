@@ -99,3 +99,30 @@ func TestDesktopContainerFilePathStaysInWorkOrOnTheDesktop(t *testing.T) {
 		t.Fatalf("unknown bot err=%v", err)
 	}
 }
+
+// A delivered file lives on the bot agent's own working path, which Hub
+// cannot read on demand. Bytes a client received are kept by name so a later
+// read (another device, the next day) still gets the file instead of the
+// "sentence says attached, no attachment" failure.
+func TestDeliveredDesktopFileIsReadableByName(t *testing.T) {
+	svc := &Service{MailFileDir: t.TempDir()}
+	data := base64.StdEncoding.EncodeToString([]byte("%PDF-1.4 report"))
+	if err := svc.KeepDeliveredDesktopFile("tenant-a", "alice", "bot_1", "北京天气报告.pdf", "application/pdf", data); err != nil {
+		t.Fatal(err)
+	}
+	kept, ok := svc.ReadDeliveredDesktopFile("tenant-a", "alice", "bot_1", "北京天气报告.pdf")
+	if !ok || kept.Name != "北京天气报告.pdf" || kept.MIME != "application/pdf" || kept.Data != data {
+		t.Fatalf("kept %+v ok=%v", kept, ok)
+	}
+	// Another person and another bot do not see it.
+	if _, ok := svc.ReadDeliveredDesktopFile("tenant-a", "bob", "bot_1", "北京天气报告.pdf"); ok {
+		t.Fatal("delivered file leaked across users")
+	}
+	if _, ok := svc.ReadDeliveredDesktopFile("tenant-a", "alice", "bot_2", "北京天气报告.pdf"); ok {
+		t.Fatal("delivered file leaked across bots")
+	}
+	// A malformed payload is refused instead of stored.
+	if err := svc.KeepDeliveredDesktopFile("tenant-a", "alice", "bot_1", "x.pdf", "", "%%%"); err == nil {
+		t.Fatal("invalid base64 accepted")
+	}
+}

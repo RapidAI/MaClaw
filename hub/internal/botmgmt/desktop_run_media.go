@@ -212,6 +212,115 @@ func (s *Service) ReadDesktopContainerFile(ctx context.Context, tenantID, userID
 	return path.Base(resolved), desktopFileMIME(resolved), encoded, nil
 }
 
+// KeepDeliveredDesktopFile stores bytes a client received from the desktop
+// so later turns and other devices can read them by name. A delivered file
+// lives on the bot agent's own working path, which Hub cannot read on demand,
+// and the run record is pruned after [desktopRunMediaTTL]; this copy is what
+// lets a phone reopen the attachment the next day.
+func (s *Service) KeepDeliveredDesktopFile(tenantID, userID, botID, name, mime, encoded string) error {
+	if s == nil || strings.TrimSpace(encoded) == "" {
+		return nil
+	}
+	dir := s.desktopRunMediaDir(tenantID, userID, botID)
+	if dir == "" {
+		return ErrInvalidInput
+	}
+	if _, err := desktop.DecodeFileBytes(encoded); err != nil {
+		return ErrInvalidInput
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	sum := sha256.Sum256([]byte(filepath.Base(strings.TrimSpace(name)) + "|" + encoded))
+	dest := filepath.Join(dir, "delivered-"+hex.EncodeToString(sum[:12])+".json")
+	raw, err := json.Marshal(map[string]string{"name": name, "mime": mime, "data": encoded})
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(dest, raw, 0o600); err != nil {
+		return err
+	}
+	s.pruneDesktopRunMedia(dir)
+	return nil
+}
+
+// ReadDeliveredDesktopFile returns one stored delivered file by name, newest
+// copy first. found is false when this bot never kept that name.
+func (s *Service) ReadDeliveredDesktopFile(tenantID, userID, botID, name string) (ReplyFile, bool) {
+	name = filepath.Base(strings.TrimSpace(name))
+	if s == nil || name == "" {
+		return ReplyFile{}, false
+	}
+	dir := s.desktopRunMediaDir(tenantID, userID, botID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ReplyFile{}, false
+	}
+	type candidate struct {
+		path string
+		at   time.Time
+	}
+	var found []candidate
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "delivered-") {
+			continue
+		}
+		raw, readErr := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if readErr != nil {
+			continue
+		}
+		var rec struct {
+			Name string `json:"name"`
+			MIME string `json:"mime"`
+			Data string `json:"data"`
+		}
+		if json.Unmarshal(raw, &rec) != nil || filepath.Base(strings.TrimSpace(rec.Name)) != name {
+			continue
+		}
+		info, statErr := entry.Info()
+		at := time.Time{}
+		if statErr == nil {
+			at = info.ModTime()
+		}
+		found = append(found, candidate{path: filepath.Join(dir, entry.Name()), at: at})
+	}
+	if len(found) == 0 {
+		return ReplyFile{}, false
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].at.After(found[j].at) })
+	raw, err := os.ReadFile(found[0].path)
+	if err != nil {
+		return ReplyFile{}, false
+	}
+	var rec struct {
+		Name string `json:"name"`
+		MIME string `json:"mime"`
+		Data string `json:"data"`
+	}
+	if json.Unmarshal(raw, &rec) != nil || strings.TrimSpace(rec.Data) == "" {
+		return ReplyFile{}, false
+	}
+	return ReplyFile{Name: rec.Name, MIME: rec.MIME, Data: rec.Data}, true
+}
+
+// ReadDesktopDeliveredFile returns one file a bot turn delivered on the
+// person's own desktop. Those paths are the bot agent's working paths (a
+// Windows path such as C:/Users/.../tasks/x/workspace/report.pdf), which are
+// not container paths, so the container reader above refuses them: a phone
+// asking by path always failed. The desktop already read the bytes for the
+// reply that delivered the file, so the caller sends those bytes and this
+// only names and type-checks them.
+func ReadDesktopDeliveredFile(encoded, fileName string) (name, mime, data string, err error) {
+	if _, err := desktop.DecodeFileBytes(encoded); err != nil {
+		return "", "", "", ErrInvalidInput
+	}
+	name = strings.TrimSpace(fileName)
+	if name == "" {
+		name = "file"
+	}
+	return name, desktopFileMIME(name), encoded, nil
+}
+
 func desktopFileMIME(filePath string) string {
 	switch strings.ToLower(path.Ext(filePath)) {
 	case ".png":

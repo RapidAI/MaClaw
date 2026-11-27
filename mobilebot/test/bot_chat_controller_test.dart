@@ -98,7 +98,11 @@ class _FakeApi extends BotApi {
   final desktopFileAsks = <String>[];
 
   @override
-  Future<BotReplyFile> desktopFile(String botId, String path) async {
+  Future<BotReplyFile> desktopFile(
+    String botId,
+    String path, {
+    String name = '',
+  }) async {
     desktopFileAsks.add(path);
     final file = desktopFiles[path];
     if (file == null) {
@@ -353,6 +357,91 @@ void main() {
     expect(message.images.single.attachmentId, 'shot-1');
     expect(message.images.single.data, 'aW1n');
     expect(api.polledRuns, ['run-9']);
+  });
+
+  // The desktop agent saves a delivered file on its own Windows path and
+  // says so in the bubble; Hub cannot read that path, so the bytes have to
+  // travel with the reply or the phone shows the sentence and no file.
+  test('a reply carrying file bytes shows the file on the bubble', () async {
+    final api = _FakeApi()
+      ..sendResult = SendResult.admitted(
+        const BotRun(runId: 'run-pdf', status: 'running'),
+      )
+      ..pollAnswers.add(
+        const BotReply(
+          text: 'PDF 已经发到聊天里了',
+          files: [
+            BotReplyFile(
+              name: '北京天气报告.pdf',
+              mime: 'application/pdf',
+              data: 'JVBERi0xLjQK',
+            ),
+          ],
+          localFilePaths: [
+            r'C:\Users\me\.maclaw\data\tasks\x\workspace\beijing.pdf',
+          ],
+        ),
+      );
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+
+    await container.read(botChatProvider.notifier).send('生成pdf');
+    await _until(
+      () => container
+          .read(botChatProvider)
+          .messages
+          .any((m) => m.role == 'assistant' && m.files.isNotEmpty),
+      timeout: const Duration(seconds: 8),
+    );
+    final shown = container
+        .read(botChatProvider)
+        .messages
+        .lastWhere((m) => m.role == 'assistant');
+    expect(shown.files.single.name, '北京天气报告.pdf');
+    expect(shown.files.single.data, 'JVBERi0xLjQK');
+  });
+
+  test('a path-only reply asks Hub by file name', () async {
+    const path = r'C:\Users\me\.maclaw\data\tasks\x\workspace\report.pdf';
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          ConversationEntry(
+            seq: 1,
+            createdSeq: 1,
+            botId: 'b1',
+            id: 'm-file',
+            kind: 'message',
+            data: {
+              'role': 'assistant',
+              'content': 'PDF 已经发到聊天里了',
+              'localFilePaths': [path],
+              'at': DateTime.now().toIso8601String(),
+            },
+          ),
+        ],
+      )
+      ..desktopFiles[path] = const BotReplyFile(
+        name: 'report.pdf',
+        mime: 'application/pdf',
+        data: 'JVBERi0xLjQK',
+      );
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(
+      () => container
+          .read(botChatProvider)
+          .messages
+          .any((m) => m.files.isNotEmpty),
+    );
+    expect(api.desktopFileAsks, [path]);
+    final message = container
+        .read(botChatProvider)
+        .messages
+        .firstWhere((m) => m.id == 'm-file');
+    expect(message.files.single.data, 'JVBERi0xLjQK');
   });
 
   test('a synced line without a timestamp does not probe run media', () async {

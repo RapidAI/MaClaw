@@ -584,7 +584,13 @@ class BotChatController extends Notifier<ChatState> {
     for (final path in paths) {
       if (_disposed) return;
       try {
-        final file = await _api.desktopFile(state.botId, path);
+        // Hub cannot read the agent's working path; it answers from the copy
+        // kept when a client last received the file. The name is what that
+        // copy is keyed by.
+        final name = path.split(RegExp(r'[\/]')).last.trim();
+        final file = name.isEmpty
+            ? await _api.desktopFile(state.botId, path)
+            : await _api.desktopFile(state.botId, path, name: name);
         if (file.data.isNotEmpty) fetched.add(file);
       } on Object {
         // One unreadable file must not stop the others.
@@ -604,6 +610,21 @@ class BotChatController extends Notifier<ChatState> {
     if (merged.length == current.files.length) return;
     messages[index] = current.copyWith(files: merged);
     state = state.copyWith(messages: messages);
+  }
+
+  /// What a reply's file chips should show. Bytes the desktop sent win: Hub
+  /// cannot read the agent's own working paths, so a path-only entry can
+  /// never be fetched and a bubble that shows it would stay empty forever.
+  static List<BotReplyFile> _replyFiles(BotReply reply) {
+    final sent = [
+      for (final f in reply.desktopFiles)
+        if (f.data.isNotEmpty) f,
+    ];
+    if (sent.isNotEmpty) return sent;
+    return [
+      for (final f in reply.files)
+        if (f.data.isNotEmpty) f,
+    ];
   }
 
   Future<void> _fetchRunMedia(String messageId, String runId) async {
@@ -651,7 +672,9 @@ class BotChatController extends Notifier<ChatState> {
           attentionReason: reply.attentionReason,
           question: reply.question,
           images: reply.images,
-          files: reply.files,
+          // Delivered files travel with bytes; a path alone is not readable
+          // by Hub, so it must not replace them.
+          files: _replyFiles(reply),
           localFilePaths: reply.localFilePaths,
           runId: delivery.runId,
           // The GUI twin-matches a delivery bubble on this request id.
@@ -1191,7 +1214,7 @@ class BotChatController extends Notifier<ChatState> {
         attentionReason: reply.attentionReason,
         question: reply.question,
         images: reply.images,
-        files: reply.files,
+        files: _replyFiles(reply),
         localFilePaths: reply.localFilePaths,
         requestId: state.activeRunId ?? '',
         runId: state.activeRunId ?? '',
@@ -1201,7 +1224,7 @@ class BotChatController extends Notifier<ChatState> {
       messages.add(assistantMessage);
       _writeProjection(assistantMessage);
     } else if ((reply.images.isNotEmpty && messages[shownAt].images.isEmpty) ||
-        (reply.files.isNotEmpty && messages[shownAt].files.isEmpty)) {
+        (_replyFiles(reply).isNotEmpty && messages[shownAt].files.isEmpty)) {
       // The projected bubble won the race but never carried the bytes: the
       // journal strips media and the desktop saves delivered files on its
       // own disk (no attachment ids to refetch). Patch this reply's media
@@ -1213,7 +1236,7 @@ class BotChatController extends Notifier<ChatState> {
       final shown = messages[shownAt];
       messages[shownAt] = shown.copyWith(
         images: shown.images.isEmpty ? reply.images : null,
-        files: shown.files.isEmpty ? reply.files : null,
+        files: shown.files.isEmpty ? _replyFiles(reply) : null,
         localFilePaths: shown.localFilePaths.isEmpty
             ? reply.localFilePaths
             : null,

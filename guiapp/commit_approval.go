@@ -110,24 +110,31 @@ func lookupCommit(taskKey, fingerprint string) (agent.CommitDecision, bool) {
 }
 
 func lookupCommitForApp(app *App, taskKey, fingerprint string) (agent.CommitDecision, bool) {
-	store, err := commitApprovalStoreForApp(app)
+	decision, found, err := lookupCommitStateForApp(app, taskKey, fingerprint)
 	if err != nil {
-		log.Printf("[commit-gate] open approval store failed: %v", err)
+		log.Printf("[commit-gate] lookup failed: %v", err)
 		return "", false
 	}
+	return decision, found
+}
+
+// lookupCommitStateForApp keeps a read failure distinct from "no decision".
+// A missing row is not a deny. An unreadable ledger is: treating it as missing
+// lets a stored refusal run again.
+func lookupCommitStateForApp(app *App, taskKey, fingerprint string) (agent.CommitDecision, bool, error) {
+	store, err := commitApprovalStoreForApp(app)
+	if err != nil {
+		return "", false, err
+	}
 	if store != nil {
-		decision, found, err := store.lookup(taskKey, fingerprint)
-		if err != nil {
-			log.Printf("[commit-gate] lookup failed: %v", err)
-			return "", false
-		}
-		return decision, found
+		return store.lookup(taskKey, fingerprint)
 	}
 	ledger := commitLedger(taskKey)
 	if ledger == nil {
-		return "", false
+		return "", false, nil
 	}
-	return ledger.Lookup(fingerprint)
+	decision, found := ledger.Lookup(fingerprint)
+	return decision, found, nil
 }
 
 func storeCommit(taskKey, fingerprint string, decision agent.CommitDecision) error {
@@ -229,13 +236,13 @@ func commitLockedNamesForApp(app *App, checklistOpen bool, taskKey string) []str
 	store, err := commitApprovalStoreForApp(app)
 	if err != nil {
 		log.Printf("[commit-gate] open approval store failed: %v", err)
-		return nil
+		return agent.HumanCommitToolNames()
 	}
 	if store != nil {
 		names, err := store.deniedTools(taskKey)
 		if err != nil {
 			log.Printf("[commit-gate] denied tools failed: %v", err)
-			return nil
+			return agent.HumanCommitToolNames()
 		}
 		return names
 	}
@@ -399,10 +406,15 @@ func (c *sharedAgentLoopCallbacks) CommitTaskKey() string {
 }
 
 func (c *sharedAgentLoopCallbacks) CommitLookup(fingerprint string) (agent.CommitDecision, bool) {
+	decision, found, _ := c.CommitLookupState(fingerprint)
+	return decision, found
+}
+
+func (c *sharedAgentLoopCallbacks) CommitLookupState(fingerprint string) (agent.CommitDecision, bool, error) {
 	if c == nil {
-		return "", false
+		return "", false, fmt.Errorf("commit host is nil")
 	}
-	return lookupCommitForApp(commitAppForHandler(c.handler), c.CommitTaskKey(), fingerprint)
+	return lookupCommitStateForApp(commitAppForHandler(c.handler), c.CommitTaskKey(), fingerprint)
 }
 
 func (c *sharedAgentLoopCallbacks) CommitStore(fingerprint string, decision agent.CommitDecision) error {
@@ -565,14 +577,19 @@ func (c *codingSubAgentCallbacks) CommitTaskKey() string {
 }
 
 func (c *codingSubAgentCallbacks) CommitLookup(fingerprint string) (agent.CommitDecision, bool) {
+	decision, found, _ := c.CommitLookupState(fingerprint)
+	return decision, found
+}
+
+func (c *codingSubAgentCallbacks) CommitLookupState(fingerprint string) (agent.CommitDecision, bool, error) {
 	if c == nil {
-		return "", false
+		return "", false, fmt.Errorf("commit host is nil")
 	}
 	var app *App
 	if c.subagent != nil {
 		app = commitAppForHandler(c.subagent.handler)
 	}
-	return lookupCommitForApp(app, c.CommitTaskKey(), fingerprint)
+	return lookupCommitStateForApp(app, c.CommitTaskKey(), fingerprint)
 }
 
 func (c *codingSubAgentCallbacks) CommitStore(fingerprint string, decision agent.CommitDecision) error {
@@ -679,14 +696,19 @@ func (c *remoteCodingCallbacks) CommitTaskKey() string {
 }
 
 func (c *remoteCodingCallbacks) CommitLookup(fingerprint string) (agent.CommitDecision, bool) {
+	decision, found, _ := c.CommitLookupState(fingerprint)
+	return decision, found
+}
+
+func (c *remoteCodingCallbacks) CommitLookupState(fingerprint string) (agent.CommitDecision, bool, error) {
 	if c == nil {
-		return "", false
+		return "", false, fmt.Errorf("commit host is nil")
 	}
 	var app *App
 	if c.agent != nil {
 		app = commitAppForHandler(c.agent.handler)
 	}
-	return lookupCommitForApp(app, c.CommitTaskKey(), fingerprint)
+	return lookupCommitStateForApp(app, c.CommitTaskKey(), fingerprint)
 }
 
 func (c *remoteCodingCallbacks) CommitStore(fingerprint string, decision agent.CommitDecision) error {
@@ -855,10 +877,15 @@ func (c *veAgentCallbacks) CommitTaskKey() string {
 }
 
 func (c *veAgentCallbacks) CommitLookup(fingerprint string) (agent.CommitDecision, bool) {
+	decision, found, _ := c.CommitLookupState(fingerprint)
+	return decision, found
+}
+
+func (c *veAgentCallbacks) CommitLookupState(fingerprint string) (agent.CommitDecision, bool, error) {
 	if c == nil {
-		return "", false
+		return "", false, fmt.Errorf("commit host is nil")
 	}
-	return lookupCommitForApp(c.app, c.CommitTaskKey(), fingerprint)
+	return lookupCommitStateForApp(c.app, c.CommitTaskKey(), fingerprint)
 }
 
 func (c *veAgentCallbacks) CommitStore(fingerprint string, decision agent.CommitDecision) error {
