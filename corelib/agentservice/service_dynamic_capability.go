@@ -310,6 +310,21 @@ func (s *Service) PrepareDynamicSemanticRoutingResources() error {
 	return nil
 }
 
+// ResolveDynamicCapabilityNeeds forwards one cloud-agent turn to the
+// executor's semantic resolver. The service does not classify the text itself.
+func (s *Service) ResolveDynamicCapabilityNeeds(ctx context.Context, principal Principal, taskID, userText string) (DynamicCapabilityNeedResolution, error) {
+	if s == nil || s.executor == nil {
+		return DynamicCapabilityNeedResolution{}, fmt.Errorf("semantic routing is unavailable")
+	}
+	resolver, ok := s.executor.(interface {
+		ResolveDynamicCapabilityNeeds(context.Context, Principal, string, string) (DynamicCapabilityNeedResolution, error)
+	})
+	if !ok {
+		return DynamicCapabilityNeedResolution{}, fmt.Errorf("executor does not resolve semantic capability needs")
+	}
+	return resolver.ResolveDynamicCapabilityNeeds(ctx, principal, taskID, userText)
+}
+
 // ConfigureDynamicSemanticRouting attaches the durable Core Agent semantic
 // execution boundary for one or more governed dynamic capability families.
 // The caller remains responsible for supplying the reviewed capability

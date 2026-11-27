@@ -1,6 +1,7 @@
 import { act, fireEvent, render, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage } from '../useAIAssistant';
+import { TRANSCRIPT_WINDOW_ADJUSTING_ATTR } from '../conversationRenderWindow';
 import { useAssistantOutputScroll } from '../useAssistantOutputScroll';
 
 const scrollIntoViewMock = vi.fn();
@@ -610,6 +611,87 @@ describe('useAssistantOutputScroll', () => {
         expect(box.scrollTop).toBe(500);
     });
 
+    it('writes a scaled anchor drift as CSS pixels', () => {
+        const user = makeMsg({ role: 'user', content: 'Earlier question' });
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'Earlier answer' });
+        const { getByTestId, rerender } = render(<ScrollHarness messages={[user, assistant]} />);
+        const box = getByTestId('scroll-box');
+        const content = getByTestId('scroll-content');
+        // Visual box is twice the CSS viewport: ui-scale 2.
+        stubRect(box, 0, 200);
+        stubRect(content, -80, 20);
+        Object.defineProperties(box, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.wheel(box, { deltaY: -40 });
+        fireEvent.scroll(box);
+
+        // The row moved 200 visual px. scrollTop must move 100 CSS px.
+        stubRect(content, 120, 220);
+        rerender(<ScrollHarness messages={[user, assistant]} />);
+        expect(box.scrollTop).toBe(100);
+    });
+
+    it('keeps the anchor when only the UI scale changes', () => {
+        const user = makeMsg({ role: 'user', content: 'Earlier question' });
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'Earlier answer' });
+        const { getByTestId, rerender } = render(<ScrollHarness messages={[user, assistant]} />);
+        const box = getByTestId('scroll-box');
+        const content = getByTestId('scroll-content');
+        stubRect(box, 0, 100);
+        stubRect(content, 40, 140);
+        Object.defineProperties(box, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.wheel(box, { deltaY: -40 });
+        fireEvent.scroll(box);
+
+        // Scale 2 doubles visual positions and halves CSS-per-visual. The
+        // row did not move in the transcript, so scrollTop stays put.
+        stubRect(box, 0, 200);
+        stubRect(content, 80, 280);
+        rerender(<ScrollHarness messages={[user, assistant]} />);
+        expect(box.scrollTop).toBe(0);
+    });
+
+    it('does not chase the anchor while the transcript window is reconciling its spacer', () => {
+        const user = makeMsg({ role: 'user', content: 'Earlier question' });
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'Earlier answer' });
+        const { getByTestId, rerender } = render(<ScrollHarness messages={[user, assistant]} />);
+        const box = getByTestId('scroll-box');
+        const content = getByTestId('scroll-content');
+        stubRect(box, 0, 100);
+        stubRect(content, -40, 60);
+        Object.defineProperties(box, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.wheel(box, { deltaY: -40 });
+        fireEvent.scroll(box);
+
+        // Same reflow as the anchor test, but the render window has not put
+        // the spacer back yet. Following the drift would park in the hole.
+        box.setAttribute(TRANSCRIPT_WINDOW_ADJUSTING_ATTR, '');
+        stubRect(content, 460, 560);
+        rerender(<ScrollHarness messages={[user, assistant]} />);
+        // A scroll event during the hole (the browser clamps scrollTop as
+        // scrollHeight collapses) must not sample the shifted row either.
+        fireEvent.scroll(box);
+        expect(box.scrollTop).toBe(0);
+
+        // The spacer is back. The row returns to where the reader left it.
+        // A sample taken at 460 would pull scrollTop by that whole gap.
+        box.removeAttribute(TRANSCRIPT_WINDOW_ADJUSTING_ATTR);
+        stubRect(content, -40, 60);
+        rerender(<ScrollHarness messages={[user, assistant]} />);
+        expect(box.scrollTop).toBe(0);
+    });
+
     it('re-anchors by row index when the anchored node was remounted with a new identity', () => {
         const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'answer' });
         function RemountHarness({ tag, messages }: { tag: 'div' | 'section'; messages: ChatMessage[] }) {
@@ -703,6 +785,57 @@ describe('useAssistantOutputScroll', () => {
         // the testid match on the new (zero-rect) node gives +40.
         rerender(<ReorderHarness flipped messages={[assistant]} />);
         expect(box.scrollTop).toBe(240);
+    });
+
+    it('does not restore a shared testid onto the first matching row', () => {
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'answer' });
+        function DupHarness({ gen, messages }: { gen: number; messages: ChatMessage[] }) {
+            const api = useAssistantOutputScroll({ hasConversation: true, messages, ready: true });
+            return (
+                <div
+                    ref={api.outputContainerRef}
+                    data-testid="scroll-box"
+                    onScroll={api.handleScroll}
+                    onWheel={api.handleUserScrollIntent}
+                >
+                    <div key={`${gen}-first`} data-testid="goal-stage-command" data-which="first" />
+                    <div key={`${gen}-second`} data-testid="goal-stage-command" data-which="second" />
+                    <div
+                        ref={(node) => {
+                            api.outputEndRef.current = node;
+                            if (node) node.scrollIntoView = scrollIntoViewMock;
+                        }}
+                    />
+                </div>
+            );
+        }
+        const rect = (top: number, height: number): DOMRect => ({
+            top, bottom: top + height, left: 0, right: 10, width: 10, height, x: 0, y: top, toJSON() { return {}; },
+        });
+        const original = HTMLElement.prototype.getBoundingClientRect;
+        HTMLElement.prototype.getBoundingClientRect = function () {
+            if (this.getAttribute("data-testid") === "scroll-box") return rect(0, 100);
+            if (this.getAttribute("data-which") === "first") return rect(-200, 100);
+            if (this.getAttribute("data-which") === "second") return rect(-40, 100);
+            return original.call(this);
+        };
+        try {
+            const { getByTestId, rerender } = render(<DupHarness gen={0} messages={[assistant]} />);
+            const box = getByTestId('scroll-box');
+            Object.defineProperties(box, {
+                clientHeight: { configurable: true, value: 100 },
+                scrollHeight: { configurable: true, value: 400 },
+                scrollTop: { configurable: true, value: 200, writable: true },
+            });
+            fireEvent.wheel(box, { deltaY: -40 });
+            fireEvent.scroll(box);
+            // Remount. The first shared testid is 160px above the anchored row.
+            // Matching it would drop scrollTop by that gap.
+            rerender(<DupHarness gen={1} messages={[assistant]} />);
+            expect(box.scrollTop).toBe(200);
+        } finally {
+            HTMLElement.prototype.getBoundingClientRect = original;
+        }
     });
 
     function NestedHarness({ messages }: { messages: ChatMessage[] }) {
@@ -845,5 +978,33 @@ describe('useAssistantOutputScroll', () => {
         fireEvent.click(view.getByTestId('jump'));
         expect(box.scrollTop).toBe(488);
         expect(view.getByTestId('latched').textContent).toBe('up');
+    });
+
+    it('parks a scaled user turn using CSS scroll pixels', () => {
+        const user = makeMsg({ id: 'u1', role: 'user', content: 'hello there' });
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'reply' });
+        function Harness() {
+            const api = useAssistantOutputScroll({ hasConversation: true, messages: [user, assistant], ready: true });
+            return (
+                <div ref={api.outputContainerRef} data-testid="jump-box" onScroll={api.handleScroll} style={{ height: 100, overflow: 'auto' }}>
+                    <div className="mc-conversation-body">
+                        <div data-testid="assistant-chat-user-u1">hello there</div>
+                    </div>
+                    <div ref={api.outputEndRef} />
+                    <button type="button" data-testid="jump" onClick={() => api.jumpToUserTurn('u1')}>jump</button>
+                </div>
+            );
+        }
+        const view = render(<Harness />);
+        const box = view.getByTestId('jump-box');
+        const node = view.getByTestId('assistant-chat-user-u1');
+        const rect = (top: number, height: number): DOMRect => ({ top, bottom: top + height, left: 0, right: 10, width: 10, height, x: 0, y: top, toJSON() { return {}; } });
+        node.getBoundingClientRect = () => rect(400, 40);
+        box.getBoundingClientRect = () => rect(0, 200);
+        Object.defineProperty(box, 'scrollHeight', { configurable: true, value: 2000 });
+        Object.defineProperty(box, 'clientHeight', { configurable: true, value: 100 });
+        fireEvent.click(view.getByTestId('jump'));
+        // 400 visual px is 200 CSS px at scale 2, then the 12px gap.
+        expect(box.scrollTop).toBe(188);
     });
 });

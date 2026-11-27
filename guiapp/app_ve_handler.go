@@ -672,10 +672,23 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 	localPending := newPendingStreamText()
 	localStreamDone := make(chan struct{})
 	go h.syncLocalStream(sessionID, senderID, localPending, localStreamDone)
+	reasoningPending := newPendingStreamText()
+	reasoningDone := make(chan struct{})
+	go func() {
+		defer close(reasoningDone)
+		drainPendingStream(reasoningPending, localStreamFlushInterval, localStreamMaxBytes, func(chunk string) {
+			emitVEReasoningToFrontend(h.app, sessionID, senderID, chunk)
+		})
+	}()
 
 	onToken := func(delta string) {
-		delta = visibleVEStreamDelta(delta)
-		if delta == "" {
+		visible, reasoning := splitVEStreamDelta(delta)
+		if reasoning != "" {
+			// Thoughts keep the chat alive without counting as answer text.
+			// The fallback full answer still sends when no visible token arrived.
+			reasoningPending.add(reasoning)
+		}
+		if visible == "" {
 			return
 		}
 		// Signal first visible output so the timeout watcher knows we're alive.
@@ -685,14 +698,17 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 			default:
 			}
 		}
-		streamedText.WriteString(delta)
-		hubPending.add(delta)
-		localPending.add(delta)
+		streamedText.WriteString(visible)
+		hubPending.add(visible)
+		localPending.add(visible)
 	}
 
 	fullResponse, err := h.runAgentForVE(ctx, sessionID, userMessage, requestID, onToken)
 	// Finish the on-screen turn before waiting on Hub. Remote sync can take
 	// seconds; the local cursor should not keep blinking until that upload ends.
+	// Reasoning closes first so the thought is on screen before stream_end.
+	reasoningPending.close()
+	<-reasoningDone
 	localPending.close()
 	<-localStreamDone
 
@@ -726,12 +742,34 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 	return ctxErr
 }
 
+// splitVEStreamDelta keeps answer text on the visible lane and returns a
+// reasoning body with the U+0001 marker removed. A leading U+0002 stays on
+// the answer lane, matching VisibleChatStreamDelta.
+func splitVEStreamDelta(delta string) (visible, reasoning string) {
+	marker, body := textutil.SplitVisibleStreamDelta(delta)
+	if marker == "\x01" {
+		return "", body
+	}
+	return body, ""
+}
+
 // visibleVEStreamDelta removes internal stream markers before a digital-employee
-// message crosses the local Wails or Hub boundary. \x01 prefixes reasoning
-// deltas in the shared agent loop; VE chat has no separate reasoning panel, so
-// showing either the marker (as a square glyph) or its private content is wrong.
+// answer crosses the local Wails or Hub boundary. Reasoning is delivered on
+// ve:reasoning, never on the answer chunk.
 func visibleVEStreamDelta(delta string) string {
-	return textutil.VisibleChatStreamDelta(delta)
+	visible, _ := splitVEStreamDelta(delta)
+	return visible
+}
+
+func emitVEReasoningToFrontend(app *App, sessionID, fromID, text string) {
+	if app == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	app.emitEvent("ve:reasoning", map[string]any{
+		"session_id": sessionID,
+		"from_id":    fromID,
+		"text":       text,
+	})
 }
 
 // runAgentForVE runs the AI agent for a VE session.

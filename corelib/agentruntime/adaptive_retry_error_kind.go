@@ -30,6 +30,19 @@ func ClassifyAdaptiveRetryFailure(err error) FailureCategory {
 	if err == nil {
 		return FailureUnknown
 	}
+	// Keyword lists below treat "timeout" and "unauthorized" as their own
+	// classes. A Responses frame has already been classified; a permanent one
+	// must not become a network retry because its message also says timeout.
+	if llm.IsResponsesStreamFailure(err) {
+		switch ClassifyLLMRetryError(err) {
+		case LLMRetryErrorPeriodLimit:
+			return FailurePeriodLimit
+		case LLMRetryErrorTransientServer:
+			return FailureTransient
+		default:
+			return FailureUnknown
+		}
+	}
 	if llm.IsTransientTokenValidationError(err) {
 		return FailureTransient
 	}

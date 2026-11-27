@@ -53,7 +53,7 @@ func (s *Service) SendMessage(ctx context.Context, p Principal, instanceID strin
 			metadata["moa_preset"] = preset
 		}
 	}
-	run, msg, err := s.PostMessage(ctx, p, instanceID, sess.ID, PostMessageInput{Content: in.Content, InputType: in.InputType, Attachments: in.Attachments, Metadata: metadata, ClientCapabilities: in.ClientCapabilities, ContinuationHandle: in.ContinuationHandle, RefineTask: in.RefineTask, OnToken: in.OnToken, OnToolCall: in.OnToolCall, OnToolResult: in.OnToolResult, DatabaseApproval: cloneDatabaseApproval(in.DatabaseApproval)})
+	run, msg, err := s.PostMessage(ctx, p, instanceID, sess.ID, PostMessageInput{Content: in.Content, InputType: in.InputType, Attachments: in.Attachments, Metadata: metadata, ClientCapabilities: in.ClientCapabilities, ContinuationHandle: in.ContinuationHandle, RefineTask: in.RefineTask, OnToken: in.OnToken, OnReasoning: in.OnReasoning, OnToolCall: in.OnToolCall, OnToolResult: in.OnToolResult, DatabaseApproval: cloneDatabaseApproval(in.DatabaseApproval)})
 	if err != nil {
 		return sess, run, msg, err
 	}
@@ -100,6 +100,7 @@ func (s *Service) SendMessageAsync(ctx context.Context, p Principal, instanceID 
 		ContinuationHandle: in.ContinuationHandle,
 		RefineTask:         in.RefineTask,
 		OnToken:            in.OnToken,
+		OnReasoning:        in.OnReasoning,
 		OnToolCall:         in.OnToolCall,
 		OnToolResult:       in.OnToolResult,
 		DatabaseApproval:   cloneDatabaseApproval(in.DatabaseApproval),
@@ -522,6 +523,8 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 			in.OnToken(delta)
 		}
 	}
+	// Reasoning is a side channel. It must not count as the first visible token.
+	execReq.OnReasoning = in.OnReasoning
 	// One cancel registration owns both boundaries. The normal request context
 	// stops live execution; a CoreAgentExecutor additionally closes the durable
 	// coding task subtree first. Keep the capability optional so non-coding

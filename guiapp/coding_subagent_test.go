@@ -150,6 +150,12 @@ func TestBuildCodingSubAgentSystemPrompt_Minimal(t *testing.T) {
 	if !strings.Contains(prompt, "unrelated pre-existing errors") || !strings.Contains(prompt, "exact blocker") {
 		t.Error("prompt should instruct the agent to report unrelated verification blockers precisely")
 	}
+	if !strings.Contains(prompt, "compiler names a file this task did not originally change") || !strings.Contains(prompt, "Do not stop by saying the file belongs to someone else") || !strings.Contains(prompt, "别人的文件") {
+		t.Error("prompt should require a minimal fix for compile errors outside the original edit set")
+	}
+	if !strings.Contains(prompt, hostCompileRepairMarker) || !strings.Contains(prompt, "do not run the verification command") || !strings.Contains(prompt, "宿主会重跑") {
+		t.Error("prompt should leave host compile-repair verification to the step gate")
+	}
 	if !strings.Contains(prompt, "禁止用 write_file 重写已有文件") {
 		t.Error("prompt should contain write_file prohibition for existing files")
 	}
@@ -1595,8 +1601,8 @@ func TestDocumentationOnlyEditsDoNotRequireVerification(t *testing.T) {
 func TestBuildCodingToolDefinitions_OnlyCodingTools(t *testing.T) {
 	tools := buildCodingToolDefinitionsFallback()
 
-	if len(tools) != 9 {
-		t.Fatalf("expected 9 coding tools, got %d", len(tools))
+	if len(tools) != 10 {
+		t.Fatalf("expected 10 coding tools, got %d", len(tools))
 	}
 
 	expectedNames := map[string]bool{
@@ -1609,6 +1615,7 @@ func TestBuildCodingToolDefinitions_OnlyCodingTools(t *testing.T) {
 		"bash":           true,
 		"list_directory": true,
 		"git_diff":       true,
+		"ocr_recognize":  true,
 	}
 
 	for _, tool := range tools {
@@ -6657,8 +6664,8 @@ func TestTruncateRunesForSubAgent(t *testing.T) {
 func TestBuildCodingToolDefinitionsFromRegistry_NilHandler(t *testing.T) {
 	// When handler is nil, should fall back to inline definitions.
 	tools := buildCodingToolDefinitionsFromRegistry(nil)
-	if len(tools) != 9 {
-		t.Fatalf("expected 9 fallback tools, got %d", len(tools))
+	if len(tools) != 10 {
+		t.Fatalf("expected 10 fallback tools, got %d", len(tools))
 	}
 }
 
@@ -6672,7 +6679,7 @@ func TestBuildCodingToolDefinitionsFallbackUsesCoreRegistryPlusExtras(t *testing
 		names[name] = true
 		descs[name], _ = fn["description"].(string)
 	}
-	for _, name := range []string{"Glob", "ripgrep", "bash", "read_file", "write_file", "edit_file", "list_directory", "edit_lines", "git_diff"} {
+	for _, name := range []string{"Glob", "ripgrep", "bash", "read_file", "write_file", "edit_file", "list_directory", "edit_lines", "git_diff", "ocr_recognize"} {
 		if !names[name] {
 			t.Fatalf("missing fallback tool %q", name)
 		}
@@ -7201,6 +7208,8 @@ func TestCodingSubAgentRejectsInvalidNumericAndBooleanArgumentTypes(t *testing.T
 		{name: "edit start fractional", tool: "edit_lines", args: `{"path":"main.go","operation":"replace","start_line":1.5,"end_line":2,"content":"x"}`, field: "start_line", kind: "type", expected: "integer"},
 		{name: "edit start negative", tool: "edit_lines", args: `{"path":"main.go","operation":"replace","start_line":-1,"end_line":2,"content":"x"}`, field: "start_line", kind: "value", expected: "integer >= 0"},
 		{name: "git staged", tool: "git_diff", args: `{"staged":"true"}`, field: "staged", kind: "type", expected: "boolean"},
+		{name: "ocr start page type", tool: "ocr_recognize", args: `{"image_base64":"aGVsbG8=","start_page":"2"}`, field: "start_page", kind: "type", expected: "integer"},
+		{name: "ocr start page zero", tool: "ocr_recognize", args: `{"image_base64":"aGVsbG8=","start_page":0}`, field: "start_page", kind: "value", expected: "integer >= 1"},
 		{name: "coding knowledge query type", tool: "coding_knowledge_search", args: `{"query":123}`, field: "query", kind: "type", expected: "string"},
 		{name: "project knowledge query type", tool: "knowledge_search", args: `{"query":[]}`, field: "query", kind: "type", expected: "string"},
 		{name: "bash timeout type", tool: "bash", args: `{"command":"Write-Output should-not-run","timeout":"30"}`, field: "timeout", kind: "type", expected: "integer", mustNotRun: true},
@@ -7375,49 +7384,22 @@ func TestConvertUnquotedAndAndForPowerShellPreservesQuotedText(t *testing.T) {
 	}
 }
 
-func TestKeepCodingPowerShellPipeReadersAddsWait(t *testing.T) {
-	cases := []struct {
-		name    string
-		command string
-		want    string
-	}{
-		{
-			name:    "select first gets wait",
-			command: `python -c "print(1)" | Select-Object -First 2`,
-			want:    `python -c "print(1)" | Select-Object -First 2 -Wait`,
-		},
-		{
-			name:    "existing wait is kept once",
-			command: `dir | Select-Object -First 5 -Wait`,
-			want:    `dir | Select-Object -First 5 -Wait`,
-		},
-		{
-			name:    "colon form gets wait",
-			command: `dir | Select-Object -First:3`,
-			want:    `dir | Select-Object -First:3 -Wait`,
-		},
-		{
-			name:    "property selection untouched",
-			command: `dir | Select-Object Name,Length`,
-			want:    `dir | Select-Object Name,Length`,
-		},
-		{
-			name:    "array slice is clamped",
-			command: `$lines[0..2]`,
-			want:    `$lines[Math]::Min(2, $_.Count - 1)]`,
-		},
-		{
-			name:    "plain index untouched",
-			command: `$lines[0]`,
-			want:    `$lines[0]`,
-		},
+func TestCodingPowerShellWrapperBindsSelectObjectWaitWithoutRewriting(t *testing.T) {
+	command := `$lines = 1..4; ($lines[0..2] -join ',') ; Get-ChildItem | select -First 2`
+	_, args := windowsCodingBashInvocation(command)
+	if len(args) == 0 {
+		t.Fatal("windows invocation produced no arguments")
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := keepCodingPowerShellPipeReaders(tc.command); got != tc.want {
-				t.Fatalf("keepCodingPowerShellPipeReaders(%q) = %q, want %q", tc.command, got, tc.want)
-			}
-		})
+	script := args[len(args)-1]
+	if !strings.Contains(script, `$PSDefaultParameterValues['Select-Object:Wait'] = $true`) {
+		t.Fatal("wrapper must bind Select-Object -Wait before the command runs")
+	}
+	decoded := codingPowerShellWrappedCommand(t, args)
+	if decoded != command {
+		t.Fatalf("command text was rewritten: got %q want %q", decoded, command)
+	}
+	if strings.Contains(decoded, "-Wait") || strings.Contains(decoded, "Math]::Min") {
+		t.Fatalf("pipeline consumer or array slice was rewritten in the command: %q", decoded)
 	}
 }
 
@@ -7877,14 +7859,48 @@ func TestExecuteCodingBashWindowsEarlyPipelineStopSucceeds(t *testing.T) {
 	}
 
 	result := executeCodingBash(map[string]interface{}{
-		"command": `python -c "import sys; sys.stdout.write('line\n'*40000)" | Select-Object -First 2`,
+		"command": `python -c "import sys; sys.stdout.write('line\n'*200)" | Select-Object -First 2`,
 	}, nil)
 
 	if result.Kind != codingCommandResultOK || result.ExitCode != 0 {
 		t.Fatalf("early pipeline stop of a successful writer must not fail, got %#v", result)
 	}
-	if !strings.Contains(result.Text, "line") {
-		t.Fatalf("early pipeline stop dropped the kept lines: %q", result.Text)
+	if strings.Count(result.Text, "line") > 4 {
+		t.Fatalf("Select-Object -First kept more than the requested lines: %q", result.Text)
+	}
+}
+
+func TestExecuteCodingBashWindowsSelectAliasEarlyStopSucceeds(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell pipeline stop behavior is Windows-specific")
+	}
+
+	result := executeCodingBash(map[string]interface{}{
+		"command": `cmd /c "for /L %i in (1,1,4000) do @echo line%i" | select -First 2`,
+	}, nil)
+
+	if result.Kind != codingCommandResultOK || result.ExitCode != 0 {
+		t.Fatalf("select -First must not report the killed producer's -1, got %#v", result)
+	}
+	if !strings.Contains(result.Text, "line1") || strings.Contains(result.Text, "line3") {
+		t.Fatalf("select -First must keep only the requested lines, got %q", result.Text)
+	}
+}
+
+func TestExecuteCodingBashWindowsArraySliceStillRuns(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell array slice behavior is Windows-specific")
+	}
+
+	result := executeCodingBash(map[string]interface{}{
+		"command": `$lines = 1..4; $lines[0..2] -join ','`,
+	}, nil)
+
+	if result.Kind != codingCommandResultOK || result.ExitCode != 0 {
+		t.Fatalf("array slice must stay valid PowerShell, got %#v", result)
+	}
+	if !strings.Contains(result.Text, "1,2,3") {
+		t.Fatalf("array slice output = %q, want 1,2,3", result.Text)
 	}
 }
 
@@ -7897,8 +7913,150 @@ func TestExecuteCodingBashWindowsNativeExitMinusOneFails(t *testing.T) {
 		"command": `cmd /c exit -1`,
 	}, nil)
 
-	if result.Kind != codingCommandResultExitError || result.ExitCode == 0 {
-		t.Fatalf("a completed native exit of -1 must still fail, got %#v", result)
+	if result.Kind != codingCommandResultExitError || result.ExitCode != -1 {
+		t.Fatalf("a completed native exit of -1 must stay -1, got %#v", result)
+	}
+	if !strings.Contains(result.Text, "command exited with code -1") {
+		t.Fatalf("exit status must show -1, got %q", result.Text)
+	}
+}
+
+func TestExecuteCodingBashWindowsSelectAliasKeepsNativeExit(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell native pipeline behavior is Windows-specific")
+	}
+
+	result := executeCodingBash(map[string]interface{}{
+		"command": `cmd /c "echo native-failed & exit /b 7" | select -First 5`,
+	}, nil)
+
+	if result.Kind != codingCommandResultExitError || result.ExitCode != 7 {
+		t.Fatalf("select -First must keep a real native exit, got %#v", result)
+	}
+}
+
+func TestExecuteCodingBashWindowsSelectFirstKeepsLaterNativeExit(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell native pipeline behavior is Windows-specific")
+	}
+
+	// The exit runs only after the loop. Without -Wait, Select-Object kills
+	// cmd while it is still printing and $LASTEXITCODE stays -1, so the 7
+	// never happens. A one-line producer that exits 7 does not catch this.
+	result := executeCodingBash(map[string]interface{}{
+		"command": `cmd /c "(for /L %i in (1,1,2000) do @echo line%i) & exit /b 7" | select -First 2`,
+	}, nil)
+
+	if result.Kind != codingCommandResultExitError || result.ExitCode != 7 {
+		t.Fatalf("select -First must keep the exit reached after the kept lines, got %#v", result)
+	}
+	if !strings.Contains(result.Text, "line1") || strings.Contains(result.Text, "line3") {
+		t.Fatalf("select -First must keep only the requested lines, got %q", result.Text)
+	}
+}
+
+func TestExecuteCodingBashWindowsIndexEarlyStopSucceeds(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell pipeline stop behavior is Windows-specific")
+	}
+
+	result := executeCodingBash(map[string]interface{}{
+		"command": `cmd /c "for /L %i in (1,1,4000) do @echo line%i" | Select-Object -Index 0`,
+	}, nil)
+
+	if result.Kind != codingCommandResultOK || result.ExitCode != 0 {
+		t.Fatalf("Select-Object -Index must not report the killed producer's -1, got %#v", result)
+	}
+	if !strings.Contains(result.Text, "line1") || strings.Contains(result.Text, "line2") {
+		t.Fatalf("Select-Object -Index must keep only the selected line, got %q", result.Text)
+	}
+}
+
+func TestExecuteCodingBashWindowsVariableFirstSucceeds(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell pipeline stop behavior is Windows-specific")
+	}
+
+	result := executeCodingBash(map[string]interface{}{
+		"command": `$n = 1; cmd /c "for /L %i in (1,1,4000) do @echo line%i" | Select-Object -First $n`,
+	}, nil)
+
+	if result.Kind != codingCommandResultOK || result.ExitCode != 0 {
+		t.Fatalf("Select-Object -First $n must not report the killed producer's -1, got %#v", result)
+	}
+	if !strings.Contains(result.Text, "line1") || strings.Contains(result.Text, "line2") {
+		t.Fatalf("Select-Object -First $n must keep only the requested line, got %q", result.Text)
+	}
+}
+
+func TestExecuteCodingBashWindowsLastStillReturnsTail(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell Select-Object -Last is Windows-specific")
+	}
+
+	result := executeCodingBash(map[string]interface{}{
+		"command": `1..4 | Select-Object -Last 1`,
+	}, nil)
+
+	if result.Kind != codingCommandResultOK || result.ExitCode != 0 {
+		t.Fatalf("Select-Object -Last must still return the tail, got %#v", result)
+	}
+	if !strings.Contains(result.Text, "4") {
+		t.Fatalf("Select-Object -Last output = %q, want 4", result.Text)
+	}
+
+	native := executeCodingBash(map[string]interface{}{
+		"command": `cmd /c "echo A& echo B& echo C& exit /b 7" | Select-Object -Last 1`,
+	}, nil)
+	if native.Kind != codingCommandResultExitError || native.ExitCode != 7 {
+		t.Fatalf("Select-Object -Last must keep the producer's exit, got %#v", native)
+	}
+	if !strings.Contains(native.Text, "C") || strings.Contains(native.Text, "A") {
+		t.Fatalf("Select-Object -Last output = %q, want the tail only", native.Text)
+	}
+}
+
+func TestCodingObservedExitCodeMapsWindowsUnsignedNegativeOne(t *testing.T) {
+	cases := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{name: "negative-one", in: int(^uint32(0)), want: -1},
+		{name: "access-violation", in: int(uint32(0xC0000005)), want: -1073741819},
+		{name: "int32-min", in: int(uint32(0x80000000)), want: -2147483648},
+		{name: "ordinary", in: 7, want: 7},
+		{name: "zero", in: 0, want: 0},
+		{name: "below-sign-bit", in: 65535, want: 65535},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := codingObservedExitCode(tc.in)
+			want := tc.in
+			if runtime.GOOS == "windows" {
+				want = tc.want
+			}
+			if got != want {
+				t.Fatalf("codingObservedExitCode(%d) = %d, want %d", tc.in, got, want)
+			}
+		})
+	}
+}
+
+func TestExecuteCodingBashWindowsNativeNTStatusStaysSigned(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows process status is a uint32")
+	}
+
+	result := executeCodingBash(map[string]interface{}{
+		"command": `cmd /c exit -1073741819`,
+	}, nil)
+
+	if result.Kind != codingCommandResultExitError || result.ExitCode != -1073741819 {
+		t.Fatalf("NTSTATUS must stay the signed shell status, got %#v", result)
+	}
+	if !strings.Contains(result.Text, "command exited with code -1073741819") {
+		t.Fatalf("exit status must show the signed code, got %q", result.Text)
 	}
 }
 
@@ -14474,8 +14632,8 @@ func TestCodingSubAgentLogsFailedOperationWithRedactedArgs(t *testing.T) {
 		t.Fatalf("log should include redaction marker, got: %s", logText)
 	}
 
-	argsText := compactCodingSubAgentArgsLogText(`{"token":"abc123","password":"pw","path":"main.go","file_content":"full text","headers":{"authorization":"Bearer secret-token","x-api-key":"header-key"},"items":[{"api_key":"nested-key"}]}`, 500)
-	if strings.Contains(argsText, "abc123") || strings.Contains(argsText, "pw") || strings.Contains(argsText, "full text") || strings.Contains(argsText, "secret-token") || strings.Contains(argsText, "header-key") || strings.Contains(argsText, "nested-key") {
+	argsText := compactCodingSubAgentArgsLogText(`{"token":"abc123","password":"pw","path":"main.go","file_content":"full text","image_base64":"aGVsbG8tZnJhZ21lbnQ","headers":{"authorization":"Bearer secret-token","x-api-key":"header-key"},"items":[{"api_key":"nested-key"}]}`, 500)
+	if strings.Contains(argsText, "abc123") || strings.Contains(argsText, "pw") || strings.Contains(argsText, "full text") || strings.Contains(argsText, "aGVsbG8tZnJhZ21lbnQ") || strings.Contains(argsText, "secret-token") || strings.Contains(argsText, "header-key") || strings.Contains(argsText, "nested-key") {
 		t.Fatalf("sensitive arg keys should be redacted, got: %s", argsText)
 	}
 
@@ -15408,5 +15566,368 @@ func TestCodingNetFileLineDeltasUseFirstBaselineAndFinalContent(t *testing.T) {
 	}
 	if !stats[0].HasCounts || stats[0].Insertions != 2 || stats[0].Deletions != 1 {
 		t.Fatalf("net stats=%+v, want exact +2 -1", stats[0])
+	}
+}
+
+func TestCodingOCROutputChangedIsConservative(t *testing.T) {
+	before := codingFileSnapshot{Size: 3, Hash: "before"}
+	if codingOCROutputChanged(before, true, before, nil) {
+		t.Fatal("unchanged OCR transcript must not be audited as a write")
+	}
+	if !codingOCROutputChanged(before, true, codingFileSnapshot{Size: 4, Hash: "after"}, nil) {
+		t.Fatal("changed OCR output must be audited")
+	}
+	if !codingOCROutputChanged(codingFileSnapshot{}, false, before, nil) {
+		t.Fatal("newly created OCR output must be audited")
+	}
+	if !codingOCROutputChanged(before, true, codingFileSnapshot{}, errors.New("snapshot unavailable")) {
+		t.Fatal("post-write snapshot failure must conservatively audit the successful write")
+	}
+}
+
+func TestCodingOCRRecognizeResultLooksFailedTreatsPastEndAsSuccess(t *testing.T) {
+	for _, text := range []string{
+		"OCR 完成：已到文件末尾（共 8 页）。不要安装其他 OCR 引擎。",
+		"公式识别完成：未识别出公式。",
+	} {
+		if codingOCRRecognizeResultLooksFailed(text) {
+			t.Fatalf("successful OCR no-op/negative result was misclassified as failure: %q", text)
+		}
+	}
+	for _, text := range []string{
+		"ocr_recognize: read pdf: broken",
+		"OCR model files are not present yet",
+		"ocr_recognize failed: decoder error",
+	} {
+		if !codingOCRRecognizeResultLooksFailed(text) {
+			t.Fatalf("failure prefix was misclassified as success: %q", text)
+		}
+	}
+}
+
+func TestCodingOCRRecognizePDFPastEndWithoutOutputIsNotAuditedAsWrite(t *testing.T) {
+	project := t.TempDir()
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: project, correlatedLocalExecution: true},
+		task:     &TaskItem{Title: "implement", RequestKind: codingRequestImplementation},
+	}
+
+	result := cb.executeCodingOCRRecognizeWithRunner(map[string]interface{}{"image_path": "scan.pdf", "output_path": "scan.txt"}, func(_ *App, _ map[string]interface{}) string {
+		return "OCR 完成：已到文件末尾（共 8 页）。不要安装其他 OCR 引擎。"
+	})
+	if result.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("past-end PDF OCR should be a successful no-op: %#v", result)
+	}
+	if len(cb.filesModified) != 0 || len(cb.filesCreated) != 0 {
+		t.Fatalf("past-end PDF OCR without an output file was audited as a write: modified=%v created=%v", cb.filesModified, cb.filesCreated)
+	}
+}
+
+func TestCodingOCRRecognizePDFWriteIsAuditedFromWriteState(t *testing.T) {
+	project := t.TempDir()
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: project, correlatedLocalExecution: true},
+		task:     &TaskItem{Title: "implement", RequestKind: codingRequestImplementation},
+	}
+
+	result := cb.executeCodingOCRRecognizeWithRunner(map[string]interface{}{"image_path": "scan.pdf", "output_path": "scan.txt"}, func(_ *App, args map[string]interface{}) string {
+		output, _ := args["output_path"].(string)
+		if err := os.WriteFile(output, []byte("## Page 1"+string([]byte{10})+"recognized"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return "OCR 完成（本机 PP-OCRv6）：已写入 " + output + "，本批识别 1 页。"
+	})
+	if result.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("PDF OCR write was not propagated: %#v", result)
+	}
+	wantPath := cb.displayProjectPath(filepath.Join(project, "scan.txt"))
+	if len(cb.filesCreated) != 1 || !cb.filesCreated[wantPath] {
+		t.Fatalf("PDF OCR write was not audited as created file %q: modified=%v created=%v", wantPath, cb.filesModified, cb.filesCreated)
+	}
+	if cb.filesRead[canonicalCodingPath(filepath.Join(project, "scan.txt"))] {
+		t.Fatal("writing an OCR transcript must not count as reading its contents")
+	}
+}
+
+func TestOCRExistingPDFTranscriptProbeIsBounded(t *testing.T) {
+	dir := t.TempDir()
+	newline := string([]byte{10})
+	transcript := filepath.Join(dir, "transcript.txt")
+	if err := os.WriteFile(transcript, []byte("## Page 1"+newline+strings.Repeat("body ", 20000)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !ocrExistingPDFTranscript(transcript) {
+		t.Fatal("a transcript header at the start of even a large file must be recognized")
+	}
+	lateHeader := filepath.Join(dir, "late.txt")
+	if err := os.WriteFile(lateHeader, []byte(strings.Repeat("x", 70*1024)+newline+"## Page 1"+newline+"body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ocrExistingPDFTranscript(lateHeader) {
+		t.Fatal("probe must stay bounded instead of scanning an arbitrary large output file")
+	}
+	prefixedHeader := filepath.Join(dir, "prefixed.txt")
+	if err := os.WriteFile(prefixedHeader, []byte("user notes"+newline+"## Page 1"+newline+"body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ocrExistingPDFTranscript(prefixedHeader) {
+		t.Fatal("a note that merely contains a page header must not use the transcript overwrite exemption")
+	}
+}
+
+func TestCodingOCRRecognizeTracksReturnedTextAsExploration(t *testing.T) {
+	project := t.TempDir()
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: project, correlatedLocalExecution: true},
+		task:     &TaskItem{Title: "implement", RequestKind: codingRequestImplementation},
+	}
+
+	result := cb.executeCodingOCRRecognizeWithRunner(map[string]interface{}{"image_path": "shot.png"}, func(_ *App, args map[string]interface{}) string {
+		if got, want := args["image_path"], filepath.Join(project, "shot.png"); got != want {
+			t.Fatalf("runner image_path=%v, want %v", got, want)
+		}
+		return "recognized screenshot text"
+	})
+	if result.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("OCR success was not propagated: %#v", result)
+	}
+	searches := cb.getSearchesRun()
+	if len(searches) != 1 || searches[0].Tool != "ocr_recognize" {
+		t.Fatalf("OCR text was not audited as exploration evidence: %#v", searches)
+	}
+	if want := cb.displayProjectPath(filepath.Join(project, "shot.png")); searches[0].Path != want {
+		t.Fatalf("OCR evidence path=%q, want %q", searches[0].Path, want)
+	}
+	if !subAgentSearchProvidesExplorationEvidence(searches[0]) {
+		t.Fatalf("returned OCR text should count as exploration evidence: %#v", searches[0])
+	}
+}
+
+func TestCodingOCRRecognizeBindsRelativeImagePathInsideProject(t *testing.T) {
+	withOCRTestHome(t)
+	withOCRTestModelsDir(t)
+	isolateSharedOCRProvider(t)
+	project := t.TempDir()
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+
+	result := cb.executeToolWithOutcome("ocr_recognize", `{"path":"missing.png","start_page":1}`)
+	if result.Outcome != codingToolOutcomeFailed {
+		t.Fatalf("missing in-project image outcome=%v text=%q", result.Outcome, result.Text)
+	}
+	want := filepath.Join(project, "missing.png")
+	if !strings.Contains(result.Text, want) {
+		t.Fatalf("OCR did not read the project-bound image path %q: %q", want, result.Text)
+	}
+}
+
+func TestCodingOCRRecognizeRejectsImageOutsideProject(t *testing.T) {
+	project := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "missing.png")
+	payload, err := json.Marshal(map[string]interface{}{"image_path": outside})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+
+	result := cb.executeToolWithOutcome("ocr_recognize", string(payload))
+	if result.Outcome != codingToolOutcomeBlocked || !strings.Contains(result.Text, "拒绝访问项目目录外的路径") {
+		t.Fatalf("outside image was not scope-blocked: %#v", result)
+	}
+	if len(cb.guardrails) != 1 || cb.guardrails[0].Path != cb.displayProjectPath(outside) {
+		t.Fatalf("image scope guardrail should name the image path, got %#v", cb.guardrails)
+	}
+}
+
+func TestCodingOCRRecognizeOutputPathRejectedForReadOnlySurfaces(t *testing.T) {
+	project := t.TempDir()
+	for _, tc := range []struct {
+		name     string
+		cb       *codingSubAgentCallbacks
+		wantText string
+	}{
+		{
+			name: "uncorrelated compatibility surface",
+			cb: &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project},
+				task: &TaskItem{Title: "implement", RequestKind: codingRequestImplementation}},
+			wantText: "临时只读兼容面",
+		},
+		{
+			name: "inquiry",
+			cb: &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project, correlatedLocalExecution: true},
+				task: &TaskItem{Title: "inspect", RequestKind: codingRequestInquiry}},
+			wantText: "当前只读/运行回合",
+		},
+		{
+			name: "operational",
+			cb: &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project, correlatedLocalExecution: true},
+				task: &TaskItem{Title: "run it", RequestKind: codingRequestOperational}},
+			wantText: "当前只读/运行回合",
+		},
+		{
+			name: "explorer",
+			cb: &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project, correlatedLocalExecution: true, nestDepth: 1, role: codingRoleExplorer},
+				task: &TaskItem{Title: "inspect"}},
+			wantText: "read-only coding child",
+		},
+		{
+			name: "reviewer",
+			cb: &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project, correlatedLocalExecution: true, nestDepth: 1, role: codingRoleReviewer},
+				task: &TaskItem{Title: "review"}},
+			wantText: "read-only coding child",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := tc.cb.executeToolWithOutcome("ocr_recognize", `{"image_base64":"aGVsbG8=","output_path":"ocr.txt"}`)
+			if result.Outcome != codingToolOutcomeBlocked || !strings.Contains(result.Text, "output_path") || !strings.Contains(result.Text, tc.wantText) {
+				t.Fatalf("output_path was not rejected for %s: %#v", tc.name, result)
+			}
+		})
+	}
+}
+
+func TestCodingOCRRecognizePDFOnReadOnlySurfaceDoesNotAskForOutputPath(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "scan.pdf"), []byte("not really a pdf"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: project},
+		task:     &TaskItem{Title: "inspect", RequestKind: codingRequestInquiry},
+	}
+
+	result := cb.executeToolWithOutcome("ocr_recognize", `{"image_path":"scan.pdf"}`)
+	if result.Outcome != codingToolOutcomeFailed || !strings.Contains(result.Text, "可写编码回合") || strings.Contains(result.Text, "必须传 output_path") {
+		t.Fatalf("read-only PDF OCR should fail closed without telling the model to retry output_path: %#v", result)
+	}
+}
+
+func TestCodingOCRRecognizeOutputPathScopeAndWritableGate(t *testing.T) {
+	withOCRTestHome(t)
+	withOCRTestModelsDir(t)
+	isolateSharedOCRProvider(t)
+	project := t.TempDir()
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: project, correlatedLocalExecution: true},
+		task:     &TaskItem{Title: "implement", RequestKind: codingRequestImplementation},
+	}
+
+	outside := filepath.Join(t.TempDir(), "ocr.txt")
+	payload, err := json.Marshal(map[string]interface{}{"image_path": "input.png", "output_path": outside})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := cb.executeToolWithOutcome("ocr_recognize", string(payload))
+	if result.Outcome != codingToolOutcomeBlocked || !strings.Contains(result.Text, "拒绝访问项目目录外的路径") {
+		t.Fatalf("outside output was not scope-blocked: %#v", result)
+	}
+	if len(cb.guardrails) != 1 || cb.guardrails[0].Path != cb.displayProjectPath(outside) {
+		t.Fatalf("output scope guardrail should name the output path rather than the input image, got %#v", cb.guardrails)
+	}
+
+	result = cb.executeToolWithOutcome("ocr_recognize", `{"image_base64":"aGVsbG8=","output_path":"ocr.txt"}`)
+	if result.Outcome == codingToolOutcomeBlocked || strings.Contains(result.Text, "output_path 会写入文件") {
+		t.Fatalf("writable correlated turn rejected an in-project output_path: %#v", result)
+	}
+	if !strings.Contains(result.Text, "OCR model files") {
+		t.Fatalf("writable in-project call did not reach the OCR engine boundary: %#v", result)
+	}
+	if _, statErr := os.Stat(filepath.Join(project, "ocr.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("failed recognition unexpectedly wrote output: stat=%v", statErr)
+	}
+}
+
+func TestCodingOCRRecognizeOutputOverwriteRequiresReadEvidence(t *testing.T) {
+	withOCRTestHome(t)
+	withOCRTestModelsDir(t)
+	isolateSharedOCRProvider(t)
+	project := t.TempDir()
+	output := filepath.Join(project, "ocr.txt")
+	if err := os.WriteFile(output, []byte("existing user text"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: project, correlatedLocalExecution: true},
+		task:     &TaskItem{Title: "implement", RequestKind: codingRequestImplementation},
+	}
+
+	result := cb.executeToolWithOutcome("ocr_recognize", `{"image_base64":"aGVsbG8=","output_path":"ocr.txt"}`)
+	if result.Outcome != codingToolOutcomeBlocked || !strings.Contains(result.Text, "请先调用 read_file") {
+		t.Fatalf("existing output overwrite did not require read evidence: %#v", result)
+	}
+	if len(cb.guardrails) != 1 || cb.guardrails[0].Path != cb.displayProjectPath(output) {
+		t.Fatalf("output overwrite guardrail should name the output path, got %#v", cb.guardrails)
+	}
+
+	cb.trackReadFile(output)
+	result = cb.executeToolWithOutcome("ocr_recognize", `{"image_base64":"aGVsbG8=","output_path":"ocr.txt"}`)
+	if result.Outcome == codingToolOutcomeBlocked || !strings.Contains(result.Text, "OCR model files") {
+		t.Fatalf("read existing output did not reach the OCR engine boundary: %#v", result)
+	}
+}
+
+func TestCodingOCRRecognizePDFOutputOverwriteNeedsTranscriptOrReadEvidence(t *testing.T) {
+	withOCRTestHome(t)
+	withOCRTestModelsDir(t)
+	isolateSharedOCRProvider(t)
+	project := t.TempDir()
+	pdfPath := filepath.Join(project, "scan.pdf")
+	if err := os.WriteFile(pdfPath, []byte("not really a pdf"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(project, "scan.txt")
+	if err := os.WriteFile(output, []byte("user notes that are not an OCR transcript"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	newCallbacks := func() *codingSubAgentCallbacks {
+		return &codingSubAgentCallbacks{
+			subagent: &CodingSubAgent{projectPath: project, correlatedLocalExecution: true},
+			task:     &TaskItem{Title: "implement", RequestKind: codingRequestImplementation},
+		}
+	}
+
+	cb := newCallbacks()
+	result := cb.executeToolWithOutcome("ocr_recognize", `{"image_path":"scan.pdf","output_path":"scan.txt"}`)
+	if result.Outcome != codingToolOutcomeBlocked || !strings.Contains(result.Text, "请先调用 read_file") {
+		t.Fatalf("arbitrary existing PDF output did not require read evidence: %#v", result)
+	}
+
+	cb.trackReadFile(output)
+	result = cb.executeToolWithOutcome("ocr_recognize", `{"image_path":"scan.pdf","output_path":"scan.txt"}`)
+	if result.Outcome == codingToolOutcomeBlocked || !strings.Contains(result.Text, "OCR model files") {
+		t.Fatalf("read existing PDF output did not reach the OCR engine boundary: %#v", result)
+	}
+
+	if err := os.WriteFile(output, []byte("## Page 1\nalready recognized text"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb = newCallbacks()
+	result = cb.executeToolWithOutcome("ocr_recognize", `{"image_path":"scan.pdf","output_path":"scan.txt","start_page":2}`)
+	if result.Outcome == codingToolOutcomeBlocked || !strings.Contains(result.Text, "OCR model files") {
+		t.Fatalf("structured PDF transcript did not reach the OCR engine boundary: %#v", result)
+	}
+
+	result = cb.executeToolWithOutcome("ocr_recognize", `{"image_path":"scan.pdf","output_path":"scan.txt"}`)
+	if result.Outcome != codingToolOutcomeSuccess || !strings.Contains(result.Text, "已有正文") {
+		t.Fatalf("already-covered PDF transcript did not succeed as a no-op: %#v", result)
+	}
+	if len(cb.filesModified) != 0 || len(cb.filesCreated) != 0 {
+		t.Fatalf("no-op OCR transcript was audited as a file write: modified=%v created=%v", cb.filesModified, cb.filesCreated)
+	}
+}
+
+func TestCodingOCRRecognizeRejectsOutputPathEqualToSource(t *testing.T) {
+	project := t.TempDir()
+	imagePath := filepath.Join(project, "screen.png")
+	if err := os.WriteFile(imagePath, []byte("not really a png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: project, correlatedLocalExecution: true},
+		task:     &TaskItem{Title: "implement", RequestKind: codingRequestImplementation},
+	}
+
+	result := cb.executeToolWithOutcome("ocr_recognize", `{"image_path":"screen.png","output_path":"screen.png"}`)
+	if result.Outcome != codingToolOutcomeBlocked || !strings.Contains(result.Text, "不能是源文件") {
+		t.Fatalf("source overwrite was not blocked: %#v", result)
 	}
 }

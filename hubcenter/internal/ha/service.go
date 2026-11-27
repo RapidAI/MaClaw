@@ -152,6 +152,7 @@ type Service struct {
 	heartbeatSync                 store.HAHeartbeatSyncStateRepository
 	heartbeatSyncMinInterval      time.Duration
 	peerLagGrace                  time.Duration
+	peerProbeInterval             time.Duration
 	heartbeatLastSynced           sync.Map
 
 	mu             sync.RWMutex
@@ -671,6 +672,102 @@ func accessNodeHost(raw string) string {
 	return strings.TrimSpace(parsed.Host)
 }
 
+// OwnsScheduledDispatch reports whether this node may release due drafts.
+// The owner is the lexicographically smallest node id among this process
+// and peers that are still candidates. A peer that has not been unreachable
+// for a full probe interval plus one cascade attempt stays a candidate. One
+// failed probe, or a deferred push, is not long enough for another node to
+// send the same draft.
+//
+// A candidate this process has never pulled blocks dispatch, and so does a
+// candidate whose outage already lasted through the dispatch grace: the
+// next pull is what shows a lease written while it was gone. A single
+// failed probe does not clear a pull that already succeeded, so the current
+// owner keeps sending.
+func (s *Service) OwnsScheduledDispatch() bool {
+	if s == nil {
+		return true
+	}
+	self := strings.TrimSpace(s.nodeID)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if self == "" {
+		return len(s.peers) == 0
+	}
+	now := time.Now().UTC()
+	grace := s.scheduledDispatchGraceLocked()
+	best := self
+	for _, peer := range s.peers {
+		if peer == nil {
+			continue
+		}
+		id := strings.TrimSpace(peer.NodeID)
+		if id == "" || id == self {
+			continue
+		}
+		if peerScheduledDispatchDown(peer, now, grace) {
+			continue
+		}
+		if !peer.dispatchSynced {
+			return false
+		}
+		if id < best {
+			best = id
+		}
+	}
+	return best == self
+}
+
+// DispatchIdentity is the node id written on a scheduled-send lease.
+func (s *Service) DispatchIdentity() string {
+	if s == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.nodeID)
+}
+
+// DispatchLease is how long peers must honor a send this process started.
+// It is one probe interval plus one cascade attempt, which is longer than
+// the time the next log pull needs to observe the published row.
+func (s *Service) DispatchLease() time.Duration {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.scheduledDispatchGraceLocked()
+}
+
+// SetPeerProbeInterval is the HA probe period. Dispatch takeover waits one
+// period plus a cascade attempt, so a missed probe can still succeed before
+// another node releases the draft.
+func (s *Service) SetPeerProbeInterval(d time.Duration) {
+	if s == nil {
+		return
+	}
+	if d <= 0 {
+		d = 180 * time.Second
+	}
+	s.mu.Lock()
+	s.peerProbeInterval = d
+	s.mu.Unlock()
+}
+
+func (s *Service) scheduledDispatchGraceLocked() time.Duration {
+	interval := s.peerProbeInterval
+	if interval <= 0 {
+		interval = 180 * time.Second
+	}
+	return interval + notification.CascadeAttemptBudget
+}
+
+func peerScheduledDispatchDown(peer *PeerRuntimeState, now time.Time, grace time.Duration) bool {
+	if peer == nil || peer.unreachableSince == nil || grace <= 0 {
+		return false
+	}
+	return !now.Before(peer.unreachableSince.Add(grace))
+}
+
 func (s *Service) PeerNodeIDs() []string {
 	if s == nil {
 		return nil
@@ -862,6 +959,10 @@ func (s *Service) markPeerError(nodeID, msg string) {
 	peer.Reachable = false
 	peer.LastCheckedAt = &now
 	peer.LastError = msg
+	if peer.unreachableSince == nil {
+		since := now
+		peer.unreachableSince = &since
+	}
 	peer.ServiceStatus = "isolated"
 	peer.ClusterStatus = "isolated"
 	peer.QualityScore = 0
@@ -888,6 +989,41 @@ func (s *Service) updatePeerFromQuality(nodeID string, rttMs int64, q *ClientQua
 	peer.LastCheckedAt = &now
 	peer.LastSuccessAt = &now
 	peer.LastError = ""
+	s.endPeerUnreachableLocked(peer, now)
+}
+
+// endPeerUnreachableLocked clears the outage clock. The caller holds s.mu.
+// An outage that already lasted through the dispatch grace may hide a send
+// lease, so that peer stays out of the candidate set until the next log pull.
+// A shorter blip keeps the pull that already succeeded.
+func (s *Service) endPeerUnreachableLocked(peer *PeerRuntimeState, now time.Time) {
+	if s == nil || peer == nil || peer.unreachableSince == nil {
+		return
+	}
+	if !now.Before(peer.unreachableSince.Add(s.scheduledDispatchGraceLocked())) {
+		peer.dispatchSynced = false
+	}
+	peer.unreachableSince = nil
+}
+
+// notePeerDispatchSynced marks that this process has pulled node's log
+// through its current tail. Scheduled dispatch waits for that on every
+// candidate peer.
+func (s *Service) notePeerDispatchSynced(nodeID string) {
+	if s == nil {
+		return
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	peer := s.peers[nodeID]
+	if peer == nil {
+		return
+	}
+	peer.dispatchSynced = true
 }
 
 func (s *Service) AppendHubHeartbeat(ctx context.Context, hubID string) {
@@ -927,6 +1063,7 @@ func (s *Service) updatePeerSync(nodeID string, backlog int64) {
 	peer.LastCheckedAt = &now
 	peer.LastSuccessAt = &now
 	peer.LastError = ""
+	s.endPeerUnreachableLocked(peer, now)
 }
 
 func (s *Service) GetClientQuality(ctx context.Context) (*ClientQualityView, error) {
@@ -1986,6 +2123,7 @@ func (s *Service) updatePeerPushSuccess(nodeID string) {
 	peer.LagSeconds = 0
 	peer.LastCheckedAt = &now
 	peer.LastSuccessAt = &now
+	s.endPeerUnreachableLocked(peer, now)
 	if peer.Backlog == 0 {
 		peer.LastError = ""
 	}
@@ -2925,6 +3063,15 @@ func (s *Service) applyNotificationOp(ctx context.Context, op *store.HASyncOp) e
 		var item notification.Notification
 		if err := json.Unmarshal([]byte(op.PayloadJSON), &item); err != nil {
 			return err
+		}
+		existing, err := s.notifications.GetByID(ctx, item.ID)
+		if err != nil {
+			return err
+		}
+		// A delayed lease is a draft upsert. Version order can still deliver
+		// it after this node has published or revoked the notice.
+		if existing != nil && !notification.StatusMayApply(existing.Status, item.Status) {
+			return nil
 		}
 		return s.notifications.Upsert(ctx, &item)
 	case OpDelete:

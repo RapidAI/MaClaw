@@ -12,7 +12,8 @@ import { capReasoningForDisplay, cleanReasoningTrailForBody, resolveVisibleAssis
 import { completedAssistantSummary, stripAssistantToolCallMarkers } from "./assistantToolCall";
 import { stripCodingAgentAuditSections } from "./codingAgentUserFinish";
 import { isBrowserEchoFieldLabel } from "./rolePrefixDisplay";
-import { locatorCssEscape, retainLocatorUserMessages } from "./chatSessionLocatorModel";
+import { locatorCssEscape, retainLocatorUserMessages, userTurnScrollTop } from "./chatSessionLocatorModel";
+import { cssPerVisualPx } from "./conversationRenderWindow";
 import { isImageAttachmentPath, userTurnDisplayView, type UserTurnDisplayAttachment } from "./userTurnDisplay";
 import { omitGoalContinuationHeader } from "./visibleChatText";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
@@ -621,8 +622,9 @@ export function useConversationViewArchive({ messages, scope, enabled, lang, the
         const scroller = scrollerRef.current;
         const node = scroller?.querySelector(`[data-locator-turn="${locatorCssEscape(id)}"]`);
         if (!(node instanceof HTMLElement) || !scroller) return;
-        const top = node.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - 12;
-        scroller.scrollTop = Math.max(0, top);
+        // Rects are visual. scrollTop is CSS. The dialog sits inside .app-scale-layer.
+        const visualGap = node.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+        scroller.scrollTop = userTurnScrollTop(visualGap * cssPerVisualPx(scroller), 0, scroller.scrollTop);
         setRevealId("");
     }, [loading, mountedCount, open, revealId, rows]);
 

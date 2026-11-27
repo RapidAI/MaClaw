@@ -56,8 +56,9 @@ type guiCodingRuntimeOptions struct {
 	// FinalizeWriter performs the merge and reports whether every file landed.
 	DeferredWorktree bool
 	// RequireFinalWorkspaceGate enables the serialized-writer baseline/final
-	// probe. Production GUI implementation/operational turns set this even
-	// when they cannot create an isolated worktree.
+	// probe. Production GUI implementation and operational turns set this
+	// even when they cannot create an isolated worktree. A goal-continuation
+	// execute step does not: that turn is complete when the goal call is saved.
 	RequireFinalWorkspaceGate bool
 	FinalizeWriter            func(*CodingSubAgentResult) (bool, error)
 	// AdmissionWait is called once when this turn cannot start because another

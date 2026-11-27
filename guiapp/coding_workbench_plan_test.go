@@ -1025,8 +1025,8 @@ func TestIsOperationalInspectionOnlyCommand(t *testing.T) {
 }
 
 func TestCodingInquiryToolFiltersAreReadOnly(t *testing.T) {
-	if !isCodingInquiryTool("read_file") || !isCodingInquiryTool("code_navigation") || !isCodingInquiryTool(codeSearchToolName) || !isCodingInquiryTool("knowledge_image_search") {
-		t.Fatal("local inquiry must retain read/navigation tools")
+	if !isCodingInquiryTool("read_file") || !isCodingInquiryTool("code_navigation") || !isCodingInquiryTool(codeSearchToolName) || !isCodingInquiryTool("knowledge_image_search") || !isCodingInquiryTool("ocr_recognize") {
+		t.Fatal("local inquiry must retain read/navigation/OCR tools")
 	}
 	if isCodingInquiryTool("write_file") || isCodingInquiryTool("todo_write") {
 		t.Fatal("local inquiry must not expose mutation/planning tools")
@@ -1083,7 +1083,7 @@ func TestCodingOperationalFilterIsSelfContained(t *testing.T) {
 }
 
 func TestCodingOperationalToolFiltersAreNonMutating(t *testing.T) {
-	for _, name := range []string{"bash", "read_file", "Glob", "ripgrep", "code_navigation", codeSearchToolName, "knowledge_image_search"} {
+	for _, name := range []string{"bash", "read_file", "Glob", "ripgrep", "code_navigation", codeSearchToolName, "knowledge_image_search", "ocr_recognize"} {
 		if !isCodingOperationalTool(name) {
 			t.Fatalf("operational task should retain %q", name)
 		}
@@ -1098,6 +1098,51 @@ func TestCodingOperationalToolFiltersAreNonMutating(t *testing.T) {
 	}
 	if rejectCodingOperationalShellCommand("go generate ./...") == "" {
 		t.Fatal("source generation must not be treated as an operational command")
+	}
+}
+
+func TestReadOnlyCodingSurfacesHideOCROutputPath(t *testing.T) {
+	source := buildCodingToolDefinitionsFallback()
+	filters := map[string]func([]map[string]interface{}) []map[string]interface{}{
+		"goal plan":   filterGoalPlanPhaseTools,
+		"inquiry":     filterCodingInquiryTools,
+		"operational": filterCodingOperationalTools,
+		"uncorrelated": func(tools []map[string]interface{}) []map[string]interface{} {
+			return filterUncorrelatedCodingStaticCompatibilityEffects(codingStaticCompatibilityHostLocal, tools)
+		},
+		"explorer": func(tools []map[string]interface{}) []map[string]interface{} {
+			return filterCodingToolsForRole(tools, &CodingSubAgent{role: codingRoleExplorer, nestDepth: 1})
+		},
+		"reviewer": func(tools []map[string]interface{}) []map[string]interface{} {
+			return filterCodingToolsForRole(tools, &CodingSubAgent{role: codingRoleReviewer, nestDepth: 1})
+		},
+	}
+	for surface, filter := range filters {
+		filtered := filter(source)
+		ocr := codingToolDefinitionForTest(t, filtered, "ocr_recognize")
+		params, _ := ocr["parameters"].(map[string]interface{})
+		props, _ := params["properties"].(map[string]interface{})
+		if _, ok := props["output_path"]; ok {
+			t.Fatalf("%s OCR surface still offers output_path: %#v", surface, props)
+		}
+		description, _ := ocr["description"].(string)
+		if !strings.Contains(description, "output_path is unavailable") || !strings.Contains(description, "writable coding turn") {
+			t.Fatalf("%s OCR surface does not explain the read-only output boundary: %q", surface, description)
+		}
+	}
+
+	original := codingToolDefinitionForTest(t, source, "ocr_recognize")
+	params, _ := original["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	if _, ok := props["output_path"]; !ok {
+		t.Fatal("read-only schema narrowing mutated the shared writable OCR definition")
+	}
+	worker := filterCodingToolsForRole(source, &CodingSubAgent{role: codingRoleWorker})
+	workerOCR := codingToolDefinitionForTest(t, worker, "ocr_recognize")
+	params, _ = workerOCR["parameters"].(map[string]interface{})
+	props, _ = params["properties"].(map[string]interface{})
+	if _, ok := props["output_path"]; !ok {
+		t.Fatal("worker OCR surface must keep output_path for writable PDF transcripts")
 	}
 }
 

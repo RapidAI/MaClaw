@@ -968,23 +968,33 @@ func (i *desktopCodingCapabilityIssuer) takeContinuationToken(ownerID, presented
 	return token
 }
 
+// desktopCodingContinuationBudget is how many continuation tokens one
+// request may still mint after the opening ingress is consumed. Each plan
+// step may bind a writer, a reviewer, and one host compile-repair root for
+// every repair round. Two further mints are retry slack. Compile repair
+// dispatches through the same root entry as a plan step, so those rounds
+// have to be reserved here or an earlier repair consumes the chain and a
+// later step fails the pre-dispatch gate.
+func desktopCodingContinuationBudget(steps int) int {
+	if steps < 1 {
+		steps = 1
+	}
+	return (2+subAgentMaxVerifyFixRounds)*steps + 2
+}
+
 // armContinuationBudget caps how many continuation tokens the current
-// request of this owner may still mint. Each plan step may legitimately bind
-// one writer plus one reviewer, with slack for a retry dispatch; the cap
-// turns a runaway dispatch loop into a visible pre-dispatch gate failure
-// instead of an unbounded turn chain.
+// request of this owner may still mint. The cap turns a runaway dispatch
+// loop into a visible pre-dispatch gate failure instead of an unbounded
+// turn chain.
 func (i *desktopCodingCapabilityIssuer) armContinuationBudget(ownerID string, steps int) {
 	if i == nil || !isDesktopCodingOwner(ownerID) {
 		return
-	}
-	if steps < 1 {
-		steps = 1
 	}
 	i.mu.Lock()
 	if i.continuationBudget == nil {
 		i.continuationBudget = make(map[string]int)
 	}
-	i.continuationBudget[strings.TrimSpace(ownerID)] = 2*steps + 2
+	i.continuationBudget[strings.TrimSpace(ownerID)] = desktopCodingContinuationBudget(steps)
 	i.mu.Unlock()
 }
 

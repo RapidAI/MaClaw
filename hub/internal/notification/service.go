@@ -175,6 +175,60 @@ func (s *Service) CreateNotification(ctx context.Context, req CreateRequest) (*N
 	return n, nil
 }
 
+// PublishDue releases drafts whose publish_at has arrived and broadcasts them.
+// A draft with no publish_at stays a draft. A due draft that has already
+// expired is marked expired and is not broadcast.
+func (s *Service) PublishDue(ctx context.Context, now time.Time) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	now = now.UTC()
+	due, err := s.store.ListDueDrafts(ctx, now)
+	if err != nil {
+		return err
+	}
+	for _, item := range due {
+		if item == nil || item.ID == "" {
+			continue
+		}
+		next := StatusPublished
+		if item.ExpireAt != nil && !item.ExpireAt.After(now) {
+			next = StatusExpired
+		}
+		ok, err := s.store.ClaimDraft(ctx, item.ID, next)
+		if err != nil {
+			log.Printf("[notification] claim due draft %s: %v", item.ID, err)
+			continue
+		}
+		if !ok || next != StatusPublished {
+			continue
+		}
+		if err := s.PublishNotification(ctx, item.ID); err != nil {
+			log.Printf("[notification] publish due draft %s: %v", item.ID, err)
+		}
+	}
+	return nil
+}
+
+// RunScheduledPublisher releases due drafts once a minute until ctx ends.
+func (s *Service) RunScheduledPublisher(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		if err := s.PublishDue(ctx, time.Now()); err != nil {
+			log.Printf("[notification] publish due: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // PublishNotification
 // ---------------------------------------------------------------------------

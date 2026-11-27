@@ -832,6 +832,25 @@ func (b *transactionalTokenBuffer) Discard() {
 	}
 }
 
+// ContentDelivered reports that assistant text already crossed the flush
+// threshold and was handed to the host. Reasoning does not count: it is
+// shown immediately and is not the answer.
+func (b *transactionalTokenBuffer) ContentDelivered() bool {
+	return b != nil && b.streaming
+}
+
+// dropUndeliveredAssistantContent removes assistant text the host never
+// rendered. The retry gate reads that field, so an unseen fragment must not
+// keep a temporary failure from being sent again.
+func dropUndeliveredAssistantContent(resp *llm.Response, delivered bool) {
+	if delivered || resp == nil {
+		return
+	}
+	for i := range resp.Choices {
+		resp.Choices[i].Message.Content = ""
+	}
+}
+
 func responseHasToolCalls(resp *llm.Response) bool {
 	if resp == nil || len(resp.Choices) == 0 {
 		return false
@@ -959,6 +978,12 @@ func (h *IMMessageHandler) doLLMRequestStream(
 			// which reject the optional health-probe endpoint.
 			h.app.markMaclawLLMProfileHealthyIfCurrent(cfg)
 		}
+	}
+	if err != nil {
+		// Text under the flush threshold was never handed to the host. Leaving
+		// it on the response made the retry gate treat an unseen fragment as
+		// an answer. Reasoning and tool-call arguments stay.
+		dropUndeliveredAssistantContent(resp, tokenBuffer.ContentDelivered())
 	}
 	return resp, err
 }

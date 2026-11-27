@@ -139,7 +139,12 @@ const streamIdleTimeoutMarker = "stream idle timeout"
 // IsStreamIdleTimeoutText reports that s describes a stream idle stall.
 // A copied error string no longer has the idle reader's type.
 func IsStreamIdleTimeoutText(s string) bool {
-	return strings.Contains(s, streamIdleTimeoutMarker)
+	if strings.Contains(s, streamIdleTimeoutMarker) {
+		return true
+	}
+	// The Responses WebSocket watchdog uses its own sentence. It is the same
+	// stall: the socket was closed because no frame arrived.
+	return strings.Contains(strings.ToLower(s), "websocket idle timeout")
 }
 
 // IsStreamIdleStall reports a stream that went idle before any payload,

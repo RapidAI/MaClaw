@@ -779,6 +779,46 @@ func TestOpenCodeFreeSSEOfficialCompactCallDoesNotStreamArguments(t *testing.T) 
 		t.Fatalf("sse choice = %#v calls=%+v", choice, choice.Message.ToolCalls)
 	}
 }
+func TestOpenCodeFreeParenCompactHy3DoesNotStream(t *testing.T) {
+	prefix := "我先抓取页面。\n"
+	content := prefix + "webfetch (\"url\":\"https://wttr.in/Beijing?format=j1\")</arg_value:6124c78e>\n" +
+		"<arg_key:6124c78e>timeout</arg_key:6124c78e><arg_value:6124c78e>30</arg_value:6124c78e>"
+	payload, err := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{
+			"delta":         map[string]any{"content": content},
+			"finish_reason": "stop",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "data: " + string(payload) + "\n\ndata: [DONE]\n\n"
+	var streamed strings.Builder
+	resp, err := parseSSEStreamWithReasoningToolParserCompactNames(strings.NewReader(body), func(delta string) {
+		streamed.WriteString(delta)
+	}, nil, parseOpenCodeFreeContentToolCalls, openCodeFreeCompactToolName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(streamed.String(), "webfetch") || strings.Contains(streamed.String(), "arg_key") || strings.Contains(streamed.String(), "6124c78e") {
+		t.Fatalf("paren compact call streamed to user: %q", streamed.String())
+	}
+	if !strings.Contains(streamed.String(), "我先抓取页面") {
+		t.Fatalf("preface was dropped: %q", streamed.String())
+	}
+	choice := resp.Choices[0]
+	call := choice.Message.ToolCalls
+	if choice.FinishReason != "tool_calls" || len(call) != 1 || call[0].Function.Name != "webfetch" {
+		t.Fatalf("sse choice = %#v calls=%+v", choice, call)
+	}
+	if !strings.Contains(call[0].Function.Arguments, `"url":"https://wttr.in/Beijing?format=j1"`) || !strings.Contains(call[0].Function.Arguments, `"timeout":30`) {
+		t.Fatalf("arguments = %s", call[0].Function.Arguments)
+	}
+	if strings.TrimSpace(choice.Message.Content) != "" {
+		t.Fatalf("tool-call content = %q", choice.Message.Content)
+	}
+}
+
 func TestOpenCodeFreeMixedCompactDialectsKeepEveryCall(t *testing.T) {
 	content := "web_search {\"query\":\"北京天气\"}\nwebfetch {\"url\":\"https://wttr.in/Beijing?format=j1\"}"
 	calls, malformed := parseOpenCodeFreeContentToolCalls(content)

@@ -324,6 +324,34 @@ func (e *CoreAgentExecutor) getDynamicSemanticRouting() *DynamicSemanticRouting 
 	return &copy
 }
 
+// ResolveDynamicCapabilityNeeds asks the process semantic resolver what this
+// cloud-agent turn needs. A missing resolver is an error so the caller keeps
+// its workspace tools; this method does not invent a tool list.
+func (e *CoreAgentExecutor) ResolveDynamicCapabilityNeeds(ctx context.Context, principal Principal, taskID, userText string) (DynamicCapabilityNeedResolution, error) {
+	if e == nil {
+		return DynamicCapabilityNeedResolution{}, fmt.Errorf("semantic routing is unavailable")
+	}
+	routing := e.getDynamicSemanticRouting()
+	if routing == nil || routing.Resolver == nil {
+		return DynamicCapabilityNeedResolution{}, fmt.Errorf("semantic routing is unavailable")
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		taskID = "cloud-agent"
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return routing.Resolver.ResolveDynamicCapabilityNeeds(ctx, DynamicCapabilityNeedRequest{
+		Principal:    principal,
+		UserText:     userText,
+		RootTaskID:   taskID,
+		SessionID:    taskID,
+		TurnID:       taskID,
+		ChannelScope: "cloud-agent",
+	})
+}
+
 type coreAgentSSHResources struct {
 	mgr *remote.SSHSessionManager
 	bg  *remote.SSHBackgroundTaskManager
@@ -842,7 +870,7 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		taskRelation:             trustedTaskRelationForExecute(req),
 		loopID:                   fmt.Sprintf("srv:%s:%s", req.Session.ID, req.Principal.UserID),
 		botID:                    botlog.FromMeta(req.Message.Metadata),
-		onToken:                  wrapVisibleChatTokenCallback(req.OnToken),
+		onToken:                  forwardChatTokenLanes(req.OnToken, req.OnReasoning),
 		onToolCall:               req.OnToolCall,
 		onToolResult:             req.OnToolResult,
 		scheduleHandler:          scheduleHandler,
@@ -3996,14 +4024,30 @@ func (c *coreAgentCallbacks) sshDeniedReason() string {
 }
 
 // wrapVisibleChatTokenCallback drops private reasoning-lane deltas and tofu
-// runes before MaClawSrv streams a digital-employee token to Hub or IM.
+// runes before a caller that has no reasoning channel sees a token.
 func wrapVisibleChatTokenCallback(cb func(string)) func(string) {
-	if cb == nil {
+	return forwardChatTokenLanes(cb, nil)
+}
+
+// forwardChatTokenLanes keeps the visible answer on onToken and, when a
+// reasoning callback is set, delivers the U+0001 body there with the marker
+// removed. A leading U+0002 stays on the answer lane. Bare sentinels and
+// empty bodies are dropped. OnToken stays free of reasoning text so IM and
+// other visible-only callers do not render private thoughts.
+func forwardChatTokenLanes(onToken, onReasoning func(string)) func(string) {
+	if onToken == nil && onReasoning == nil {
 		return nil
 	}
 	return func(delta string) {
-		if cleaned := textutil.VisibleChatStreamDelta(delta); cleaned != "" {
-			cb(cleaned)
+		marker, body := textutil.SplitVisibleStreamDelta(delta)
+		if marker == "\x01" {
+			if onReasoning != nil && body != "" {
+				onReasoning(body)
+			}
+			return
+		}
+		if onToken != nil && body != "" {
+			onToken(body)
 		}
 	}
 }

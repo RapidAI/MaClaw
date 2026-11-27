@@ -37,6 +37,7 @@ import { useAssistantOutputScroll } from "./useAssistantOutputScroll";
 import { ChatSessionLocator } from "./ChatSessionLocator";
 import { chatSessionLocatorTurns } from "./chatSessionLocatorModel";
 import { useConversationViewArchive } from "./useConversationViewArchive";
+import { scrollTopDeltaCssPx } from "./conversationRenderWindow";
 import { useConversationRenderWindow } from "./useConversationRenderWindow";
 import { useNewTaskGuideDraft } from "./useNewTaskGuideDraft";
 import { useResizableAssistantInput } from "./useResizableAssistantInput";
@@ -5848,7 +5849,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const scroller = outputContainerRef.current;
         if (!scroller || !deltaY) return;
         handleUserScrollIntent({ type: "wheel", deltaY, target: scroller, currentTarget: scroller });
-        scroller.scrollTop += deltaY;
+        scroller.scrollTop += scrollTopDeltaCssPx(deltaY, scroller);
     }, [handleUserScrollIntent, outputContainerRef]);
     useEffect(() => {
         if (activeTab.type !== "project") return;

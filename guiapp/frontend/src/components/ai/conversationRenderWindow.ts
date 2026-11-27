@@ -26,6 +26,52 @@ export const CONVERSATION_RENDER_MIN_MOUNTED_ROWS = 6;
  * mounted at once.
  */
 export const CONVERSATION_RENDER_BLANK_PX = 40;
+/**
+ * Set on the transcript scroller while a trim or load has changed which rows
+ * are mounted but has not yet reconciled the spacer. Anchor restore and
+ * anchor capture must not run in that gap: restore would park the reader
+ * inside the hole, and a capture taken there is the jump the next restore
+ * applies once the spacer is back.
+ */
+export const TRANSCRIPT_WINDOW_ADJUSTING_ATTR = "data-transcript-window-adjusting";
+
+/**
+ * CSS pixels per visual pixel. `.app-scale-layer` scales getBoundingClientRect;
+ * scrollTop, clientHeight and the spacer are CSS pixels. A missing layout box
+ * (jsdom) reports 1 so a test can stub rects directly. Ratios within 2% of 1
+ * snap to 1 so subpixel rounding at scale 1 does not move the viewport.
+ */
+export function cssPerVisualPx(sample: HTMLElement): number {
+    const visual = sample.getBoundingClientRect().height;
+    const css = sample.offsetHeight > 0 ? sample.offsetHeight : sample.clientHeight;
+    if (!(visual > 0) || !(css > 0)) return 1;
+    const ratio = css / visual;
+    if (!Number.isFinite(ratio) || ratio <= 0) return 1;
+    return Math.abs(ratio - 1) < 0.02 ? 1 : ratio;
+}
+
+/**
+ * Wheel `deltaY` is viewport CSS pixels. `scrollTop` is local CSS pixels
+ * inside `.app-scale-layer`. The browser divides by that transform when it
+ * scrolls natively; a hand-applied delta has to do the same or the locator
+ * rail scrolls the transcript too far whenever `--ui-scale` is not 1.
+ */
+export function scrollTopDeltaCssPx(deltaY: number, sample: HTMLElement): number {
+    if (!Number.isFinite(deltaY) || deltaY === 0) return 0;
+    return deltaY * cssPerVisualPx(sample);
+}
+/**
+ * Largest prefix a trim may replace with the spacer. Eight screens per row is
+ * already a very long message; past that the scroll height is corrupt geometry
+ * (content-visibility intrinsic-size feedback reached ~1.8e6 px) and baking it
+ * into the spacer is the white band above the tail. Capped so a huge viewport
+ * cannot lift the ceiling back into that range.
+ */
+export function conversationRenderTrimCeilingPx(viewportPx: number, rows: number): number {
+    const screens = Math.max(1, rows) * 8;
+    const px = Math.max(1, viewportPx) * screens;
+    return px > 1_000_000 ? 1_000_000 : px;
+}
 
 export interface ConversationRenderWindowMessage {
     id: string;

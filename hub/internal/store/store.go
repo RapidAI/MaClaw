@@ -344,7 +344,11 @@ type User struct {
 	BillingTimezone          string
 	BillingTimezoneUpdatedAt *time.Time
 	CreatedAt                time.Time
-	UpdatedAt                time.Time
+	// CreatedAtText is the users.created_at column. It stays set when
+	// CreatedAt cannot be parsed, so a stored registration clock is not
+	// dropped on the way to the admin card.
+	CreatedAtText string `json:"-"`
+	UpdatedAt     time.Time
 }
 
 type UserIdentity struct {

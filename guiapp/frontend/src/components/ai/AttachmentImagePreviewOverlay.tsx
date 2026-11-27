@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import { createPortal } from "react-dom";
 import { AIAssistantAttachmentFullDataURL } from "../../../wailsjs/go/main/App";
 import { isCloudWorkspacePath } from "./codingTaskMode";
+import { chatMediaImageSource, useChatMediaMenu } from "./chatMediaMenu";
 import { PreviewFileActions } from "./PreviewFileActions";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import { usePreviewSlideLifecycle } from "./previewSlide";
@@ -88,8 +89,8 @@ export interface ImagePreviewOverlayProps {
 
 /** Full-image preview panel for a chat attachment: slides in from the right; Esc, backdrop, or close button slides it back out. */
 export function ImagePreviewOverlay({ filePath, fileName, thumbnailSrc, lang, theme: t, onClose }: ImagePreviewOverlayProps) {
-    const isZh = lang.startsWith("zh");
     const { src, loading, failed } = useFullResolutionSource(filePath, thumbnailSrc);
+    const { onContextMenu, menu: mediaMenu } = useChatMediaMenu(lang);
     const dialogRef = useRef<HTMLDivElement | null>(null);
     const closeRef = useRef<HTMLButtonElement | null>(null);
     // Slide lifecycle: slides in on mount; requestClose slides back out and
@@ -260,6 +261,11 @@ export function ImagePreviewOverlay({ filePath, fileName, thumbnailSrc, lang, th
                 <div
                     data-testid="attachment-image-preview-body"
                     className="aipo-body"
+                    onContextMenu={(event) => onContextMenu(event, {
+                        kind: "image",
+                        source: chatMediaImageSource(filePath, src),
+                        fileName,
+                    })}
                 >
                     {imageBroken ? (
                         <div
@@ -305,6 +311,7 @@ export function ImagePreviewOverlay({ filePath, fileName, thumbnailSrc, lang, th
                     {status}
                 </div>
             </div>
+            {mediaMenu}
         </div>
     );
 

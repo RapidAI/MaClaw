@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -287,6 +288,187 @@ func TestDoResponsesAPIRequestStreamReturnsPartialResponseOnFailedEvent(t *testi
 	}
 }
 
+func TestDoResponsesAPIRequestStreamSurfacesTopLevelErrorEvent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.reasoning_summary_text.delta\n" +
+			"data: {\"delta\":\"Thinking about the step.\"}\n\n" +
+			"data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"The server had an error while processing your request.\",\"param\":null,\"sequence_number\":1}\n\n"))
+	}))
+	defer srv.Close()
+
+	response, err := DoResponsesAPIRequestStream(context.Background(), corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"}, nil, nil, srv.Client(), nil, nil)
+	if err == nil || strings.Contains(err.Error(), "payload_len=") || !strings.Contains(err.Error(), "The server had an error while processing your request.") {
+		t.Fatalf("error = %v, want the top-level message", err)
+	}
+	if !strings.Contains(err.Error(), "code=server_error") {
+		t.Fatalf("error = %v, want the top-level code", err)
+	}
+	if response == nil || response.Choices[0].Message.ReasoningContent != "Thinking about the step." {
+		t.Fatalf("partial response = %#v, want the reasoning kept on the parser result", response)
+	}
+	if response.Choices[0].Message.Content != "" {
+		t.Fatalf("content = %q, want no assistant text", response.Choices[0].Message.Content)
+	}
+}
+
+func TestResponsesStreamEventErrorReadsProviderShapes(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "numeric code",
+			payload: `{"type":"error","code":503,"message":"upstream unavailable"}`,
+			want:    "Responses API stream failed: upstream unavailable (code=503)",
+		},
+		{
+			name:    "error as string",
+			payload: `{"type":"error","error":"overloaded"}`,
+			want:    "Responses API stream failed: overloaded",
+		},
+		{
+			name:    "response.error string",
+			payload: `{"type":"response.failed","response":{"error":"try again"}}`,
+			want:    "Responses API stream failed: try again",
+		},
+		{
+			name:    "nested type replaces envelope",
+			payload: `{"type":"response.failed","response":{"error":{"type":"server_error","message":"temporary upstream failure"}}}`,
+			want:    "Responses API stream failed: temporary upstream failure (code=server_error)",
+		},
+		{
+			name:    "unreadable leftover",
+			payload: `not-json`,
+			want:    "Responses API stream failed: payload_len=8",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := responsesStreamEventError(tc.payload)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+			exported := ResponsesStreamEventError(tc.payload)
+			if exported == nil || exported.Error() != err.Error() {
+				t.Fatalf("exported error = %v, want %v", exported, err)
+			}
+		})
+	}
+}
+
+func TestIsTransientResponsesStreamError(t *testing.T) {
+	transient := []string{
+		"Responses API stream failed: The server had an error (code=server_error)",
+		"Responses API stream failed: provider overloaded (code=overloaded)",
+		"Responses API stream failed: payload_len=115",
+		"Responses API stream failed: rate_limit",
+	}
+	for _, text := range transient {
+		if !IsTransientResponsesStreamError(errors.New(text)) {
+			t.Fatalf("want transient: %s", text)
+		}
+	}
+	permanent := []string{
+		"Responses API stream failed: blocked by content filter (code=content_filter)",
+		"Responses API stream failed: invalid_request_error",
+		"Responses API stream failed: 额度已用尽",
+		"Responses API stream failed: prompt is too long (code=context_length)",
+		"Responses API stream failed: invalid_api_key",
+	}
+	for _, text := range permanent {
+		err := errors.New(text)
+		if IsTransientResponsesStreamError(err) {
+			t.Fatalf("want terminal: %s", text)
+		}
+		if !IsResponsesStreamFailure(err) {
+			t.Fatalf("permanent stream error left its class: %s", text)
+		}
+	}
+	overloadedDenial := errors.New("Responses API stream failed: blocked by content filter (code=content_filter) overloaded")
+	if IsTransientResponsesStreamError(overloadedDenial) || !IsResponsesStreamFailure(overloadedDenial) {
+		t.Fatal("a content filter that also says overloaded stays a stream failure and stays terminal")
+	}
+	if IsTransientResponsesStreamError(errors.New("HTTP 503")) || IsResponsesStreamFailure(errors.New("HTTP 503")) {
+		t.Fatal("an ordinary HTTP error is not this in-stream class")
+	}
+}
+
+func TestResponseHasCommittedAnswer(t *testing.T) {
+	if ResponseHasCommittedAnswer(nil) {
+		t.Fatal("nil response is not a committed answer")
+	}
+	reasoning := &Response{Choices: []Choice{{Message: Message{ReasoningContent: "think"}}}}
+	if ResponseHasCommittedAnswer(reasoning) {
+		t.Fatal("reasoning is not a committed answer")
+	}
+	opened := &Response{Choices: []Choice{{Message: Message{ToolCalls: []ToolCall{{ID: "call_1", Function: ToolCallFunction{Name: "bash"}}}}}}}
+	if ResponseHasCommittedAnswer(opened) {
+		t.Fatal("a tool call with no arguments is not committed")
+	}
+	finished := &Response{Choices: []Choice{{Message: Message{ToolCalls: []ToolCall{{Function: ToolCallFunction{Arguments: "{}"}}}}}}}
+	if !ResponseHasCommittedAnswer(finished) {
+		t.Fatal(`"{}" is a finished call`)
+	}
+	answered := &Response{Choices: []Choice{{Message: Message{Content: "partial answer"}}}}
+	if !ResponseHasCommittedAnswer(answered) {
+		t.Fatal("assistant text is committed")
+	}
+}
+
+type streamCutTimeout struct{}
+
+func (streamCutTimeout) Error() string   { return "i/o timeout" }
+func (streamCutTimeout) Timeout() bool   { return true }
+func (streamCutTimeout) Temporary() bool { return true }
+
+func TestUncommittedStreamCutCanRetry(t *testing.T) {
+	if UncommittedStreamCutCanRetry(nil) {
+		t.Fatal("nil error is not a resendable cut")
+	}
+	if !UncommittedStreamCutCanRetry(fmt.Errorf("Responses API SSE stream read error: %w", io.ErrUnexpectedEOF)) {
+		t.Fatal("a truncated body should be resent")
+	}
+	if !UncommittedStreamCutCanRetry(errors.New("SSE stream idle timeout (4m0s): no data received")) {
+		t.Fatal("an SSE idle stall should be resent")
+	}
+	if !UncommittedStreamCutCanRetry(errors.New("WebSocket idle timeout (4m0s): no data received")) {
+		t.Fatal("a WebSocket idle stall should be resent")
+	}
+	if !UncommittedStreamCutCanRetry(fmt.Errorf("Responses API stream failed: server_error (code=server_error)")) {
+		t.Fatal("a temporary Responses frame should be resent")
+	}
+	if !UncommittedStreamCutCanRetry(streamCutTimeout{}) {
+		t.Fatal("a network timeout should be resent")
+	}
+	if UncommittedStreamCutCanRetry(errors.New("connection reset")) {
+		t.Fatal("a copied connection-reset string is not this cut")
+	}
+	if UncommittedStreamCutCanRetry(errors.New("Responses API stream failed: blocked by content filter (code=content_filter)")) {
+		t.Fatal("a content filter is not a resendable cut")
+	}
+	for _, code := range []string{"1011", "1012", "1013"} {
+		err := errors.New("WebSocket unexpected close (code=" + code + "): websocket: close " + code)
+		if !UncommittedStreamCutCanRetry(err) || !IsTransientWebSocketClose(err) {
+			t.Fatalf("close %s should be resent", code)
+		}
+	}
+	for _, code := range []string{"1006", "1008", "10111"} {
+		err := errors.New("WebSocket unexpected close (code=" + code + "): websocket: close " + code)
+		if UncommittedStreamCutCanRetry(err) || IsTransientWebSocketClose(err) {
+			t.Fatalf("close %s is not a server retry", code)
+		}
+	}
+	quoted := errors.New("Responses API stream failed: blocked by content filter (code=content_filter) WebSocket unexpected close (code=1011)")
+	if !IsTransientWebSocketClose(quoted) {
+		t.Fatal("the close phrase is present; callers reject the frame before using it")
+	}
+	if UncommittedStreamCutCanRetry(quoted) {
+		t.Fatal("a permanent frame that quotes a close code must not be resent")
+	}
+}
+
 func TestDoResponsesAPIRequestStreamReturnsPartialResponseOnOversizedToolArguments(t *testing.T) {
 	oversized := strings.Repeat("x", MaxToolArgumentsBytes+1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -373,6 +555,29 @@ func TestDoResponsesAPIRequestStreamIncompleteSnapshotIsLength(t *testing.T) {
 	}
 	if got := response.Choices[0].Message.Content; got != "print('hi'" {
 		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestDoResponsesAPIRequestStreamCompletedFailedIsNotSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.reasoning_summary_text.delta\ndata: {\"delta\":\"thinking step\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"The server had an error while processing your request.\"},\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hidden answer\"}]}]}}\n\n")
+	}))
+	defer srv.Close()
+
+	response, err := DoResponsesAPIRequestStream(context.Background(), corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"}, nil, nil, srv.Client(), nil, nil)
+	if err == nil || !IsTransientResponsesStreamError(err) || !strings.Contains(err.Error(), "code=server_error") {
+		t.Fatalf("err = %v, want the failed completed frame", err)
+	}
+	if response == nil || ResponseHasCommittedAnswer(response) {
+		t.Fatalf("response = %#v, want the failure snapshot left uncommitted", response)
+	}
+	if got := response.Choices[0].Message.Content; got != "" {
+		t.Fatalf("content = %q, want the failed snapshot text dropped", got)
+	}
+	if got := response.Choices[0].Message.ReasoningContent; got != "thinking step" {
+		t.Fatalf("reasoning = %q, want the delta kept", got)
 	}
 }
 
@@ -935,7 +1140,6 @@ func TestDoResponsesAPIRequestStreamKeepsCompletedEventBeforeOversizedTail(t *te
 	}
 }
 
-
 func TestDoResponsesAPIRequestStreamOversizedEventWithNoPrefixStillFails(t *testing.T) {
 	body := append([]byte("event: response.completed\ndata: {\"pad\":\""), bytes.Repeat([]byte("y"), responsesStreamMaxEventBytes)...)
 	body = append(body, []byte("\"}\n\n")...)
@@ -1102,4 +1306,3 @@ func doResponsesStreamChunk(body []byte, chunk int) (*Response, error) {
 		nil, nil,
 	)
 }
-

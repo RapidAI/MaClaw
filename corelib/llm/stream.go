@@ -940,8 +940,8 @@ func parseSSEStreamWithReasoningToolParserCompactNames(body io.Reader, onToken T
 		if strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0 && len(truncatedTools) > 0 {
 			return nil, fmt.Errorf("SSE stream read: %w", streamErr)
 		}
-		// Preserve a partial response after any visible delta. Retrying it in
-		// the caller would duplicate rendered text/reasoning or tool calls.
+		// Keep the partial so the caller can tell a rendered answer from a cut
+		// that only showed thinking. The loop resends the latter.
 		return response, fmt.Errorf("SSE stream read: %w", streamErr)
 	}
 	return response, nil

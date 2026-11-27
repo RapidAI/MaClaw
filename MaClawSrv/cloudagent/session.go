@@ -352,8 +352,10 @@ func (rt *Runtime) runSession(ctx context.Context, inst *instance, requestID, ta
 
 // sessionResult runs the session turn through the same agent kernel the
 // coding kind uses — one shared host, one tool-routing implementation, real
-// token streaming — instead of the bare executor that had no workspace
-// tools at all.
+// token streaming. The host asks the process semantic resolver for this
+// turn's capability needs and publishes that surface when the reading is
+// managed and runnable in the jail. A nil resolver, an error, or an
+// unmanaged reading keeps the workspace tools.
 func (rt *Runtime) sessionResult(ctx context.Context, inst *instance, taskID, requestID, text, phasePrompt string) (string, bool, []string) {
 	fail := func(msg string) (string, bool, []string) {
 		rt.publish(inst, taskID, requestID, "response", msg, map[string]any{

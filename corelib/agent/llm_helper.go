@@ -294,6 +294,12 @@ func gatewayRejectedLLMFailure(resp *llm.Response, err error) bool {
 	if llm.IsTransientTokenValidationError(err) {
 		return true
 	}
+	// An in-stream Responses error that names a temporary upstream failure
+	// delivered no committed answer once the loop has cleared that partial.
+	// Coding hosts only resend when this reports a clean rejection.
+	if llm.IsTransientResponsesStreamError(err) {
+		return true
+	}
 	var httpErr *llmHTTPError
 	if errors.As(err, &httpErr) {
 		return true
@@ -308,7 +314,7 @@ func gatewayRejectedLLMFailure(resp *llm.Response, err error) bool {
 	// connection. A gateway that names the same stall inside an HTTP 200
 	// error frame ("upstream stream idle timeout") is that dropped body, not
 	// a model rejection.
-	if llm.IsUnexpectedStreamEOF(err) || llm.IsStreamIdleStall(err) {
+	if llm.IsUnexpectedStreamEOF(err) || llm.IsStreamIdleStall(err) || llm.IsTransientWebSocketClose(err) {
 		return true
 	}
 	// A transport timeout (response-header timeout, client timeout, route
@@ -330,6 +336,13 @@ func shouldRetrySimpleLLMError(err error) bool {
 	}
 	if llm.IsTransientTokenValidationError(err) {
 		return true
+	}
+	// A Responses error event is an HTTP 200 frame. Its text is the only
+	// signal that the upstream outage can be waited out. Permanent denials
+	// inside that frame return false here and must not fall through to a
+	// later close-code or timeout check.
+	if llm.IsResponsesStreamFailure(err) {
+		return llm.IsTransientResponsesStreamError(err)
 	}
 	var httpErr *llmHTTPError
 	if errors.As(err, &httpErr) {
@@ -359,6 +372,12 @@ func shouldRetrySimpleLLMError(err error) bool {
 	// immediate non-stream fallback, so this has to enter the same backoff
 	// or the turn ends on the first dropped connection.
 	if llm.IsUnexpectedStreamEOF(err) {
+		return true
+	}
+	// The Responses socket closed with a server-side retry code after the
+	// request was sent. 1011/1012/1013 are that outage. A policy or abnormal
+	// close is not, and neither is a copied "connection reset" string.
+	if llm.IsTransientWebSocketClose(err) {
 		return true
 	}
 	var netErr net.Error

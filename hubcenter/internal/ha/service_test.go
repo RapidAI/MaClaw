@@ -359,6 +359,35 @@ func (s *fakeNotificationStore) List(context.Context, notification.ListFilter) (
 	return items, len(items), nil
 }
 
+func (s *fakeNotificationStore) ListDueDrafts(context.Context, time.Time) ([]*notification.Notification, error) {
+	return nil, nil
+}
+
+func (s *fakeNotificationStore) ClaimDraft(_ context.Context, id string, next notification.Status, updatedAt time.Time) (bool, error) {
+	if item := s.items[id]; item != nil && item.Status == notification.StatusDraft {
+		item.Status = next
+		item.UpdatedAt = updatedAt
+		return true, nil
+	}
+	return false, nil
+}
+
+func (s *fakeNotificationStore) ClaimDispatch(_ context.Context, id, node string, until, updatedAt time.Time) (bool, error) {
+	item := s.items[id]
+	if item == nil || item.Status != notification.StatusDraft {
+		return false, nil
+	}
+	holder := strings.TrimSpace(item.DispatchNode)
+	if item.DispatchUntil != nil && item.DispatchUntil.After(updatedAt) && holder != "" && holder != node {
+		return false, nil
+	}
+	item.DispatchNode = node
+	lease := until.UTC()
+	item.DispatchUntil = &lease
+	item.UpdatedAt = updatedAt
+	return true, nil
+}
+
 func (s *fakeNotificationStore) UpdateStatus(_ context.Context, id string, status notification.Status, updatedAt time.Time) error {
 	if item := s.items[id]; item != nil {
 		item.Status = status
@@ -2118,4 +2147,143 @@ func TestApplyLatexTemplateSnapshotOpDispatchesPayload(t *testing.T) {
 	if got != payload {
 		t.Fatalf("applied payload = %s", got)
 	}
+}
+
+func TestApplyNotificationOpKeepsTerminalStatus(t *testing.T) {
+	ctx := context.Background()
+	notes := &fakeNotificationStore{}
+	svc := &Service{notifications: notes}
+	published := &notification.Notification{
+		ID: "n1", Title: "t", Content: "c", Status: notification.StatusPublished,
+	}
+	if err := notes.Upsert(ctx, published); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := json.Marshal(notification.Notification{
+		ID: "n1", Title: "t", Content: "c", Status: notification.StatusDraft, DispatchNode: "hc-2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.applyNotificationOp(ctx, &store.HASyncOp{OpType: OpUpsert, PayloadJSON: string(stale)}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := notes.GetByID(ctx, "n1")
+	if err != nil || got == nil || got.Status != notification.StatusPublished {
+		t.Fatalf("draft lease applied over published: %#v %v", got, err)
+	}
+
+	revoked := &notification.Notification{
+		ID: "n1", Title: "t", Content: "c", Status: notification.StatusRevoked,
+	}
+	if err := notes.Upsert(ctx, revoked); err != nil {
+		t.Fatal(err)
+	}
+	again, err := json.Marshal(notification.Notification{
+		ID: "n1", Title: "t", Content: "c", Status: notification.StatusPublished,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.applyNotificationOp(ctx, &store.HASyncOp{OpType: OpUpsert, PayloadJSON: string(again)}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = notes.GetByID(ctx, "n1")
+	if err != nil || got == nil || got.Status != notification.StatusRevoked {
+		t.Fatalf("stale publish applied over revoke: %#v %v", got, err)
+	}
+}
+
+func TestOwnsScheduledDispatch(t *testing.T) {
+	peers := []StaticPeer{
+		{NodeID: "hc-1", BaseURL: "https://hc-1.example"},
+		{NodeID: "hc-3", BaseURL: "https://hc-3.example"},
+	}
+	low := NewService("hc-1", "low", "https://hc-1.example", "secret", []StaticPeer{
+		{NodeID: "hc-2", BaseURL: "https://hc-2.example"},
+		{NodeID: "hc-3", BaseURL: "https://hc-3.example"},
+	})
+	mid := NewService("hc-2", "mid", "https://hc-2.example", "secret", peers)
+	high := NewService("hc-3", "high", "https://hc-3.example", "secret", []StaticPeer{
+		{NodeID: "hc-1", BaseURL: "https://hc-1.example"},
+		{NodeID: "hc-2", BaseURL: "https://hc-2.example"},
+	})
+	alone := NewService("hc-9", "alone", "https://hc-9.example", "secret", nil)
+
+	if low.OwnsScheduledDispatch() || mid.OwnsScheduledDispatch() || high.OwnsScheduledDispatch() {
+		t.Fatal("a node dispatched before it pulled a candidate peer's log")
+	}
+	if !alone.OwnsScheduledDispatch() {
+		t.Fatal("a node with no peers should dispatch")
+	}
+	low.notePeerDispatchSynced("hc-2")
+	low.notePeerDispatchSynced("hc-3")
+	mid.notePeerDispatchSynced("hc-1")
+	mid.notePeerDispatchSynced("hc-3")
+	high.notePeerDispatchSynced("hc-1")
+	high.notePeerDispatchSynced("hc-2")
+	if !low.OwnsScheduledDispatch() {
+		t.Fatal("lowest node should dispatch once every candidate log is current")
+	}
+	if mid.OwnsScheduledDispatch() || high.OwnsScheduledDispatch() {
+		t.Fatal("a higher node dispatched while a lower peer was still a candidate")
+	}
+	low.markPeerError("hc-3", "blip")
+	if !low.OwnsScheduledDispatch() {
+		t.Fatal("one probe failure must not stop the current owner")
+	}
+	low.updatePeerFromQuality("hc-3", 1, &ClientQualityView{})
+	if !low.OwnsScheduledDispatch() {
+		t.Fatal("a probe blip that clears inside the grace must keep the owner")
+	}
+
+	mid.markPeerPushDeferred("hc-1", "queue trimmed")
+	if mid.OwnsScheduledDispatch() {
+		t.Fatal("a deferred push is not a down peer")
+	}
+	mid.markPeerError("hc-1", "down")
+	if mid.OwnsScheduledDispatch() {
+		t.Fatal("one probe failure must not take over during the cascade budget")
+	}
+
+	agePastGrace(mid, "hc-1")
+	if !mid.OwnsScheduledDispatch() {
+		t.Fatal("hc-2 should take over once hc-1 has been unreachable through the grace")
+	}
+	if high.OwnsScheduledDispatch() {
+		t.Fatal("hc-3 should still wait while hc-2 has not been unreachable through the grace")
+	}
+	high.markPeerError("hc-1", "down")
+	high.markPeerError("hc-2", "down")
+	agePastGrace(high, "hc-1")
+	agePastGrace(high, "hc-2")
+	if !high.OwnsScheduledDispatch() {
+		t.Fatal("hc-3 should dispatch once every lower peer is past the grace")
+	}
+
+	mid.updatePeerFromQuality("hc-1", 1, &ClientQualityView{})
+	if mid.OwnsScheduledDispatch() {
+		t.Fatal("a recovered lower peer should keep hc-2 from dispatching before its log is pulled")
+	}
+	mid.notePeerDispatchSynced("hc-1")
+	if mid.OwnsScheduledDispatch() {
+		t.Fatal("hc-2 should stay quiet once hc-1's log is current again")
+	}
+	if !low.OwnsScheduledDispatch() {
+		t.Fatal("hc-1 should dispatch again once its own candidate logs are current")
+	}
+}
+
+func agePastGrace(svc *Service, nodeID string) {
+	svc.mu.RLock()
+	grace := svc.scheduledDispatchGraceLocked()
+	svc.mu.RUnlock()
+	past := time.Now().Add(-grace - time.Second)
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	peer := svc.peers[nodeID]
+	if peer == nil {
+		return
+	}
+	peer.unreachableSince = &past
 }

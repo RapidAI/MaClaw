@@ -44,6 +44,10 @@ var codingStaticCompatibilityInventory = []codingStaticCompatibilityInventoryIte
 	{codingStaticCompatibilityHostLocal, "read_file", tool.CapabilityFSReadLocal, tool.EffectReadOnly, "local-workspace", false},
 	{codingStaticCompatibilityHostLocal, "list_directory", tool.CapabilityFSReadLocal, tool.EffectReadOnly, "local-workspace", false},
 	{codingStaticCompatibilityHostLocal, "git_diff", tool.CapabilityRepoInspectVCS, tool.EffectReadOnly, "local-workspace", false},
+	// OCR is observational for the coding surface. The optional transcript
+	// output_path is argument-gated at execution: read-only postures and the
+	// uncorrelated compatibility surface may recognize images but may not write.
+	{codingStaticCompatibilityHostLocal, "ocr_recognize", tool.CapabilityID("ocr.recognize.local"), tool.EffectReadOnly, "local-workspace", false},
 	{codingStaticCompatibilityHostLocal, "edit_file", tool.CapabilityFSWriteLocal, tool.EffectLocalMutation, "local-workspace", false},
 	{codingStaticCompatibilityHostLocal, "edit_lines", tool.CapabilityFSWriteLocal, tool.EffectLocalMutation, "local-workspace", false},
 	{codingStaticCompatibilityHostLocal, "write_file", tool.CapabilityFSWriteLocal, tool.EffectLocalMutation, "local-workspace", false},
@@ -154,7 +158,7 @@ func filterUncorrelatedCodingStaticCompatibilityEffects(hostKind string, definit
 		}
 		out = append(out, definition)
 	}
-	return out
+	return narrowCodingOCROutputPathForReadOnly(out)
 }
 
 // codingStaticCompatibilityItemAllowedWithoutTransportCorrelation keeps only

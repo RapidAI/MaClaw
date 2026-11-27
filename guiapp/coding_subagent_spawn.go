@@ -43,13 +43,13 @@ var codingSubAgentSpawnRoleTools = map[codingSubAgentRole]map[string]bool{
 	codingRoleExplorer: {
 		"Glob": true, "ripgrep": true, "read_file": true, "list_directory": true,
 		codeNavigationToolName: true, codeSearchToolName: true, reportLocalizationToolName: true,
-		"git_diff": true, "web_search": true, "web_fetch": true, "current_datetime": true,
+		"git_diff": true, "ocr_recognize": true, "web_search": true, "web_fetch": true, "current_datetime": true,
 		"coding_knowledge_search": true, "knowledge_search": true, "memory_search": true,
 	},
 	codingRoleReviewer: {
 		"Glob": true, "ripgrep": true, "read_file": true, "list_directory": true,
 		codeNavigationToolName: true, codeSearchToolName: true, reportLocalizationToolName: true,
-		"git_diff": true,
+		"git_diff": true, "ocr_recognize": true,
 		// Reviewer-only: shell validation under the read-only whitelist in
 		// codingagent.reviewerShellInvocationAllowed (ToolPolicy.IsToolCallAllowed).
 		// The explorer map stays shell-free by design.

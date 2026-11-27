@@ -256,12 +256,21 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	cascadeSvc := notification.NewCascadeService(notifStore)
 	hubNotifResolver := &hubServiceNotifResolver{hubService: hubService}
 	notifSvcCenter := notification.NewService(notifStore, cascadeSvc, hubNotifResolver)
+	// Attach HA before the promoter starts. Only the dispatch node cascades.
+	// It replicates a lease before the Hub push, and a peer does not take
+	// over until it has pulled that peer's log, so a node that comes back
+	// mid-send does not push the same notice.
+	if haSvc != nil {
+		haSvc.AttachNotificationStore(notifStore)
+		notifSvcCenter.SetSyncRecorder(haSvc)
+		notifSvcCenter.SetDispatchOwner(haSvc)
+		haSvc.SetPeerProbeInterval(time.Duration(cfg.HA.SyncIntervalSeconds) * time.Second)
+	}
+	app.goBackground(notifSvcCenter.RunScheduledPublisher)
 
 	if haSvc != nil {
 		hubService.SetSyncRecorder(haSvc)
 		haSvc.SetRouteSnapshotRefresher(entryService)
-		haSvc.AttachNotificationStore(notifStore)
-		notifSvcCenter.SetSyncRecorder(haSvc)
 		app.goBackground(func(ctx context.Context) {
 			seedInitialHASnapshots(ctx, haSvc, entryService, st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.System, st.Gossip, st.News, notifStore, skillStore, smStore)
 		})

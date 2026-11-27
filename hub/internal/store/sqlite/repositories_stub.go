@@ -444,6 +444,7 @@ func (r *adminAuditRepo) List(ctx context.Context, filter store.AdminAuditLogFil
 }
 
 func (r *userRepo) Create(ctx context.Context, user *store.User) error {
+	stampNewUserClock(user)
 	tenantID := normalizeTenantID(user.TenantID)
 	account := normalizeEmailLikeAccount(user.Email)
 	identityType, identityValue := normalizeUserIdentityFromAccount(account)
@@ -533,6 +534,7 @@ func (r *userRepo) CreateReferralUserWithAttribution(ctx context.Context, user *
 	if user == nil || referral == nil || strings.TrimSpace(user.ID) == "" || strings.TrimSpace(referral.ID) == "" {
 		return errors.New("referral user and attribution are required")
 	}
+	stampNewUserClock(user)
 	tenantID := normalizeTenantID(user.TenantID)
 	account := normalizeEmailLikeAccount(user.Email)
 	identityType, identityValue := normalizeUserIdentityFromAccount(account)
@@ -643,8 +645,7 @@ func (r *userRepo) GetByID(ctx context.Context, id string) (*store.User, error) 
 	}
 
 	user.SmartRoute = smartRoute != 0
-	user.CreatedAt = mustParseTime(createdAt)
-	user.UpdatedAt = mustParseTime(updatedAt)
+	assignUserClock(&user, createdAt, updatedAt)
 	r.fillEmailVerified(ctx, &user)
 	return &user, nil
 }
@@ -1105,9 +1106,33 @@ func scanUser(row rowScanner) (*store.User, error) {
 		user.EmailVerifiedAt = &t
 	}
 	setUserBillingTimezone(&user, billingTimezone, billingTimezoneUpdatedAt)
-	user.CreatedAt = mustParseTime(createdAt)
-	user.UpdatedAt = mustParseTime(updatedAt)
+	assignUserClock(&user, createdAt, updatedAt)
 	return &user, nil
+}
+
+func assignUserClock(user *store.User, createdAt, updatedAt string) {
+	if user == nil {
+		return
+	}
+	user.CreatedAtText = strings.TrimSpace(createdAt)
+	user.CreatedAt = store.ParseStoredClock(createdAt)
+	user.UpdatedAt = store.ParseStoredClock(updatedAt)
+}
+
+// stampNewUserClock records the insert time when a caller forgot it.
+// A zero CreatedAt formats as year 1, which reads back as "no registration
+// time" even though the row was just created.
+func stampNewUserClock(user *store.User) {
+	if user == nil {
+		return
+	}
+	now := time.Now().UTC()
+	if user.CreatedAt.IsZero() {
+		user.CreatedAt = now
+	}
+	if user.UpdatedAt.IsZero() {
+		user.UpdatedAt = user.CreatedAt
+	}
 }
 
 func setUserBillingTimezone(user *store.User, timezone, updatedAt string) {
@@ -1240,8 +1265,7 @@ func (r *userRepo) getByEmail(ctx context.Context, tenantID, email string) (*sto
 		user.EmailVerifiedAt = &t
 	}
 	setUserBillingTimezone(&user, billingTimezone, billingTimezoneUpdatedAt)
-	user.CreatedAt = mustParseTime(createdAt)
-	user.UpdatedAt = mustParseTime(updatedAt)
+	assignUserClock(&user, createdAt, updatedAt)
 	return &user, nil
 }
 
@@ -1310,8 +1334,7 @@ func (r *userRepo) list(ctx context.Context, tenantID string) ([]*store.User, er
 			user.EmailVerifiedAt = &t
 		}
 		setUserBillingTimezone(&user, billingTimezone, billingTimezoneUpdatedAt)
-		user.CreatedAt = mustParseTime(createdAt)
-		user.UpdatedAt = mustParseTime(updatedAt)
+		assignUserClock(&user, createdAt, updatedAt)
 		items = append(items, &user)
 	}
 	return items, rows.Err()

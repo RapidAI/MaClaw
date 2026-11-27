@@ -1252,6 +1252,461 @@ func TestCodingParallelToolPathsStayOnCheckout(t *testing.T) {
 		t.Fatalf("relative working_dir = %q", got)
 	}
 
+	raw := "cd '" + primary + "'; Copy-Item '" + filepath.Join(primary, "docs", "a.md") + "' '" + filepath.Join(root, "README.md") + "'"
+	if msg := cb.parallelCheckoutCommandRejection(raw, primary); msg == "" {
+		t.Fatal("raw command was allowed to name the shared tree")
+	}
+	rewritten := cb.withDefaultWorkingDir(map[string]interface{}{"command": raw, "working_dir": primary})
+	gotCmd, _ := rewritten["command"].(string)
+	if commandNamesProtectedRoot(gotCmd, root) || commandNamesProtectedRoot(stringVal(rewritten, "working_dir"), root) {
+		t.Fatalf("rewritten command still names %s: %q wd=%q", root, gotCmd, rewritten["working_dir"])
+	}
+	if !strings.Contains(gotCmd, filepath.Join(exec, "docs", "a.md")) || !strings.Contains(gotCmd, filepath.Join(wt, "README.md")) {
+		t.Fatalf("command = %q", gotCmd)
+	}
+	if msg := cb.parallelCheckoutCommandRejection(gotCmd, stringVal(rewritten, "working_dir")); msg != "" {
+		t.Fatalf("rewritten command rejected: %s", msg)
+	}
+	doubled := "cd \"" + strings.ReplaceAll(primary, `\`, `\\`) + "\""
+	doubledArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": doubled})
+	doubledCmd, _ := doubledArgs["command"].(string)
+	if doubledCmd != "cd \""+strings.ReplaceAll(exec, `\`, `\\`)+"\"" {
+		t.Fatalf("doubled command = %q", doubledCmd)
+	}
+	forward := "cd " + filepath.ToSlash(filepath.Join(root, "README.md"))
+	forwardArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": forward})
+	forwardCmd, _ := forwardArgs["command"].(string)
+	if forwardCmd != "cd "+filepath.ToSlash(filepath.Join(wt, "README.md")) {
+		t.Fatalf("forward command = %q", forwardCmd)
+	}
+	spaced := "cd '" + filepath.Join(root, "my project", "file.go") + "'"
+	spacedArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": spaced})
+	spacedCmd, _ := spacedArgs["command"].(string)
+	if spacedCmd != "cd '"+filepath.Join(wt, "my project", "file.go")+"'" {
+		t.Fatalf("spaced command = %q", spacedCmd)
+	}
+	sibling := "cd " + root + "-extra"
+	siblingArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": sibling, "working_dir": exec})
+	siblingCmd, _ := siblingArgs["command"].(string)
+	if siblingCmd != sibling {
+		t.Fatalf("sibling command = %q", siblingCmd)
+	}
+	if msg := cb.parallelCheckoutCommandRejection(siblingCmd, stringVal(siblingArgs, "working_dir")); msg != "" {
+		t.Fatalf("sibling rejected: %s", msg)
+	}
+	folded := "cd " + strings.ToLower(primary)
+	foldedArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": folded, "working_dir": exec})
+	foldedCmd, _ := foldedArgs["command"].(string)
+	if commandNamesProtectedRoot(foldedCmd, root) || !strings.Contains(strings.ToLower(foldedCmd), strings.ToLower(exec)) {
+		t.Fatalf("folded command = %q", foldedCmd)
+	}
+
+	// Relative, drive-relative, and cleaned .. paths never contain the root
+	// text. They still have to land on the checkout.
+	climb := `cd ..\..\Repo`
+	if msg := cb.parallelCheckoutCommandRejection(climb, exec); msg == "" {
+		t.Fatal("relative climb was allowed to enter the shared tree")
+	}
+	climbArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": climb})
+	climbCmd, _ := climbArgs["command"].(string)
+	if climbCmd != `cd `+wt {
+		t.Fatalf("relative climb = %q", climbCmd)
+	}
+	if msg := cb.parallelCheckoutCommandRejection(climbCmd, stringVal(climbArgs, "working_dir")); msg != "" {
+		t.Fatalf("rewritten climb rejected: %s", msg)
+	}
+	dotdotAbs := `cd ` + filepath.Join(`D:\`, "other") + `\..\Repo`
+	dotdotArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": dotdotAbs})
+	dotdotCmd, _ := dotdotArgs["command"].(string)
+	if dotdotCmd != `cd `+wt {
+		t.Fatalf("cleaned absolute = %q", dotdotCmd)
+	}
+	chainArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": `cd ..\..\..; cd Repo`})
+	chainCmd, _ := chainArgs["command"].(string)
+	if chainCmd != `cd ..\..\..; cd `+wt {
+		t.Fatalf("chdir chain = %q", chainCmd)
+	}
+	wildArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": `Copy-Item ..\..\Repo\*.md .`})
+	wildCmd, _ := wildArgs["command"].(string)
+	if wildCmd != `Copy-Item `+wt+`\*.md .` {
+		t.Fatalf("wildcard climb = %q", wildCmd)
+	}
+	rootRelArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": `cd \Repo\pkg`})
+	rootRelCmd, _ := rootRelArgs["command"].(string)
+	if rootRelCmd != `cd `+exec {
+		t.Fatalf("root-relative = %q", rootRelCmd)
+	}
+	driveRel := `cd d:Repo\pkg`
+	if msg := cb.parallelCheckoutCommandRejection(driveRel, `C:\Windows`); msg == "" {
+		t.Fatal("drive-relative path was allowed to enter the shared tree")
+	}
+	driveArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": driveRel, "working_dir": `C:\Windows`})
+	driveCmd, _ := driveArgs["command"].(string)
+	if driveCmd != `cd `+exec {
+		t.Fatalf("drive-relative = %q", driveCmd)
+	}
+
+	// Push-Location is a directory change with a stack. Pop-Location
+	// returns to the directory before the push, not to the process start.
+	pushRaw := `cd ..\..\..; Push-Location Repo; Pop-Location; cd Repo`
+	if msg := cb.parallelCheckoutCommandRejection(pushRaw, exec); msg == "" {
+		t.Fatal("Push-Location climb was allowed to enter the shared tree")
+	}
+	pushArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": pushRaw})
+	pushCmd, _ := pushArgs["command"].(string)
+	if pushCmd != `cd ..\..\..; Push-Location `+wt+`; Pop-Location; cd `+wt {
+		t.Fatalf("pushd stack = %q", pushCmd)
+	}
+	namedPush := `Push-Location -StackName s ..\..\..; Pop-Location; cd Repo`
+	namedArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": namedPush})
+	namedCmd, _ := namedArgs["command"].(string)
+	if namedCmd != `Push-Location -StackName s ..\..\..; Pop-Location; cd `+wt {
+		t.Fatalf("named stack = %q", namedCmd)
+	}
+	stopArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": `Set-Location -ErrorAction Stop ..\..\Repo`})
+	stopCmd, _ := stopArgs["command"].(string)
+	if stopCmd != `Set-Location -ErrorAction Stop `+wt {
+		t.Fatalf("error-action path = %q", stopCmd)
+	}
+
+	// A bare drive letter selects that drive's root when the process has
+	// not been there yet. The following relative name is the shared tree.
+	driveSwitch := `D:; cd Repo`
+	if msg := cb.parallelCheckoutCommandRejection(driveSwitch, `C:\Windows`); msg == "" {
+		t.Fatal("drive switch was allowed to enter the shared tree")
+	}
+	switchArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": driveSwitch, "working_dir": `C:\Windows`})
+	switchCmd, _ := switchArgs["command"].(string)
+	if switchCmd != `D:; cd `+wt {
+		t.Fatalf("drive switch = %q", switchCmd)
+	}
+
+	// Quoted cmd/powershell/bash text is a child script. echo is not.
+	group := `(cd ..\..\..); (cd Repo)`
+	if msg := cb.parallelCheckoutCommandRejection(group, exec); msg == "" {
+		t.Fatal("grouped cd was allowed to enter the shared tree")
+	}
+	groupArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": group})
+	groupCmd, _ := groupArgs["command"].(string)
+	if groupCmd != `(cd ..\..\..); (cd `+wt+`)` {
+		t.Fatalf("grouped cd = %q", groupCmd)
+	}
+	subexpr := `cd (..\..\..); (cd Repo)`
+	subArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": subexpr})
+	subCmd, _ := subArgs["command"].(string)
+	if subCmd != subexpr {
+		t.Fatalf("subexpression cd = %q", subCmd)
+	}
+	if msg := cb.parallelCheckoutCommandRejection(subCmd, stringVal(subArgs, "working_dir")); msg != "" {
+		t.Fatalf("subexpression rejected: %s", msg)
+	}
+	wrapped := `cmd /c "cd ..\..\..; cd Repo"; cd Repo`
+	wrapArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": wrapped})
+	wrapCmd, _ := wrapArgs["command"].(string)
+	if wrapCmd != `cmd /c "cd ..\..\..; cd `+wt+`"; cd Repo` {
+		t.Fatalf("cmd payload = %q", wrapCmd)
+	}
+	psWrapped := `powershell -NoProfile -ExecutionPolicy Bypass -Command "cd ..\..\..; cd Repo"`
+	psArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": psWrapped})
+	psCmd, _ := psArgs["command"].(string)
+	if psCmd != `powershell -NoProfile -ExecutionPolicy Bypass -Command "cd ..\..\..; cd `+wt+`"` {
+		t.Fatalf("powershell payload = %q", psCmd)
+	}
+	echoCmd := `echo "cd ..\..\..; cd Repo"`
+	echoArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": echoCmd})
+	if got, _ := echoArgs["command"].(string); got != echoCmd {
+		t.Fatalf("echo payload = %q", got)
+	}
+	// A quoted path is still one span. A quoted sentence is not a shell:
+	// the space keeps "cd ..\..\Repo" from being read as a cd plus a path.
+	quotedClimb := `cd '..\..\Repo'`
+	quotedClimbArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": quotedClimb})
+	if got, _ := quotedClimbArgs["command"].(string); got != `cd '`+wt+`'` {
+		t.Fatalf("quoted climb = %q", got)
+	}
+
+	// A bare name is a path once the process is on the drive that holds
+	// the shared tree. From the checkout the same name is a subdirectory.
+	bareHere := `Copy-Item Repo .`
+	bareHereArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": bareHere})
+	if got, _ := bareHereArgs["command"].(string); got != bareHere {
+		t.Fatalf("bare name in checkout = %q", got)
+	}
+	if msg := cb.parallelCheckoutCommandRejection(bareHere, exec); msg != "" {
+		t.Fatalf("bare name in checkout rejected: %s", msg)
+	}
+	bareClimb := `cd ..\..\..; Copy-Item Repo .`
+	if msg := cb.parallelCheckoutCommandRejection(bareClimb, exec); msg == "" {
+		t.Fatal("bare name after a climb was allowed to enter the shared tree")
+	}
+	bareArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": bareClimb})
+	bareCmd, _ := bareArgs["command"].(string)
+	if bareCmd != `cd ..\..\..; Copy-Item `+wt+` .` {
+		t.Fatalf("bare name after climb = %q", bareCmd)
+	}
+	globClimb := `cd ..\..\..; Copy-Item Repo* .`
+	globArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": globClimb})
+	globCmd, _ := globArgs["command"].(string)
+	if globCmd != `cd ..\..\..; Copy-Item `+wt+`* .` {
+		t.Fatalf("glob after climb = %q", globCmd)
+	}
+	gitC := `cd ..\..\..; git -C Repo status`
+	gitArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": gitC})
+	gitCmd, _ := gitArgs["command"].(string)
+	if gitCmd != `cd ..\..\..; git -C `+wt+` status` {
+		t.Fatalf("git -C = %q", gitCmd)
+	}
+	attached := `Set-Location -Path:..\..\Repo`
+	if msg := cb.parallelCheckoutCommandRejection(attached, exec); msg == "" {
+		t.Fatal("attached -Path was allowed to enter the shared tree")
+	}
+	attachedArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": attached})
+	attachedCmd, _ := attachedArgs["command"].(string)
+	if attachedCmd != `Set-Location -Path:`+wt {
+		t.Fatalf("attached -Path = %q", attachedCmd)
+	}
+	attachedBare := `Set-Location -Path:Repo`
+	attachedBareArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": attachedBare})
+	if got, _ := attachedBareArgs["command"].(string); got != attachedBare {
+		t.Fatalf("attached -Path inside checkout = %q", got)
+	}
+	attachedStop := `Set-Location -ErrorAction:Stop ..\..\Repo`
+	attachedStopArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": attachedStop})
+	attachedStopCmd, _ := attachedStopArgs["command"].(string)
+	if attachedStopCmd != `Set-Location -ErrorAction:Stop `+wt {
+		t.Fatalf("attached -ErrorAction = %q", attachedStopCmd)
+	}
+	block := `if (Test-Path x) { cd ..\..\..; cd Repo }`
+	if msg := cb.parallelCheckoutCommandRejection(block, exec); msg == "" {
+		t.Fatal("script block was allowed to enter the shared tree")
+	}
+	blockArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": block})
+	blockCmd, _ := blockArgs["command"].(string)
+	if blockCmd != `if (Test-Path x) { cd ..\..\..; cd `+wt+` }` {
+		t.Fatalf("script block = %q", blockCmd)
+	}
+
+	// cmd treats ^ as an escape, so ^\ is a separator the raw span hides.
+	// The whole span is the shared tree. A caret that does not unescape
+	// into that tree stays, and so does a quoted caret.
+	caretClimb := "cd ..\\..\\..^\\Repo"
+	if msg := cb.parallelCheckoutCommandRejection(caretClimb, exec); msg == "" {
+		t.Fatal("caret climb was allowed to enter the shared tree")
+	}
+	caretArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": caretClimb})
+	caretCmd, _ := caretArgs["command"].(string)
+	if caretCmd != `cd `+wt {
+		t.Fatalf("caret climb = %q", caretCmd)
+	}
+	// The caret is a line continuation, so the next line is the next path byte.
+	// ..\^\nRepo is ..\Repo, not ..Repo.
+	caretLine := "cd ..\\..\\..\\^\r\nRepo"
+	caretLineArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": caretLine})
+	if got, _ := caretLineArgs["command"].(string); got != `cd `+wt {
+		t.Fatalf("caret continuation = %q", got)
+	}
+	backtickClimb := "cd ..\\..\\..`\\Repo"
+	backtickArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": backtickClimb})
+	if got, _ := backtickArgs["command"].(string); got != `cd `+wt {
+		t.Fatalf("backtick climb = %q", got)
+	}
+	caretKeep := "cd C:\\Windows^\\System32"
+	caretKeepArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": caretKeep})
+	if got, _ := caretKeepArgs["command"].(string); got != caretKeep {
+		t.Fatalf("caret outside = %q", got)
+	}
+	if msg := cb.parallelCheckoutCommandRejection(caretKeep, exec); msg != "" {
+		t.Fatalf("caret outside rejected: %s", msg)
+	}
+	// A single-quoted caret is literal, so the cutter does not unescape it.
+	// The quote still splits on ^, and the tail is kept off the shared tree.
+	quotedCaret := "cd '..\\..\\..^\\Repo'"
+	if msg := cb.parallelCheckoutCommandRejection(quotedCaret, exec); msg == "" {
+		t.Fatal("quoted caret was allowed to enter the shared tree")
+	}
+	quotedCaretArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": quotedCaret})
+	if got, _ := quotedCaretArgs["command"].(string); got != `cd '..\..\..^`+wt+`'` {
+		t.Fatalf("quoted caret = %q", got)
+	}
+
+	// Invoke-Expression runs in this process. The climb sticks, so the next
+	// bare name is the shared tree. A child cmd does not stick.
+	for _, iex := range []string{
+		"iex \"cd ..\\..\\..\"; Copy-Item Repo .",
+		"Invoke-Expression \"cd ..\\..\\..\"; Copy-Item Repo .",
+		"iex -ErrorAction Stop \"cd ..\\..\\..\"; Copy-Item Repo .",
+		"iex -Verbose -ErrorAction Stop \"cd ..\\..\\..\"; Copy-Item Repo .",
+		"iex `\r\n\"cd ..\\..\\..\"; Copy-Item Repo .",
+	} {
+		if msg := cb.parallelCheckoutCommandRejection(iex, exec); msg == "" {
+			t.Fatalf("invoke-expression was allowed to enter the shared tree: %s", iex)
+		}
+		iexArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": iex})
+		got, _ := iexArgs["command"].(string)
+		want := iex
+		// The script climbs to the drive root and does not itself name the
+		// tree. Only the following bare name moves onto the checkout.
+		const marker = "Copy-Item Repo ."
+		if strings.HasSuffix(iex, marker) {
+			want = strings.TrimSuffix(iex, marker) + "Copy-Item " + wt + " ."
+		}
+		if got != want {
+			t.Fatalf("invoke-expression = %q", got)
+		}
+	}
+	childCopy := "cmd /c \"cd ..\\..\\..\"; Copy-Item Repo ."
+	childCopyArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": childCopy})
+	if got, _ := childCopyArgs["command"].(string); got != childCopy {
+		t.Fatalf("child cmd copy = %q", got)
+	}
+	if msg := cb.parallelCheckoutCommandRejection(childCopy, exec); msg != "" {
+		t.Fatalf("child cmd copy rejected: %s", msg)
+	}
+
+	// PowerShell runs cd.. and cd\. cmd also glues the path to cd/chdir/pushd,
+	// and a module qualifier or a quoted call is still that command.
+	gluedUp := "cd..; cd..; Copy-Item Repo ."
+	if msg := cb.parallelCheckoutCommandRejection(gluedUp, exec); msg == "" {
+		t.Fatal("cd.. was allowed to enter the shared tree")
+	}
+	gluedUpArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": gluedUp})
+	if got, _ := gluedUpArgs["command"].(string); got != "cd..; cd..; Copy-Item "+wt+" ." {
+		t.Fatalf("cd.. = %q", got)
+	}
+	gluedRoot := `cd\; Copy-Item Repo .`
+	if msg := cb.parallelCheckoutCommandRejection(gluedRoot, exec); msg == "" {
+		t.Fatal("cd\\ was allowed to enter the shared tree")
+	}
+	gluedRootArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": gluedRoot})
+	if got, _ := gluedRootArgs["command"].(string); got != `cd\; Copy-Item `+wt+" ." {
+		t.Fatalf("cd\\ = %q", got)
+	}
+	gluedPath := `cd..\..\..\Repo`
+	if msg := cb.parallelCheckoutCommandRejection(gluedPath, exec); msg == "" {
+		t.Fatal("glued path was allowed to enter the shared tree")
+	}
+	gluedPathArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": gluedPath})
+	if got, _ := gluedPathArgs["command"].(string); got != "cd "+wt {
+		t.Fatalf("glued path = %q", got)
+	}
+	qualified := `Microsoft.PowerShell.Management\Set-Location ..\..\..; Copy-Item Repo .`
+	if msg := cb.parallelCheckoutCommandRejection(qualified, exec); msg == "" {
+		t.Fatal("qualified Set-Location was allowed to enter the shared tree")
+	}
+	qualifiedArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": qualified})
+	if got, _ := qualifiedArgs["command"].(string); got != `Microsoft.PowerShell.Management\Set-Location ..\..\..; Copy-Item `+wt+" ." {
+		t.Fatalf("qualified Set-Location = %q", got)
+	}
+	called := `& 'cd' ..\..\..; Copy-Item Repo .`
+	calledArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": called})
+	if got, _ := calledArgs["command"].(string); got != `& 'cd' ..\..\..; Copy-Item `+wt+" ." {
+		t.Fatalf("quoted cd = %q", got)
+	}
+	qualifiedIex := `Microsoft.PowerShell.Utility\Invoke-Expression "cd ..\..\.."; Copy-Item Repo .`
+	qualifiedIexArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": qualifiedIex})
+	if got, _ := qualifiedIexArgs["command"].(string); got != `Microsoft.PowerShell.Utility\Invoke-Expression "cd ..\..\.."; Copy-Item `+wt+" ." {
+		t.Fatalf("qualified iex = %q", got)
+	}
+	cmdPath := `C:\Windows\System32\cmd.exe /c "cd..\..\..& copy Repo\a.go ."`
+	cmdPathArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": cmdPath})
+	if got, _ := cmdPathArgs["command"].(string); got != `C:\Windows\System32\cmd.exe /c "cd..\..\..& copy `+filepath.Join(wt, "a.go")+` ."` {
+		t.Fatalf("cmd.exe path = %q", got)
+	}
+	cdSwitch := `cd/d ..\..\..& copy Repo\a.go .`
+	cdSwitchArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": cdSwitch})
+	if got, _ := cdSwitchArgs["command"].(string); got != `cd/d ..\..\..& copy `+filepath.Join(wt, "a.go")+` .` {
+		t.Fatalf("cd/d = %q", got)
+	}
+
+	// cmd.exe does not treat ' as a quote, so & inside the quotes still
+	// runs. 2>nul is what puts the line on cmd. The same text without it
+	// stays PowerShell, where the quotes hide the cd.
+	cmdQuote := `echo ' & cd ..\..\.. & copy Repo\a.go . & ' 2>nul`
+	if msg := cb.parallelCheckoutCommandRejection(cmdQuote, exec); msg == "" {
+		t.Fatal("cmd single quote was allowed to enter the shared tree")
+	}
+	cmdQuoteArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": cmdQuote})
+	cmdQuoteWant := `echo ' & cd ..\..\.. & copy ` + filepath.Join(wt, "a.go") + ` . & ' 2>nul`
+	if got, _ := cmdQuoteArgs["command"].(string); got != cmdQuoteWant {
+		t.Fatalf("cmd single quote = %q", got)
+	}
+	psQuote := `echo ' & cd ..\..\.. & copy Repo\a.go . & '`
+	psQuoteArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": psQuote})
+	if got, _ := psQuoteArgs["command"].(string); got != psQuote {
+		t.Fatalf("powershell single quote = %q", got)
+	}
+	if msg := cb.parallelCheckoutCommandRejection(psQuote, exec); msg != "" {
+		t.Fatalf("powershell single quote rejected: %s", msg)
+	}
+	// The outer host is PowerShell. The cmd /c body is still cmd, so the
+	// single quotes inside it do not hide &. The parent's next command
+	// stays on the checkout.
+	nestedQuote := `cmd /c "echo ' & cd ..\..\.. & copy Repo\a.go . & '"; Copy-Item Repo .`
+	if msg := cb.parallelCheckoutCommandRejection(nestedQuote, exec); msg == "" {
+		t.Fatal("nested cmd single quote was allowed to enter the shared tree")
+	}
+	nestedQuoteArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": nestedQuote})
+	nestedQuoteWant := `cmd /c "echo ' & cd ..\..\.. & copy ` + filepath.Join(wt, "a.go") + ` . & '"; Copy-Item Repo .`
+	if got, _ := nestedQuoteArgs["command"].(string); got != nestedQuoteWant {
+		t.Fatalf("nested cmd single quote = %q", got)
+	}
+	// call runs the next command in this process, including a glued cd.
+	for _, called := range []string{
+		`call cd ..\..\.. & copy Repo\a.go .`,
+		`call cd..\..\.. & copy Repo\a.go .`,
+		`cmd /c "call cd ..\..\.. & copy Repo\a.go ."`,
+		`& 'call' cd ..\..\.. & copy Repo\a.go .`,
+	} {
+		if msg := cb.parallelCheckoutCommandRejection(called, exec); msg == "" {
+			t.Fatalf("call cd was allowed to enter the shared tree: %s", called)
+		}
+		calledArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": called})
+		got, _ := calledArgs["command"].(string)
+		want := strings.Replace(called, `copy Repo\a.go .`, `copy `+filepath.Join(wt, "a.go")+` .`, 1)
+		if got != want {
+			t.Fatalf("call cd = %q", got)
+		}
+	}
+
+	// /d/Repo is a root-relative PowerShell name, and D:\Repo to nested bash.
+	msys := `bash -lc "cat /d/Repo/pkg/a.go"`
+	if msg := cb.parallelCheckoutCommandRejection(msys, exec); msg == "" {
+		t.Fatal("MSYS path was allowed to enter the shared tree")
+	}
+	msysArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": msys})
+	msysCmd, _ := msysArgs["command"].(string)
+	msysWant := `bash -lc "cat ` + filepath.ToSlash(filepath.Join(exec, "a.go")) + `"`
+	if msysCmd != msysWant {
+		t.Fatalf("MSYS path = %q", msysCmd)
+	}
+	msysKeep := `cat /c/Windows/notepad.exe`
+	msysKeepArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": msysKeep})
+	if got, _ := msysKeepArgs["command"].(string); got != msysKeep {
+		t.Fatalf("foreign MSYS path = %q", got)
+	}
+	if msg := cb.parallelCheckoutCommandRejection(msysKeep, exec); msg != "" {
+		t.Fatalf("foreign MSYS path rejected: %s", msg)
+	}
+
+	for _, keepCmd := range []string{`go test ./... 2>&1`, `cd ..`, `.\hello.exe`} {
+		keepArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": keepCmd})
+		gotKeep, _ := keepArgs["command"].(string)
+		if gotKeep != keepCmd {
+			t.Fatalf("command %q became %q", keepCmd, gotKeep)
+		}
+		if msg := cb.parallelCheckoutCommandRejection(gotKeep, stringVal(keepArgs, "working_dir")); msg != "" {
+			t.Fatalf("command %q rejected: %s", keepCmd, msg)
+		}
+	}
+	outsideCmd := `cd C:\Windows`
+	outsideArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": outsideCmd, "working_dir": outside})
+	if got, _ := outsideArgs["command"].(string); got != outsideCmd {
+		t.Fatalf("outside command = %q", got)
+	}
+	if got, _ := outsideArgs["working_dir"].(string); got != outside {
+		t.Fatalf("outside working_dir = %q", got)
+	}
+
 	searchArgs := cb.withDefaultProjectPath(map[string]interface{}{"path": filepath.Join(primary, "A.go"), "pattern": "func"})
 	if got, _ := searchArgs["path"].(string); got != filepath.Join(exec, "A.go") {
 		t.Fatalf("search path = %q", got)
@@ -1267,9 +1722,13 @@ func TestCodingParallelToolPathsStayOnCheckout(t *testing.T) {
 	if got, _ := plainArgs["path"].(string); got != abs {
 		t.Fatalf("without a turn = %q", got)
 	}
-	plainBash := plain.withDefaultWorkingDir(map[string]interface{}{"command": "go test", "working_dir": abs})
+	plainCmd := "cd '" + abs + "'"
+	plainBash := plain.withDefaultWorkingDir(map[string]interface{}{"command": plainCmd, "working_dir": abs})
 	if got, _ := plainBash["working_dir"].(string); got != abs {
 		t.Fatalf("working_dir without a turn = %q", got)
+	}
+	if got, _ := plainBash["command"].(string); got != plainCmd {
+		t.Fatalf("command without a turn = %q", got)
 	}
 
 	stay := &codingParallelTurn{primary: primary, execDir: primary, stayPut: true}
@@ -1282,9 +1741,16 @@ func TestCodingParallelToolPathsStayOnCheckout(t *testing.T) {
 	if got, _ := stayArgs["path"].(string); got != abs {
 		t.Fatalf("stayPut path = %q", got)
 	}
-	stayBash := stayCB.withDefaultWorkingDir(map[string]interface{}{"command": "go test", "working_dir": abs})
+	stayCmd := "cd '" + abs + "'"
+	stayBash := stayCB.withDefaultWorkingDir(map[string]interface{}{"command": stayCmd, "working_dir": abs})
 	if got, _ := stayBash["working_dir"].(string); got != abs {
 		t.Fatalf("stayPut working_dir = %q", got)
+	}
+	if got, _ := stayBash["command"].(string); got != stayCmd {
+		t.Fatalf("stayPut command = %q", got)
+	}
+	if msg := stayCB.parallelCheckoutCommandRejection(stayCmd, abs); msg != "" {
+		t.Fatalf("stayPut rejected: %s", msg)
 	}
 }
 

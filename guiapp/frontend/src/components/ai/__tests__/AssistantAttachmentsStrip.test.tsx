@@ -1,4 +1,4 @@
-import { act, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -8,6 +8,8 @@ const { fileTypeIconMock } = vi.hoisted(() => ({
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     AIAssistantAttachmentPreviewDataURL: vi.fn(async () => ""),
+    CopyChatMediaToClipboard: vi.fn(async () => undefined),
+    SaveChatMediaAs: vi.fn(async () => ""),
     AIAssistantFileTypeIconDataURL: (...args: unknown[]) => fileTypeIconMock(...args),
     AIAssistantAttachmentOpeningPreview: vi.fn(async () => ({
         kind: "pdf",
@@ -21,7 +23,7 @@ vi.mock("../pdfShotRaster", () => ({
     rasterizePdfShot: vi.fn(async (_src: string, page: number) => `data:image/png;base64,SHOT${page}`),
 }));
 
-import { AIAssistantAttachmentOpeningPreview, PreviewTaskResultFile } from "../../../../wailsjs/go/main/App";
+import { AIAssistantAttachmentOpeningPreview, CopyChatMediaToClipboard, PreviewTaskResultFile } from "../../../../wailsjs/go/main/App";
 import { AssistantAttachmentsStrip, resetAttachmentFileTypeIconCacheForTests } from "../AssistantAttachmentsStrip";
 import { AttachmentDocumentPreview, settleAttachmentDocxHost } from "../AttachmentDocumentPreview";
 import { AI_PANEL_STATIC_STYLE_ID, lightTheme } from "../aiAssistantPanelTheme";
@@ -72,6 +74,12 @@ describe("AssistantAttachmentsStrip", () => {
         expect(queryByTestId("attachment-document-shot")).toBeNull();
         expect(getByLabelText("supplier-agreement.pdf").textContent).toBe("supplier-agreement.pdf");
         expect(await findByText("PDF")).toBeTruthy();
+        fireEvent.contextMenu(await findByText("PDF"));
+        const menu = await screen.findByTestId("chat-media-context-menu");
+        expect(menu.textContent).toContain("Copy");
+        expect(menu.textContent).toContain("Save");
+        fireEvent.click(screen.getByTestId("chat-media-copy"));
+        await waitFor(() => expect(CopyChatMediaToClipboard).toHaveBeenCalledWith("file", path));
         fireEvent.click(getByRole("button", { name: "Remove supplier-agreement.pdf" }));
         expect(document.querySelector('[data-testid="ai-pending-attachments"]')).toBeNull();
     });

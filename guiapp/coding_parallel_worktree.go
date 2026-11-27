@@ -102,6 +102,1406 @@ func codingParallelMappedDir(taskPath, dir string) (string, bool) {
 	return filepath.Join(turn.wt.Path, mappedRel), true
 }
 
+// codingParallelProtectedRoot is the shared tree this turn must not write.
+// Inquiry and a turn that stayed on the primary have no private checkout, so
+// they have nothing to protect. A volume root is too wide to rewrite.
+func codingParallelProtectedRoot(turn *codingParallelTurn) string {
+	if turn == nil || turn.stayPut || turn.wt == nil || strings.TrimSpace(turn.wt.Path) == "" {
+		return ""
+	}
+	root := strings.TrimSpace(turn.wt.GitRoot)
+	if root == "" {
+		root = strings.TrimSpace(turn.primary)
+	}
+	root = normalizeProjectSessionPath(root)
+	if root == "" {
+		return ""
+	}
+	rest := strings.TrimPrefix(root, filepath.VolumeName(root))
+	rest = strings.Trim(rest, `/\`)
+	if rest == "" {
+		return ""
+	}
+	return root
+}
+
+// rewriteCommandOntoParallelCheckout maps absolute names of the shared tree
+// inside a model shell command onto the bound checkout. mapPath returns the
+// checkout path for one logical path. A name that is already the checkout,
+// or outside the tree, stays as written. Separator style of each match is
+// kept, so a forward-slash path and a doubled-backslash PowerShell literal
+// both survive the rewrite.
+func rewriteCommandOntoParallelCheckout(command, root string, mapPath func(string) (string, bool)) string {
+	root = strings.TrimSpace(root)
+	rootNorm := normalizeCodingRuntimeRef(root)
+	if command == "" || rootNorm == "" || mapPath == nil {
+		return command
+	}
+	volume := len(root) >= 2 && root[1] == ':'
+	var b strings.Builder
+	b.Grow(len(command) + 16)
+	inSingle, inDouble := false, false
+	for i := 0; i < len(command); {
+		ch := command[i]
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			b.WriteByte(ch)
+			i++
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			b.WriteByte(ch)
+			i++
+			continue
+		}
+		if canStartAbsPath(command, i, volume) {
+			if end, logical, ok := cutFlexiblePath(command, i, root, rootNorm, inSingle || inDouble); ok {
+				if mapped, yes := mapPath(logical); yes && strings.TrimSpace(mapped) != "" {
+					b.WriteString(restyleMappedPath(command[i:end], mapped))
+					i = end
+					continue
+				}
+			}
+		}
+		b.WriteByte(ch)
+		i++
+	}
+	return b.String()
+}
+
+// commandNamesProtectedRoot reports that command still contains the shared
+// tree as a path prefix. Slashes of either direction collapse, so a spelling
+// the rewriter missed still fails closed.
+func commandNamesProtectedRoot(command, root string) bool {
+	rootNorm := collapseSlashRuns(normalizeCodingRuntimeRef(root))
+	if strings.TrimSpace(command) == "" || rootNorm == "" {
+		return false
+	}
+	norm := collapseSlashRuns(normalizeCodingRuntimeRef(command))
+	from := 0
+	for from <= len(norm)-len(rootNorm) {
+		at := strings.Index(norm[from:], rootNorm)
+		if at < 0 {
+			return false
+		}
+		at += from
+		end := at + len(rootNorm)
+		beforeOK := at == 0 || !isPathNameByte(norm[at-1])
+		afterOK := end >= len(norm) || !isPathNameByte(norm[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		from = at + 1
+	}
+	return false
+}
+
+func collapseSlashRuns(s string) string {
+	for strings.Contains(s, "//") {
+		s = strings.ReplaceAll(s, "//", "/")
+	}
+	return s
+}
+
+func canStartAbsPath(command string, i int, volume bool) bool {
+	if i < 0 || i >= len(command) {
+		return false
+	}
+	if i > 0 && isPathNameChar(command[i-1], false) {
+		return false
+	}
+	if volume {
+		return i+1 < len(command) && command[i+1] == ':' && isASCIILetter(command[i])
+	}
+	return command[i] == '/' || command[i] == '\\'
+}
+
+func isASCIILetter(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+func matchFlexibleRoot(command string, start int, rootNorm string) int {
+	ci := start
+	for ri := 0; ri < len(rootNorm); ri++ {
+		if ci >= len(command) {
+			return -1
+		}
+		want := rootNorm[ri]
+		if want == '/' {
+			next, ok := matchSeparatorRun(command, ci)
+			if !ok {
+				return -1
+			}
+			ci = next
+			continue
+		}
+		if foldASCIIByte(command[ci]) != want {
+			return -1
+		}
+		ci++
+	}
+	return ci
+}
+
+func matchSeparatorRun(command string, pos int) (int, bool) {
+	if pos >= len(command) || (command[pos] != '/' && command[pos] != '\\') {
+		return 0, false
+	}
+	for pos < len(command) && (command[pos] == '/' || command[pos] == '\\') {
+		pos++
+	}
+	return pos, true
+}
+
+func foldASCIIByte(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
+}
+
+// cutFlexiblePath reads one absolute path that begins with root. The logical
+// path uses root's own spelling plus the suffix spelling from the command.
+func cutFlexiblePath(command string, start int, root, rootNorm string, quoted bool) (end int, logical string, ok bool) {
+	pos := matchFlexibleRoot(command, start, rootNorm)
+	if pos < 0 {
+		return 0, "", false
+	}
+	if pos < len(command) && isPathNameChar(command[pos], quoted) {
+		return 0, "", false
+	}
+	var parts []string
+	end = pos
+	for end < len(command) {
+		sepEnd, sepOK := matchSeparatorRun(command, end)
+		if !sepOK {
+			break
+		}
+		segStart := sepEnd
+		segEnd := segStart
+		for segEnd < len(command) && isPathNameChar(command[segEnd], quoted) {
+			segEnd++
+		}
+		if segEnd == segStart {
+			end = sepEnd
+			break
+		}
+		parts = append(parts, command[segStart:segEnd])
+		end = segEnd
+	}
+	logical = root
+	if len(parts) > 0 {
+		logical = filepath.Join(append([]string{root}, parts...)...)
+	}
+	return end, logical, true
+}
+
+func isPathNameChar(c byte, quoted bool) bool {
+	switch c {
+	case '/', '\\', '\'', '"', ';', '&', '|', '<', '>', '(', ')', '`', '^', '=', ',', '$', '*', '?', '[', ']', '{', '}', '!', ':':
+		return false
+	case ' ', '\t', '\r', '\n':
+		return quoted
+	default:
+		return true
+	}
+}
+
+func isPathNameByte(c byte) bool {
+	return isPathNameChar(c, false)
+}
+
+func restyleMappedPath(originalSpan, mapped string) string {
+	mapped = filepath.Clean(mapped)
+	var styled string
+	switch {
+	case strings.Contains(originalSpan, `\\`):
+		styled = strings.ReplaceAll(mapped, string(filepath.Separator), `\\`)
+	case strings.Contains(originalSpan, "/") && !strings.Contains(originalSpan, `\`):
+		styled = filepath.ToSlash(mapped)
+	case filepath.Separator != '\\' && strings.Contains(originalSpan, `\`):
+		styled = strings.ReplaceAll(mapped, string(filepath.Separator), `\`)
+	default:
+		styled = mapped
+	}
+	// Clean drops a trailing separator. A wildcard after D:\Repo\ must stay
+	// D:\checkout\, not D:\checkout glued to *.go.
+	switch {
+	case strings.HasSuffix(originalSpan, `\\`):
+		if !strings.HasSuffix(styled, `\\`) {
+			styled += `\\`
+		}
+	case strings.HasSuffix(originalSpan, `\`):
+		if !strings.HasSuffix(styled, `\`) {
+			styled += `\`
+		}
+	case strings.HasSuffix(originalSpan, "/"):
+		if !strings.HasSuffix(styled, "/") {
+			styled += "/"
+		}
+	}
+	return styled
+}
+
+// commandShellDir is the working directory a model command would have as
+// PowerShell or cmd walks it. The process starts at base. A drive the
+// process has not entered yet is at that drive's root, which is where
+// D:repo\file resolves in a new shell whose cwd is on another drive.
+// stack is the Push-Location / pushd stack. A child shell does not inherit
+// it, and popd restores the pushed directory rather than the process start.
+type commandShellDir struct {
+	cur   string
+	base  string
+	per   map[string]string
+	stack []shellDirSnap
+}
+
+type shellDirSnap struct {
+	cur string
+	per map[string]string
+}
+
+func newCommandShellDir(base string) *commandShellDir {
+	s := &commandShellDir{cur: base, base: base, per: map[string]string{}}
+	if vol := commandVolumeKey(base); vol != "" {
+		s.per[vol] = base
+	}
+	return s
+}
+
+func (s *commandShellDir) snapshot() shellDirSnap {
+	per := map[string]string{}
+	if s != nil {
+		for k, v := range s.per {
+			per[k] = v
+		}
+	}
+	cur := ""
+	if s != nil {
+		cur = s.cur
+	}
+	return shellDirSnap{cur: cur, per: per}
+}
+
+func (s *commandShellDir) restore(snap shellDirSnap) {
+	if s == nil {
+		return
+	}
+	s.cur = snap.cur
+	s.per = snap.per
+	if s.per == nil {
+		s.per = map[string]string{}
+	}
+}
+
+// pushThen remembers the current directory, then moves. Pop-Location
+// returns to that directory, including its per-drive current directory.
+func (s *commandShellDir) pushThen(path string) {
+	if s == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	s.stack = append(s.stack, s.snapshot())
+	s.chdir(path)
+}
+
+func (s *commandShellDir) pop() {
+	if s == nil || len(s.stack) == 0 {
+		return
+	}
+	snap := s.stack[len(s.stack)-1]
+	s.stack = s.stack[:len(s.stack)-1]
+	s.restore(snap)
+}
+
+func (s *commandShellDir) chdir(path string) {
+	if s == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	s.cur = path
+	if vol := commandVolumeKey(path); vol != "" {
+		s.per[vol] = path
+	}
+}
+
+// applyLocation moves to path. push records the previous directory on the
+// default stack, which is what a later Pop-Location restores. A Push-Location
+// that names another stack still moves, but a bare Pop-Location does not
+// undo it: that pop targets the default stack only.
+func (s *commandShellDir) applyLocation(path string, push bool, stack string) {
+	if !push || strings.TrimSpace(stack) != "" {
+		s.chdir(path)
+		return
+	}
+	s.pushThen(path)
+}
+
+func (s *commandShellDir) dirOn(vol string) string {
+	vol = strings.ToUpper(vol)
+	if s != nil {
+		if path, ok := s.per[vol]; ok && path != "" {
+			return path
+		}
+	}
+	if vol == "" {
+		return ""
+	}
+	return vol + `\`
+}
+
+func commandVolumeKey(path string) string {
+	if len(path) >= 2 && path[1] == ':' && isASCIILetter(path[0]) {
+		return strings.ToUpper(path[:2])
+	}
+	return ""
+}
+
+// rewriteResolvedCommandPaths maps a shell path that lands in the shared
+// tree onto the checkout. String prefix matching misses D:\other\..\Repo,
+// a relative climb, a root-relative \Repo, and a drive-relative D:Repo
+// from a cwd on another drive. mapPath reports the checkout path.
+func rewriteResolvedCommandPaths(command, root, base string, mapPath func(string) (string, bool)) string {
+	root = strings.TrimSpace(root)
+	if command == "" || root == "" || mapPath == nil {
+		return command
+	}
+	return walkShellCommand(command, newCommandShellDir(base), mapPath, shellParseModeForCommand(command))
+}
+
+// shellParseMode is whose quotes the walker honors. The desktop host is
+// PowerShell unless the line is one cmd.exe actually runs. cmd does not
+// treat ' as a quote, so & inside single quotes still separates commands.
+// A nested cmd /c body uses cmd's rules even when the outer host is
+// PowerShell. Invoke-Expression stays in the parent process and keeps
+// the parent's rules.
+type shellParseMode int
+
+const (
+	parsePowerShell shellParseMode = iota
+	parseCmd
+)
+
+func shellParseModeForCommand(command string) shellParseMode {
+	// The bool is the host choice. The rewritten text is for execution,
+	// and this walk still has to see the model's original spelling.
+	if _, ok := windowsCodingCmdLine(command); ok {
+		return parseCmd
+	}
+	return parsePowerShell
+}
+
+func quoteIsReal(ch byte, mode shellParseMode) bool {
+	return ch == '"' || (ch == '\'' && mode != parseCmd)
+}
+
+// walkShellCommand rewrites one shell script against cwd. A quoted
+// cmd/powershell/bash payload is a child process: it starts at the parent's
+// directory, and its cd does not move the parent. Invoke-Expression runs
+// the quoted script in this process, so that cd is the parent's next cwd.
+func walkShellCommand(command string, cwd *commandShellDir, mapPath func(string) (string, bool), mode shellParseMode) string {
+	if command == "" || cwd == nil || mapPath == nil {
+		return command
+	}
+	var b strings.Builder
+	b.Grow(len(command) + 16)
+	inSingle, inDouble := false, false
+	atCmd, expectDir, expectPush, skipValue, nameNext := true, false, false, false, false
+	stackName := ""
+	for i := 0; i < len(command); {
+		ch := command[i]
+		if !inSingle && !inDouble && quoteIsReal(ch, mode) && atCmd {
+			// & 'cd' ..\..\.. is a call, not a string. The quoted word is the
+			// command, so the next argument still changes this process.
+			// & 'call' is the same: call runs that next command here.
+			if bodyStart, bodyEnd, close, ok := quotedPayloadBounds(command, i); ok {
+				body := command[bodyStart:bodyEnd]
+				switch commandLocationKind(body) {
+				case "popd":
+					cwd.pop()
+					b.WriteString(command[i:close])
+					i = close
+					atCmd = false
+					continue
+				case "pushd":
+					b.WriteString(command[i:close])
+					i = close
+					expectDir, expectPush = true, true
+					stackName = ""
+					nameNext = false
+					atCmd = false
+					continue
+				case "chdir":
+					b.WriteString(command[i:close])
+					i = close
+					expectDir, expectPush = true, false
+					atCmd = false
+					continue
+				}
+				if isCallToken(body) {
+					b.WriteString(command[i:close])
+					i = close
+					continue
+				}
+			}
+		}
+		if !inSingle && !inDouble && quoteIsReal(ch, mode) && quoteStartsNestedShell(command, i, mode) {
+			bodyStart, bodyEnd, close, ok := quotedPayloadBounds(command, i)
+			if ok {
+				nested := nestedShellDir(command, i, cwd, mode)
+				rewritten := walkShellCommand(command[bodyStart:bodyEnd], nested, mapPath, nestedShellParseMode(command, i, mode))
+				b.WriteByte(ch)
+				b.WriteString(rewritten)
+				if bodyEnd < len(command) {
+					b.WriteByte(command[bodyEnd])
+				}
+				i = close
+				atCmd, expectDir, expectPush, skipValue, nameNext = false, false, false, false, false
+				stackName = ""
+				continue
+			}
+		}
+		if ch == '\'' && !inDouble && mode != parseCmd {
+			inSingle = !inSingle
+			b.WriteByte(ch)
+			i++
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			b.WriteByte(ch)
+			i++
+			continue
+		}
+		quoted := inSingle || inDouble
+		if !quoted {
+			if n := shellSepLen(command, i); n > 0 {
+				b.WriteString(command[i : i+n])
+				i += n
+				atCmd, expectDir, expectPush, skipValue, nameNext = true, false, false, false, false
+				stackName = ""
+				continue
+			}
+			if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
+				b.WriteByte(ch)
+				i++
+				continue
+			}
+		}
+		if !quoted && expectDir {
+			end := readShellWord(command, i)
+			if end > i {
+				word := command[i:end]
+				if rewritten, dir, mode := classifyAttachedParam(word, cwd, mapPath); mode != attachedNone {
+					b.WriteString(rewritten)
+					i = end
+					if mode == attachedLocation {
+						cwd.applyLocation(dir, expectPush, stackName)
+						expectDir, expectPush, skipValue, nameNext = false, false, false, false
+						stackName = ""
+					}
+					continue
+				}
+				switch {
+				case skipValue:
+					b.WriteString(word)
+					i = end
+					if nameNext {
+						stackName = word
+						nameNext = false
+					}
+					skipValue = false
+					continue
+				case isStackNameFlag(word):
+					b.WriteString(word)
+					i = end
+					skipValue = true
+					nameNext = true
+					continue
+				case isLocationValueFlag(word):
+					b.WriteString(word)
+					i = end
+					skipValue = true
+					continue
+				case isChdirFlag(word):
+					b.WriteString(word)
+					i = end
+					continue
+				}
+			}
+		}
+		if pathBoundary(command, i) && resolvedSpanStart(command, i, quoted) {
+			end := cutResolvedSpan(command, i, quoted)
+			// cd..\..\Repo and Module\Set-Location contain slashes, so they
+			// look like paths. At the command position they are commands;
+			// folding them into a path would miss the directory change.
+			spanIsCommand := false
+			if end > i && !quoted && atCmd {
+				token := command[i:end]
+				if _, _, glued := splitGluedLocation(token); glued || commandLocationKind(token) != "" {
+					spanIsCommand = true
+				}
+			}
+			if end > i && !spanIsCommand {
+				if replaced, dir, ok := mapResolvedSpan(command[i:end], cwd, mapPath); ok {
+					b.WriteString(replaced)
+					i = end
+					atCmd = false
+					if expectDir {
+						cwd.applyLocation(dir, expectPush, stackName)
+						expectDir, expectPush, skipValue, nameNext = false, false, false, false
+						stackName = ""
+					}
+					continue
+				}
+			}
+		}
+		if quoted {
+			b.WriteByte(ch)
+			i++
+			continue
+		}
+		end := readShellWord(command, i)
+		if end <= i {
+			b.WriteByte(ch)
+			i++
+			continue
+		}
+		word := command[i:end]
+		if atCmd {
+			if kind, path, glued := splitGluedLocation(word); glued {
+				replaced, dir, resolved := mapResolvedSpan(path, cwd, mapPath)
+				if resolved {
+					if replaced != path {
+						b.WriteString(word[:len(word)-len(path)])
+						b.WriteByte(' ')
+						b.WriteString(replaced)
+					} else {
+						b.WriteString(word)
+					}
+					cwd.applyLocation(dir, kind == "pushd", "")
+				} else {
+					b.WriteString(word)
+				}
+				atCmd = false
+				i = end
+				continue
+			}
+		}
+		switch {
+		case atCmd && isPopdToken(word):
+			cwd.pop()
+			atCmd = false
+		case atCmd && isPushdToken(word):
+			expectDir, expectPush = true, true
+			stackName = ""
+			nameNext = false
+			atCmd = false
+		case atCmd && isChdirToken(word):
+			expectDir, expectPush = true, false
+			atCmd = false
+		case atCmd && isCallToken(word):
+			// cmd's call runs the next command in this process. Leaving
+			// atCmd set is what lets call cd climb before the next path.
+		case atCmd && isDriveSwitch(word):
+			// Bare D: selects that drive's remembered directory. Later
+			// names on this line resolve there; the token itself stays D:.
+			cwd.chdir(cwd.dirOn(shellCommandToken(word)))
+			atCmd = false
+		case expectDir:
+			if replaced, dir, ok := mapResolvedSpan(word, cwd, mapPath); ok {
+				b.WriteString(replaced)
+				cwd.applyLocation(dir, expectPush, stackName)
+			} else {
+				b.WriteString(word)
+			}
+			expectDir, expectPush, skipValue, nameNext = false, false, false, false
+			stackName = ""
+			atCmd = false
+			i = end
+			continue
+		default:
+			atCmd = false
+			if replaced, ok := rewriteLooseShellWord(word, cwd, mapPath); ok {
+				b.WriteString(replaced)
+				i = end
+				continue
+			}
+		}
+		b.WriteString(word)
+		i = end
+	}
+	return b.String()
+}
+
+// commandReachesProtectedRoot reports that some path in command still
+// resolves into the shared tree. Rejection uses it after rewriting.
+func commandReachesProtectedRoot(command, root, base string) bool {
+	root = strings.TrimSpace(root)
+	if strings.TrimSpace(command) == "" || root == "" {
+		return false
+	}
+	hit := false
+	rewriteResolvedCommandPaths(command, root, base, func(logical string) (string, bool) {
+		if pathInsideWorkRoot(root, logical) {
+			hit = true
+		}
+		return "", false
+	})
+	return hit
+}
+
+func mapResolvedSpan(span string, cwd *commandShellDir, mapPath func(string) (string, bool)) (replaced, dir string, ok bool) {
+	if mapPath == nil {
+		return "", "", false
+	}
+	// ^\ and `\ are one path to cmd and PowerShell. The raw span keeps the
+	// escape, so Clean never sees the separator it hides. Prefer that reading
+	// when it lands in the shared tree; a caret PowerShell would keep is
+	// still rewritten, and the checkout is not the shared tree.
+	if stripped, yes := unescapeShellSpan(span); yes {
+		if replaced, dir, ok := mapShellReading(stripped, cwd, mapPath); ok {
+			return replaced, dir, true
+		}
+	}
+	if replaced, dir, ok := mapShellReading(span, cwd, mapPath); ok {
+		return replaced, dir, true
+	}
+	logical, resolved := resolveShellSpan(span, cwd)
+	if !resolved {
+		return "", "", false
+	}
+	return span, logical, true
+}
+
+// mapShellReading maps one already-unescaped path. The PowerShell reading
+// wins. /d/Repo is D:\d\Repo there and D:\Repo in nested bash, so the bash
+// reading is used only when it is the protected tree.
+func mapShellReading(span string, cwd *commandShellDir, mapPath func(string) (string, bool)) (replaced, dir string, ok bool) {
+	logical, resolved := resolveShellSpan(span, cwd)
+	if resolved {
+		if mapped, yes := mappedCheckout(logical, mapPath); yes {
+			return restyleMappedPath(span, mapped), mapped, true
+		}
+	}
+	if alt, altOK := msysDrivePath(span); altOK && alt != logical {
+		if mapped, yes := mappedCheckout(alt, mapPath); yes {
+			return restyleMappedPath(span, mapped), mapped, true
+		}
+	}
+	return "", "", false
+}
+
+// unescapeShellSpan removes unquoted cmd carets and PowerShell backticks.
+// A line continuation drops the break. Any other escaped byte stays, so
+// ^^ is one caret and ^\ is a separator. Quoted text never reaches this:
+// the span cutter stops at the escape instead of taking it.
+func unescapeShellSpan(span string) (string, bool) {
+	if !strings.ContainsAny(span, "^`") {
+		return span, false
+	}
+	var b strings.Builder
+	b.Grow(len(span))
+	changed := false
+	for i := 0; i < len(span); {
+		if next, keep, ok := shellEscapePair(span, i); ok {
+			b.WriteString(keep)
+			i = next
+			changed = true
+			continue
+		}
+		b.WriteByte(span[i])
+		i++
+	}
+	if !changed {
+		return span, false
+	}
+	return b.String(), true
+}
+
+// rewriteLooseShellWord rewrites one argument that is not a cd target.
+// Copy-Item Repo and git -C Repo are paths once the process has climbed
+// to the drive root. -LiteralPath:Repo is the same path glued to the
+// parameter name. A trailing glob stays on the rewritten directory.
+func rewriteLooseShellWord(word string, cwd *commandShellDir, mapPath func(string) (string, bool)) (string, bool) {
+	if _, value, ok := splitAttachedParam(word); ok {
+		replaced, _, resolved := mapResolvedSpan(value, cwd, mapPath)
+		if resolved && replaced != value {
+			return word[:len(word)-len(value)] + replaced, true
+		}
+		return "", false
+	}
+	pathPart, suffix := splitGlobSuffix(word)
+	if pathPart == "" {
+		return "", false
+	}
+	replaced, _, resolved := mapResolvedSpan(pathPart, cwd, mapPath)
+	if resolved && replaced != pathPart {
+		return replaced + suffix, true
+	}
+	return "", false
+}
+
+const (
+	attachedNone = iota
+	attachedLocation
+	attachedOther
+)
+
+// classifyAttachedParam reads PowerShell's -Name:value form. -Path:Repo is
+// one token, so a flag scan never sees Repo. A location parameter moves the
+// process. Any other parameter keeps the search going so a later positional
+// path is still the directory.
+func classifyAttachedParam(word string, cwd *commandShellDir, mapPath func(string) (string, bool)) (rewritten, dir string, mode int) {
+	name, value, ok := splitAttachedParam(word)
+	if !ok {
+		return "", "", attachedNone
+	}
+	replaced, landed, resolved := mapResolvedSpan(value, cwd, mapPath)
+	if resolved && (replaced != value || isLocationPathParam(name)) {
+		return word[:len(word)-len(value)] + replaced, landed, attachedLocation
+	}
+	return word, "", attachedOther
+}
+
+func splitAttachedParam(word string) (name, value string, ok bool) {
+	if len(word) < 4 || (word[0] != '-' && word[0] != '/') || word[1] == '-' || word[1] == '/' {
+		return "", "", false
+	}
+	colon := strings.IndexByte(word, ':')
+	if colon <= 1 || colon >= len(word)-1 {
+		return "", "", false
+	}
+	name = word[1:colon]
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !isASCIILetter(c) && (c < '0' || c > '9') {
+			return "", "", false
+		}
+	}
+	return name, word[colon+1:], true
+}
+
+func isLocationPathParam(name string) bool {
+	switch strings.ToLower(name) {
+	case "path", "literalpath", "pspath", "lp":
+		return true
+	default:
+		return false
+	}
+}
+
+func splitGlobSuffix(word string) (pathPart, suffix string) {
+	cut := strings.IndexAny(word, "*?[")
+	if cut < 0 {
+		return word, ""
+	}
+	if cut == 0 {
+		return "", word
+	}
+	return word[:cut], word[cut:]
+}
+
+func mappedCheckout(logical string, mapPath func(string) (string, bool)) (string, bool) {
+	mapped, yes := mapPath(logical)
+	if !yes || strings.TrimSpace(mapped) == "" {
+		return "", false
+	}
+	return mapped, true
+}
+
+// msysDrivePath reads /d/Repo or /d\Repo as D:\Repo. PowerShell itself
+// treats that text as a root-relative name on the current drive.
+func msysDrivePath(span string) (string, bool) {
+	span = strings.TrimSpace(span)
+	if len(span) < 4 || !isASCIILetter(span[1]) {
+		return "", false
+	}
+	if (span[0] != '/' && span[0] != '\\') || (span[2] != '/' && span[2] != '\\') {
+		return "", false
+	}
+	rest := strings.ReplaceAll(span[3:], "/", `\`)
+	if strings.Trim(rest, `\`) == "" {
+		return "", false
+	}
+	return filepath.Clean(strings.ToUpper(span[1:2]) + `:\` + rest), true
+}
+
+func resolveShellSpan(span string, cwd *commandShellDir) (string, bool) {
+	span = strings.TrimSpace(span)
+	if span == "" || cwd == nil {
+		return "", false
+	}
+	if len(span) >= 2 && span[1] == ':' && isASCIILetter(span[0]) {
+		rest := span[2:]
+		if rest == "" {
+			// cd D: switches to that drive's remembered directory.
+			return cwd.dirOn(span[:2]), true
+		}
+		if rest[0] == '/' || rest[0] == '\\' {
+			return filepath.Clean(span), true
+		}
+		return filepath.Clean(filepath.Join(cwd.dirOn(span[:2]), rest)), true
+	}
+	if span[0] == '/' || span[0] == '\\' {
+		if len(span) > 1 && (span[1] == '/' || span[1] == '\\') {
+			return "", false
+		}
+		vol := commandVolumeKey(cwd.cur)
+		if vol == "" {
+			return "", false
+		}
+		// \Repo is absolute, so Join(vol, span) would drop the drive.
+		rest := strings.TrimLeft(span, `/\`)
+		return filepath.Clean(vol + `\` + rest), true
+	}
+	if cwd.cur == "" {
+		return "", false
+	}
+	return filepath.Clean(filepath.Join(cwd.cur, span)), true
+}
+
+func pathBoundary(command string, i int) bool {
+	if i <= 0 {
+		return true
+	}
+	return !isPathNameChar(command[i-1], false)
+}
+
+func resolvedSpanStart(command string, i int, quoted bool) bool {
+	end := cutResolvedSpan(command, i, quoted)
+	if end <= i {
+		return false
+	}
+	return relativeLikeStart(command, i) || driveLikeStart(command, i) || rootRelativeStart(command, i) || strings.ContainsAny(command[i:end], `/\`)
+}
+
+func relativeLikeStart(command string, i int) bool {
+	if i >= len(command) || command[i] != '.' || i+1 >= len(command) {
+		return false
+	}
+	next := command[i+1]
+	if next == '/' || next == '\\' {
+		return true
+	}
+	if next != '.' {
+		return false
+	}
+	if i+2 >= len(command) {
+		return true
+	}
+	third := command[i+2]
+	return third == '/' || third == '\\'
+}
+
+func driveLikeStart(command string, i int) bool {
+	if i+2 >= len(command) || !isASCIILetter(command[i]) || command[i+1] != ':' {
+		return false
+	}
+	next := command[i+2]
+	return next == '/' || next == '\\' || next == '.' || isPathNameChar(next, false)
+}
+
+func rootRelativeStart(command string, i int) bool {
+	if i >= len(command) {
+		return false
+	}
+	if command[i] != '/' && command[i] != '\\' {
+		return false
+	}
+	if i+1 < len(command) && (command[i+1] == '/' || command[i+1] == '\\') {
+		return false
+	}
+	if i+1 >= len(command) {
+		return false
+	}
+	next := command[i+1]
+	return next == '.' || isPathNameChar(next, false)
+}
+
+func cutResolvedSpan(command string, start int, quoted bool) int {
+	end := start
+	// ':' ends a name, except the colon in D:.
+	if driveLikeStart(command, start) {
+		end = start + 2
+	}
+	for end < len(command) {
+		// An unquoted escape is part of this path. Quoted text keeps the
+		// old split: a single-quoted caret is literal, and the following
+		// separator is still its own span.
+		if !quoted {
+			if next, _, ok := shellEscapePair(command, end); ok {
+				end = next
+				continue
+			}
+		}
+		c := command[end]
+		if c == '/' || c == '\\' || isPathNameChar(c, quoted) {
+			end++
+			continue
+		}
+		break
+	}
+	return end
+}
+
+// shellEscapePair reads one unquoted ^ or ` escape. cmd and PowerShell both
+// delete an escaped line break. A backtick keeps any other next byte.
+// A caret keeps a path byte only: ^\ hides a separator, while ^& and ^"
+// stay outside the span so the walker still sees the separator or quote.
+func shellEscapePair(s string, i int) (next int, keep string, ok bool) {
+	if i >= len(s) || i+1 >= len(s) {
+		return i, "", false
+	}
+	esc := s[i]
+	if esc != '^' && esc != '`' {
+		return i, "", false
+	}
+	n := s[i+1]
+	if n == '\n' {
+		return i + 2, "", true
+	}
+	if n == '\r' {
+		end := i + 2
+		if end < len(s) && s[end] == '\n' {
+			end++
+		}
+		return end, "", true
+	}
+	if esc == '^' && n != '/' && n != '\\' && !isPathNameChar(n, false) {
+		return i, "", false
+	}
+	return i + 2, s[i+1 : i+2], true
+}
+
+func shellSepLen(command string, i int) int {
+	switch command[i] {
+	// '(' ')' group a command, so `(cd Repo)` still changes directory.
+	// `cd (Repo)` does not: both PowerShell and cmd treat the parentheses
+	// as a subexpression and leave the location where it was.
+	// '{' '}' is a PowerShell block. if / foreach / ForEach-Object run it
+	// in this process, and Set-Location sticks. A block that is only a
+	// value is tracked the same way: a later relative name stays off the
+	// shared tree.
+	case ';', '(', ')', '{', '}':
+		return 1
+	case '\n':
+		// `^` or a backtick at the end of the line continues it. The next
+		// statement is still this one, which is how iex's script stays
+		// attached across the break.
+		if escapedLineBreak(command, i) {
+			return 0
+		}
+		return 1
+	case '&':
+		if i > 0 && command[i-1] == '>' {
+			return 0
+		}
+		if i+1 < len(command) && command[i+1] == '&' {
+			return 2
+		}
+		return 1
+	case '|':
+		if i+1 < len(command) && command[i+1] == '|' {
+			return 2
+		}
+		return 1
+	default:
+		return 0
+	}
+}
+
+func readShellWord(command string, i int) int {
+	end := i
+	for end < len(command) && isShellWordChar(command[end]) {
+		end++
+	}
+	return end
+}
+
+func isShellWordChar(c byte) bool {
+	switch c {
+	case ' ', '\t', '\r', '\n', ';', '&', '|', '<', '>', '(', ')', '\'', '"', '`':
+		return false
+	default:
+		return true
+	}
+}
+
+func shellCommandToken(token string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.Trim(token, `"'`), ".exe"))
+}
+
+func isChdirToken(token string) bool {
+	return commandLocationKind(token) == "chdir"
+}
+
+func isPushdToken(token string) bool {
+	return commandLocationKind(token) == "pushd"
+}
+
+func isPopdToken(token string) bool {
+	return commandLocationKind(token) == "popd"
+}
+
+// isCallToken reports cmd's call builtin. call script.bat and call cd both
+// stay in this process. A path such as .\call.exe is a program: only the
+// bare name, after the .exe strip, counts.
+func isCallToken(token string) bool {
+	return shellCommandToken(token) == "call"
+}
+
+// commandLocationKind reports a command that changes this process's
+// directory. A module qualifier counts (Microsoft.PowerShell.Management\cd).
+// A filesystem path does not: .\cd.exe is a program, not Set-Location.
+// cd/d is cmd's switch glued to the name; the next word is the directory.
+func commandLocationKind(token string) string {
+	switch strings.ToLower(shellCommandToken(token)) {
+	case "cd/d", "chdir/d":
+		return "chdir"
+	}
+	switch moduleCommandLeaf(token) {
+	case "cd", "chdir", "sl", "set-location":
+		return "chdir"
+	case "pushd", "push-location":
+		return "pushd"
+	case "popd", "pop-location":
+		return "popd"
+	default:
+		return ""
+	}
+}
+
+// moduleCommandLeaf is the command after a PowerShell module qualifier.
+// Tokens with a drive, or a relative filesystem prefix, stay whole.
+func moduleCommandLeaf(token string) string {
+	token = shellCommandToken(token)
+	if token == "" || strings.Contains(token, ":") || strings.HasPrefix(token, ".") || strings.HasPrefix(token, `\`) || strings.HasPrefix(token, "/") {
+		return token
+	}
+	if i := strings.LastIndexAny(token, `\/`); i >= 0 {
+		if leaf := token[i+1:]; leaf != "" {
+			return leaf
+		}
+	}
+	return token
+}
+
+// executableLeaf is the program name of a command or a path to that program.
+// C:\Windows\System32\cmd.exe /c is still cmd.
+func executableLeaf(token string) string {
+	token = shellCommandToken(token)
+	token = strings.Trim(token, `\/`)
+	if i := strings.LastIndexAny(token, `\/`); i >= 0 {
+		if leaf := token[i+1:]; leaf != "" {
+			return leaf
+		}
+	}
+	return token
+}
+
+// splitGluedLocation splits cmd's optional space: cd.., cd\, cd..\..\Repo,
+// chdir.., pushd.., and cd/d..\. PowerShell itself only runs the exact
+// forms cd.. and cd\. A nested cmd /c still runs the wider forms, so the
+// walker tracks all of them. An absolute rewrite gains a space, because
+// cdD:\checkout is not a command.
+func splitGluedLocation(word string) (kind, path string, ok bool) {
+	lower := strings.ToLower(word)
+	prefix := ""
+	switch {
+	case strings.HasPrefix(lower, "chdir"):
+		prefix = "chdir"
+	case strings.HasPrefix(lower, "pushd"):
+		prefix = "pushd"
+	case strings.HasPrefix(lower, "cd"):
+		prefix = "cd"
+	default:
+		return "", "", false
+	}
+	if len(word) <= len(prefix) {
+		return "", "", false
+	}
+	rest := word[len(prefix):]
+	if prefix != "pushd" && len(rest) >= 2 && rest[0] == '/' && (rest[1] == 'd' || rest[1] == 'D') {
+		rest = rest[2:]
+	}
+	if rest == "" || (rest[0] != '\\' && rest[0] != '/' && rest[0] != '.') {
+		return "", "", false
+	}
+	if prefix == "pushd" {
+		return "pushd", rest, true
+	}
+	return "chdir", rest, true
+}
+
+func isDriveSwitch(token string) bool {
+	token = shellCommandToken(token)
+	return len(token) == 2 && isASCIILetter(token[0]) && token[1] == ':'
+}
+
+func isStackNameFlag(token string) bool {
+	switch strings.ToLower(token) {
+	case "-stackname", "-stack":
+		return true
+	default:
+		return false
+	}
+}
+
+// isLocationValueFlag is a Set-Location / Push-Location parameter that
+// takes the next word as its value, not as the directory.
+func isLocationValueFlag(token string) bool {
+	switch strings.ToLower(token) {
+	case "-erroraction", "-ea",
+		"-warningaction", "-wa",
+		"-informationaction", "-infa",
+		"-errorvariable", "-ev",
+		"-warningvariable", "-wv",
+		"-informationvariable", "-iv",
+		"-outvariable", "-ov",
+		"-outbuffer", "-ob",
+		"-pipelinevariable", "-pv":
+		return true
+	default:
+		return false
+	}
+}
+
+func quoteStartsNestedShell(command string, quoteAt int, mode shellParseMode) bool {
+	if quoteAt <= 0 || quoteAt >= len(command) || !quoteIsReal(command[quoteAt], mode) {
+		return false
+	}
+	head := strings.TrimSpace(command[statementStartBefore(command, quoteAt, mode):quoteAt])
+	return headInvokesNestedShell(head)
+}
+
+func statementStartBefore(command string, at int, mode shellParseMode) int {
+	start := 0
+	inSingle, inDouble := false, false
+	for i := 0; i < at && i < len(command); {
+		ch := command[i]
+		if ch == '\'' && !inDouble && mode != parseCmd {
+			inSingle = !inSingle
+			i++
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			i++
+			continue
+		}
+		if !inSingle && !inDouble {
+			if n := shellSepLen(command, i); n > 0 {
+				start = i + n
+				i += n
+				continue
+			}
+		}
+		i++
+	}
+	return start
+}
+
+func headInvokesNestedShell(head string) bool {
+	words := shellHeadWords(head)
+	if len(words) == 0 {
+		return false
+	}
+	kind := shellWrapperKind(words[0])
+	if kind == "" {
+		return false
+	}
+	for i := 1; i < len(words); {
+		w := words[i]
+		if isWrapperCommandFlag(kind, w) {
+			return i == len(words)-1
+		}
+		if takesWrapperOptionValue(kind, w) {
+			// A following flag is another option, not this option's value.
+			// iex -Verbose -ErrorAction Stop "..." must still see the quote.
+			if i+1 < len(words) && !wrapperFlagToken(words[i+1]) {
+				i += 2
+			} else {
+				i++
+			}
+			continue
+		}
+		if w != "" && (w[0] == '-' || w[0] == '/') {
+			i++
+			continue
+		}
+		return false
+	}
+	// iex "script" has no -Command. powershell "script" is not a script.
+	return kind == "inline"
+}
+
+func shellWrapperKind(token string) string {
+	switch executableLeaf(token) {
+	case "cmd":
+		return "cmd"
+	case "powershell", "pwsh":
+		return "powershell"
+	case "bash", "sh":
+		return "bash"
+	case "invoke-expression", "iex":
+		// Same process. A child-shell copy would leave the next parent
+		// command on the checkout after the script had climbed out of it.
+		return "inline"
+	default:
+		return ""
+	}
+}
+
+// nestedShellDir is the cwd the quoted payload runs in. A child starts at
+// the parent's directory and is discarded. Invoke-Expression is the parent.
+func nestedShellDir(command string, quoteAt int, parent *commandShellDir, mode shellParseMode) *commandShellDir {
+	head := command[statementStartBefore(command, quoteAt, mode):quoteAt]
+	words := shellHeadWords(head)
+	if len(words) > 0 && shellWrapperKind(words[0]) == "inline" {
+		return parent
+	}
+	if parent == nil {
+		return newCommandShellDir("")
+	}
+	return newCommandShellDir(parent.cur)
+}
+
+// nestedShellParseMode is the quote rules of a quoted payload. cmd /c is
+// cmd even under PowerShell. powershell and bash keep single quotes.
+// Invoke-Expression inherits the process it runs in.
+func nestedShellParseMode(command string, quoteAt int, parent shellParseMode) shellParseMode {
+	head := command[statementStartBefore(command, quoteAt, parent):quoteAt]
+	words := shellHeadWords(head)
+	if len(words) == 0 {
+		return parent
+	}
+	switch shellWrapperKind(words[0]) {
+	case "cmd":
+		return parseCmd
+	case "powershell", "bash":
+		return parsePowerShell
+	default:
+		return parent
+	}
+}
+
+func escapedLineBreak(command string, i int) bool {
+	if i >= len(command) || command[i] != '\n' {
+		return false
+	}
+	prev := i - 1
+	if prev >= 0 && command[prev] == '\r' {
+		prev--
+	}
+	return prev >= 0 && (command[prev] == '^' || command[prev] == '`')
+}
+
+func wrapperFlagToken(token string) bool {
+	return token != "" && (token[0] == '-' || token[0] == '/')
+}
+
+// shellHeadWords splits a statement the way the walker reads words.
+// strings.Fields keeps a trailing backtick on iex, so a continued
+// iex<newline>"script" never matches Invoke-Expression.
+func shellHeadWords(head string) []string {
+	var words []string
+	for i := 0; i < len(head); {
+		c := head[i]
+		if c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '`' || c == '^' {
+			i++
+			continue
+		}
+		start := i
+		for i < len(head) && isShellWordChar(head[i]) {
+			i++
+		}
+		if i == start {
+			i++
+			continue
+		}
+		words = append(words, head[start:i])
+	}
+	return words
+}
+
+func isWrapperCommandFlag(kind, token string) bool {
+	w := strings.ToLower(strings.Trim(token, `"'`))
+	switch kind {
+	case "cmd":
+		return w == "/c" || w == "/k"
+	case "powershell":
+		switch w {
+		case "-command", "/command", "-c", "/c":
+			return true
+		}
+	case "bash":
+		return w == "-c" || w == "-lc" || w == "-cl"
+	case "inline":
+		return w == "-command" || w == "/command"
+	}
+	return false
+}
+
+func takesWrapperOptionValue(kind, token string) bool {
+	w := strings.ToLower(strings.Trim(token, `"'`))
+	switch kind {
+	case "powershell":
+		switch w {
+		case "-executionpolicy", "-inputformat", "-outputformat", "-windowstyle",
+			"-configurationname", "-workingdirectory", "-file", "-version":
+			return true
+		}
+	case "bash":
+		switch w {
+		case "--rcfile", "--init-file":
+			return true
+		}
+	case "inline":
+		// -ErrorAction Stop still leaves the following quote as the script.
+		// -Command itself is the script, so it is not a skipped value.
+		if w == "-command" || w == "/command" || len(w) < 2 {
+			return false
+		}
+		return w[0] == '-' || w[0] == '/'
+	}
+	return false
+}
+
+func quotedPayloadBounds(command string, open int) (bodyStart, bodyEnd, close int, ok bool) {
+	if open < 0 || open >= len(command) {
+		return 0, 0, 0, false
+	}
+	q := command[open]
+	if q != '\'' && q != '"' {
+		return 0, 0, 0, false
+	}
+	i := open + 1
+	for i < len(command) {
+		if command[i] != q {
+			i++
+			continue
+		}
+		if i+1 < len(command) && command[i+1] == q {
+			i += 2
+			continue
+		}
+		if q == '"' && i > open+1 && command[i-1] == '`' {
+			i++
+			continue
+		}
+		return open + 1, i, i + 1, true
+	}
+	return 0, 0, 0, false
+}
+
+func isChdirFlag(token string) bool {
+	token = strings.ToLower(token)
+	if token == "/d" || token == "--" {
+		return true
+	}
+	return strings.HasPrefix(token, "-") && !strings.ContainsAny(token, `/\`)
+}
+
 // codingTurnPrimaryDir is the directory the task record says it edits.
 // A detached checkout is an execution copy, not that directory.
 func (a *App) codingTurnPrimaryDir(userID, presented string) string {

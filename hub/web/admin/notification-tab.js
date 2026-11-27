@@ -68,7 +68,104 @@
       notifLangZhHant: 'Traditional Chinese',
       notifLangEn: 'English',
       notifLangMn: 'Cyrillic Mongolian',
+      notifBadgePinned: 'Pinned',
+      notifBadgeUrgent: 'Urgent',
+      notifBadgeImportant: 'Important',
+      notifFormPublishAt: 'Publish time',
+      notifFormPublishNow: 'Publish now',
+      notifFormPublishScheduled: 'Scheduled',
+      notifFormExpireAt: 'Expire time (optional)',
+      notifFormSaveDraft: 'Save draft',
+      notifFormPublish: 'Publish now',
+      notifCreateSuccess: 'Notification created.',
+      notifScheduledSaved: 'Saved. It will be sent at the scheduled time.',
+      notifCreateFailed: 'Create failed: {error}',
+      notifDetailTitle: 'Notification detail',
+      notifDetailBack: 'Back to list',
+      notifDetailContent: 'Content',
+      notifDetailStats: 'Delivery statistics',
+      notifStatTotal: 'Total pushed',
+      notifStatRead: 'Read',
+      notifStatRate: 'Read rate',
+      notifPreview: 'Preview',
+      notifFormContentChars: '{count}/2000',
+      notifErrTitleRequired: 'Title is required',
+      notifErrTitleTooLong: 'Title exceeds 100 characters',
+      notifErrContentRequired: 'Content is required',
+      notifErrContentTooLong: 'Content exceeds 2000 characters',
+      notifErrLink: 'Link must start with http:// or https://',
+      notifErrPublishAt: 'Choose a publish time',
+      notifErrPublishFuture: 'Publish time must be in the future',
+      notifErrExpireAt: 'Expire time is not a valid date',
+      notifErrExpireOrder: 'Expire time must be after the publish time'
+    });
+    I18N.zh = Object.assign({}, I18N.zh, {
+      navNotifications: '\u901a\u77e5\u7ba1\u7406',
+      navNotificationsDesc: '\u7ba1\u7406\u5e76\u63a8\u9001\u901a\u77e5\u7ed9\u7528\u6237',
+      notifTabTitle: '\u901a\u77e5\u7ba1\u7406',
+      notifTabSubtitle: '\u521b\u5efa\u3001\u53d1\u5e03\u548c\u7ba1\u7406\u7ec8\u7aef\u7528\u6237\u901a\u77e5\u3002',
+      notifCreateNew: '\u521b\u5efa\u65b0\u901a\u77e5',
+      notifFilterAll: '\u5168\u90e8',
+      notifFilterPublished: '\u5df2\u53d1\u5e03',
+      notifFilterExpired: '\u5df2\u8fc7\u671f',
+      notifFilterRevoked: '\u5df2\u64a4\u56de',
+      notifFilterDraft: '\u8349\u7a3f',
+      notifCategoryAll: '\u5168\u90e8\u5206\u7c7b',
+      notifCategorySystem: '\u7cfb\u7edf\u516c\u544a',
+      notifCategoryFeature: '\u529f\u80fd\u66f4\u65b0',
+      notifCategorySecurity: '\u5b89\u5168\u544a\u8b66',
+      notifCategoryMaintenance: '\u8fd0\u7ef4\u901a\u77e5',
+      notifCategoryCustom: '\u81ea\u5b9a\u4e49',
+      notifEmpty: '\u5f53\u524d\u7b5b\u9009\u6761\u4ef6\u4e0b\u6682\u65e0\u901a\u77e5\u3002',
+      notifLoadFailed: '\u52a0\u8f7d\u901a\u77e5\u5931\u8d25\uff1a{error}',
+      notifTitle: '\u6807\u9898',
+      notifStatus: '\u72b6\u6001',
+      notifCategory: '\u5206\u7c7b',
+      notifCreatedAt: '\u521b\u5efa\u65f6\u95f4',
+      notifDeliveryRate: '\u9001\u8fbe\u7387',
+      notifActions: '\u64cd\u4f5c',
+      notifView: '\u67e5\u770b',
+      notifRevoke: '\u64a4\u56de',
+      notifRevokeConfirm: '\u786e\u8ba4\u64a4\u56de\u6b64\u901a\u77e5\uff1f',
+      notifRevokeSuccess: '\u901a\u77e5\u5df2\u64a4\u56de\u3002',
+      notifRevokeFailed: '\u64a4\u56de\u5931\u8d25\uff1a{error}',
+      notifDelete: '\u5220\u9664',
+      notifDeleteConfirm: '\u786e\u8ba4\u6c38\u4e45\u5220\u9664\u6b64\u901a\u77e5\uff1f',
+      notifDeleteSuccess: '\u901a\u77e5\u5df2\u5220\u9664\u3002',
+      notifDeleteFailed: '\u5220\u9664\u5931\u8d25\uff1a{error}',
+      notifCreateTitle: '\u521b\u5efa\u901a\u77e5',
+      notifFormTitle: '\u6807\u9898',
+      notifFormTitlePlaceholder: '\u901a\u77e5\u6807\u9898\uff08\u6700\u591a100\u5b57\u7b26\uff09',
+      notifFormContent: '\u5185\u5bb9\uff08Markdown\uff09',
+      notifFormContentPlaceholder: '\u901a\u77e5\u5185\u5bb9\uff0c\u652f\u6301 Markdown\uff08\u6700\u591a2000\u5b57\u7b26\uff09',
+      notifFormCategory: '\u5206\u7c7b',
+      notifFormAudience: '\u53d7\u4f17',
+      notifAudienceAll: '\u6240\u6709\u7528\u6237',
+      notifAudienceTenant: '\u6307\u5b9a\u79df\u6237',
+      notifAudienceDepartment: '\u6307\u5b9a\u90e8\u95e8',
+      notifAudienceUser: '\u6307\u5b9a\u7528\u6237',
+      notifFormAudienceIds: '\u76ee\u6807 ID\uff08\u82f1\u6587\u9017\u53f7\u5206\u9694\uff09',
+      notifFormPriority: '\u4f18\u5148\u7ea7',
+      notifPriorityNormal: '\u666e\u901a',
+      notifPriorityImportant: '\u91cd\u8981',
+      notifPriorityUrgent: '\u7d27\u6025',
+      notifFormImPush: '\u63a8\u9001\u5230 IM \u901a\u9053',
+      notifFormPinned: '\u7f6e\u9876\u6d88\u606f\uff08\u60ac\u6d6e\u6761\uff09',
+      notifFormPinnedForever: '\u6c38\u4e45\u7f6e\u9876\uff08\u59cb\u7ec8\u5728\u6700\u5de6\uff09',
+      notifFormLink: '\u94fe\u63a5\uff08\u53ef\u9009\uff09',
+      notifFormLinkPlaceholder: 'https://... \u7531\u6a2a\u5e45\u6309\u94ae\u6253\u5f00',
+      notifFormButtonText: '\u6309\u94ae\u6587\u5b57',
+      notifFormButtonTextPlaceholder: '\u67e5\u770b\u8be6\u60c5',
+      notifFormSourceLang: '\u539f\u6587\u8bed\u8a00',
+      notifFormTranslateTargets: '\u540c\u65f6\u4fdd\u5b58\u4e3a',
+      notifFormTranslateHint: '\u52fe\u9009\u7684\u8bed\u8a00\u4f1a\u4ece\u539f\u6587\u7ffb\u8bd1\u3002\u94fe\u63a5\u4e0d\u7ffb\u8bd1\u3002',
+      notifLangZhHans: '\u7b80\u4f53\u4e2d\u6587',
+      notifLangZhHant: '\u7e41\u4f53\u4e2d\u6587',
+      notifLangEn: '\u82f1\u6587',
+      notifLangMn: '\u897f\u91cc\u5c14\u8499\u53e4\u6587',
       notifBadgePinned: '\u7f6e\u9876',
+      notifBadgeUrgent: '\u7d27\u6025',
+      notifBadgeImportant: '\u91cd\u8981',
       notifFormPublishAt: '\u53d1\u5e03\u65f6\u95f4',
       notifFormPublishNow: '\u7acb\u5373\u53d1\u5e03',
       notifFormPublishScheduled: '\u5b9a\u65f6\u53d1\u5e03',
@@ -76,6 +173,7 @@
       notifFormSaveDraft: '\u4fdd\u5b58\u8349\u7a3f',
       notifFormPublish: '\u7acb\u5373\u53d1\u5e03',
       notifCreateSuccess: '\u901a\u77e5\u521b\u5efa\u6210\u529f\u3002',
+      notifScheduledSaved: '\u5df2\u4fdd\u5b58\uff0c\u5230\u53d1\u5e03\u65f6\u95f4\u540e\u53d1\u51fa\u3002',
       notifCreateFailed: '\u521b\u5efa\u5931\u8d25\uff1a{error}',
       notifDetailTitle: '\u901a\u77e5\u8be6\u60c5',
       notifDetailBack: '\u8fd4\u56de\u5217\u8868',
@@ -85,7 +183,16 @@
       notifStatRead: '\u5df2\u8bfb\u6570',
       notifStatRate: '\u5df2\u8bfb\u7387',
       notifPreview: '\u9884\u89c8',
-      notifFormContentChars: '{count}/2000'
+      notifFormContentChars: '{count}/2000',
+      notifErrTitleRequired: '\u8bf7\u586b\u5199\u6807\u9898',
+      notifErrTitleTooLong: '\u6807\u9898\u4e0d\u80fd\u8d85\u8fc7 100 \u4e2a\u5b57\u7b26',
+      notifErrContentRequired: '\u8bf7\u586b\u5199\u5185\u5bb9',
+      notifErrContentTooLong: '\u5185\u5bb9\u4e0d\u80fd\u8d85\u8fc7 2000 \u4e2a\u5b57\u7b26',
+      notifErrLink: '\u94fe\u63a5\u5fc5\u987b\u4ee5 http:// \u6216 https:// \u5f00\u5934',
+      notifErrPublishAt: '\u8bf7\u9009\u62e9\u53d1\u5e03\u65f6\u95f4',
+      notifErrPublishFuture: '\u53d1\u5e03\u65f6\u95f4\u987b\u665a\u4e8e\u73b0\u5728',
+      notifErrExpireAt: '\u8fc7\u671f\u65f6\u95f4\u4e0d\u662f\u6709\u6548\u65e5\u671f',
+      notifErrExpireOrder: '\u8fc7\u671f\u65f6\u95f4\u987b\u665a\u4e8e\u53d1\u5e03\u65f6\u95f4'
     });
     var notificationMn = (global.HUB_ADMIN_DICT_MN && global.HUB_ADMIN_DICT_MN.NOTIFICATION) || {};
     I18N.mn = Object.assign({}, I18N.mn || {}, notificationMn);
@@ -140,6 +247,30 @@
       const d = new Date(iso);
       return d.toLocaleString();
     } catch (_) { return iso; }
+  }
+
+  function notifAudienceLine(data) {
+    var type = data && data.audience_type || '';
+    var keys = {
+      all: 'notifAudienceAll',
+      tenant: 'notifAudienceTenant',
+      department: 'notifAudienceDepartment',
+      user: 'notifAudienceUser'
+    };
+    if (!keys[type]) return '';
+    var label = tr(keys[type]);
+    var ids = (data.audience_ids || []).filter(Boolean);
+    if (type !== 'all' && ids.length) label += ': ' + ids.join(', ');
+    return label;
+  }
+
+  function notifTimeMeta(data) {
+    var parts = [];
+    if (data && data.publish_at) parts.push(tr('notifFormPublishAt') + ': ' + formatTime(data.publish_at));
+    if (data && data.expire_at) parts.push(tr('notifFormExpireAt') + ': ' + formatTime(data.expire_at));
+    var audience = notifAudienceLine(data);
+    if (audience) parts.push(audience);
+    return parts.join(' | ');
   }
 
   function deliveryRateText(stats) {
@@ -276,11 +407,12 @@
         + '<span class="badge ' + statusBadgeClass(item.status) + '">' + escapeHtml(statusLabel(item.status)) + '</span>'
         + '<span class="badge info">' + escapeHtml(categoryLabel(item.category)) + '</span>'
         + (item.pinned ? '<span class="badge warn">' + escapeHtml(tr('notifBadgePinned')) + '</span>' : '')
-        + (item.priority === 'urgent' ? '<span class="badge danger">URGENT</span>' : '')
-        + (item.priority === 'important' ? '<span class="badge warn">IMPORTANT</span>' : '')
+        + (item.priority === 'urgent' ? '<span class="badge danger">' + escapeHtml(tr('notifBadgeUrgent')) + '</span>' : '')
+        + (item.priority === 'important' ? '<span class="badge warn">' + escapeHtml(tr('notifBadgeImportant')) + '</span>' : '')
         + '</div>'
         + '<div class="item-title" style="font-size:14px;margin-bottom:3px">' + escapeHtml(item.title || '-') + '</div>'
         + '<div class="item-meta">' + escapeHtml(tr('notifCreatedAt')) + ': ' + escapeHtml(formatTime(item.created_at))
+        + (item.publish_at ? ' | ' + escapeHtml(tr('notifFormPublishAt')) + ': ' + escapeHtml(formatTime(item.publish_at)) : '')
         + ' &nbsp;|&nbsp; ' + escapeHtml(tr('notifDeliveryRate')) + ': ' + escapeHtml(rate) + '</div>'
         + '</div>'
         + '<div style="display:flex;gap:6px;flex-shrink:0">'
@@ -345,6 +477,91 @@
     }).join('');
   }
 
+  function notifParseLocalDate(value) {
+    var raw = String(value || '').trim();
+    if (!raw) return null;
+    var parsed = new Date(raw);
+    if (isNaN(parsed.getTime())) return null;
+    return parsed;
+  }
+
+  function readNotifCreateDraft() {
+    if (!document.getElementById('notifInputTitle')) return null;
+    function val(id) {
+      var el = document.getElementById(id);
+      return el ? el.value : '';
+    }
+    function on(id) {
+      var el = document.getElementById(id);
+      return !!(el && el.checked);
+    }
+    var langs = [];
+    document.querySelectorAll('.notif-target-lang').forEach(function(el) {
+      langs.push({ value: el.value, checked: !!el.checked });
+    });
+    return {
+      title: val('notifInputTitle'),
+      content: val('notifInputContent'),
+      sourceLang: val('notifInputSourceLang'),
+      category: val('notifInputCategory'),
+      audience: val('notifInputAudience'),
+      audienceIds: val('notifInputAudienceIds'),
+      priority: (document.querySelector('input[name="notifPriority"]:checked') || {}).value || 'normal',
+      publish: (document.querySelector('input[name="notifPublishMode"]:checked') || {}).value || 'now',
+      publishAt: val('notifInputPublishAt'),
+      expireAt: val('notifInputExpireAt'),
+      imPush: on('notifInputImPush'),
+      pinned: on('notifInputPinned'),
+      pinnedForever: on('notifInputPinnedForever'),
+      link: val('notifInputLinkUrl'),
+      button: val('notifInputButtonText'),
+      langs: langs
+    };
+  }
+
+  function applyNotifCreateDraft(draft) {
+    if (!draft) return;
+    function set(id, value) {
+      var el = document.getElementById(id);
+      if (el && value != null) el.value = value;
+    }
+    set('notifInputTitle', draft.title);
+    set('notifInputContent', draft.content);
+    set('notifInputSourceLang', draft.sourceLang);
+    set('notifInputCategory', draft.category);
+    set('notifInputAudience', draft.audience);
+    set('notifInputAudienceIds', draft.audienceIds);
+    set('notifInputPublishAt', draft.publishAt);
+    set('notifInputExpireAt', draft.expireAt);
+    set('notifInputLinkUrl', draft.link);
+    set('notifInputButtonText', draft.button);
+    document.querySelectorAll('input[name="notifPriority"]').forEach(function(el) {
+      el.checked = el.value === draft.priority;
+    });
+    document.querySelectorAll('input[name="notifPublishMode"]').forEach(function(el) {
+      el.checked = el.value === draft.publish;
+    });
+    var im = document.getElementById('notifInputImPush');
+    if (im) im.checked = !!draft.imPush;
+    var pinned = document.getElementById('notifInputPinned');
+    if (pinned) pinned.checked = !!draft.pinned;
+    var forever = document.getElementById('notifInputPinnedForever');
+    if (forever) forever.checked = !!draft.pinnedForever;
+    if (draft.langs) {
+      var wanted = {};
+      draft.langs.forEach(function(item) { wanted[item.value] = !!item.checked; });
+      document.querySelectorAll('.notif-target-lang').forEach(function(el) {
+        if (Object.prototype.hasOwnProperty.call(wanted, el.value)) el.checked = wanted[el.value];
+      });
+    }
+    global.notifAudienceChanged();
+    global.notifPriorityChanged();
+    global.notifPinnedChanged();
+    global.notifPublishModeChanged();
+    global.notifSyncButtonPlaceholder();
+    global.notifUpdatePreview();
+  }
+
   function notifSelectedTargetLangs() {
     var langs = [];
     document.querySelectorAll('.notif-target-lang:checked').forEach(function(el) {
@@ -354,7 +571,7 @@
   }
 
   // --- Create View ---
-  function renderCreateView() {
+  function renderCreateView(draft) {
     const panel = getPanel();
     if (!panel) return;
     const html = '<div class="head"><div><h3>' + escapeHtml(tr('notifCreateTitle')) + '</h3></div>'
@@ -433,8 +650,9 @@
     panel.innerHTML = html;
     // Attach priority change listener
     document.querySelectorAll('input[name="notifPriority"]').forEach(function(radio) {
-      radio.addEventListener('change', notifPriorityChanged);
+      radio.addEventListener('change', global.notifPriorityChanged);
     });
+    applyNotifCreateDraft(draft);
   }
 
   // --- Detail View ---
@@ -450,6 +668,7 @@
     const canDelete = canDeleteNotification(data);
     // Simple Markdown to HTML (basic: bold, italic, code, headings, line breaks)
     const contentHtml = simpleMarkdownRender(data.content || '');
+    const scheduleMeta = notifTimeMeta(data);
 
     const html = '<div class="head"><div><h3>' + escapeHtml(tr('notifDetailTitle')) + '</h3></div>'
       + '<button class="btn-ghost" type="button" onclick="notifShowList()">' + escapeHtml(tr('notifDetailBack')) + '</button></div>'
@@ -460,11 +679,12 @@
       + '<span class="badge ' + statusBadgeClass(data.status) + '">' + escapeHtml(statusLabel(data.status)) + '</span>'
       + '<span class="badge info">' + escapeHtml(categoryLabel(data.category)) + '</span>'
       + (data.pinned ? '<span class="badge warn">' + escapeHtml(tr('notifBadgePinned')) + '</span>' : '')
-      + (data.priority === 'urgent' ? '<span class="badge danger">URGENT</span>' : '')
-      + (data.priority === 'important' ? '<span class="badge warn">IMPORTANT</span>' : '')
+      + (data.priority === 'urgent' ? '<span class="badge danger">' + escapeHtml(tr('notifBadgeUrgent')) + '</span>' : '')
+      + (data.priority === 'important' ? '<span class="badge warn">' + escapeHtml(tr('notifBadgeImportant')) + '</span>' : '')
       + '</div>'
       + '<div class="item-title" style="font-size:16px">' + escapeHtml(data.title || '') + '</div>'
       + '<div class="item-meta">' + escapeHtml(tr('notifCreatedAt')) + ': ' + escapeHtml(formatTime(data.created_at)) + '</div>'
+      + (scheduleMeta ? '<div class="item-meta">' + escapeHtml(scheduleMeta) + '</div>' : '')
       + '</div>'
       // Content
       + '<div class="item" style="padding:14px 16px">'
@@ -611,12 +831,10 @@
   global.notifPublishModeChanged = function() {
     const selected = document.querySelector('input[name="notifPublishMode"]:checked');
     const wrap = document.getElementById('notifPublishAtWrap');
-    if (!wrap) return;
-    if (selected && selected.value === 'scheduled') {
-      wrap.classList.remove('hidden');
-    } else {
-      wrap.classList.add('hidden');
-    }
+    const scheduled = !!(selected && selected.value === 'scheduled');
+    if (wrap) wrap.classList.toggle('hidden', !scheduled);
+    const btn = document.getElementById('notifSubmitPublish');
+    if (btn) btn.textContent = tr(scheduled ? 'notifFormPublishScheduled' : 'notifFormPublish');
   };
 
   global.notifUpdatePreview = function() {
@@ -634,8 +852,8 @@
   };
 
   global.notifSubmitCreate = async function(mode) {
-    const title = (document.getElementById('notifInputTitle') || {}).value || '';
-    const content = (document.getElementById('notifInputContent') || {}).value || '';
+    const title = ((document.getElementById('notifInputTitle') || {}).value || '').trim();
+    const content = ((document.getElementById('notifInputContent') || {}).value || '').trim();
     const category = (document.getElementById('notifInputCategory') || {}).value || 'system_announcement';
     const audienceType = (document.getElementById('notifInputAudience') || {}).value || 'all';
     const audienceIdsRaw = (document.getElementById('notifInputAudienceIds') || {}).value || '';
@@ -649,31 +867,67 @@
     const publishAtRaw = (document.getElementById('notifInputPublishAt') || {}).value || '';
     const expireAtRaw = (document.getElementById('notifInputExpireAt') || {}).value || '';
 
-    // Validate
-    if (!title.trim()) { showToast('Title is required', 'error'); return; }
-    if (title.length > 100) { showToast('Title exceeds 100 characters', 'error'); return; }
-    if (!content.trim()) { showToast('Content is required', 'error'); return; }
-    if (content.length > 2000) { showToast('Content exceeds 2000 characters', 'error'); return; }
-    if (linkUrl && !/^https?:\/\//i.test(linkUrl)) { showToast('Link must start with http:// or https://', 'error'); return; }
+    if (!title) { showToast(tr('notifErrTitleRequired'), 'error'); return; }
+    if (title.length > 100) { showToast(tr('notifErrTitleTooLong'), 'error'); return; }
+    if (!content.trim()) { showToast(tr('notifErrContentRequired'), 'error'); return; }
+    if (content.length > 2000) { showToast(tr('notifErrContentTooLong'), 'error'); return; }
+    if (linkUrl && !/^https?:\/\//i.test(linkUrl)) { showToast(tr('notifErrLink'), 'error'); return; }
+    var publishDate = null;
+    if (publishMode === 'scheduled' && publishAtRaw) {
+      publishDate = notifParseLocalDate(publishAtRaw);
+      if (!publishDate) { showToast(tr('notifErrPublishAt'), 'error'); return; }
+    }
+    if (mode === 'publish' && publishMode === 'scheduled' && !publishDate) {
+      showToast(tr('notifErrPublishAt'), 'error');
+      return;
+    }
+    if (mode === 'publish' && publishDate && publishDate.getTime() <= Date.now()) {
+      showToast(tr('notifErrPublishFuture'), 'error');
+      return;
+    }
+    var expireDate = null;
+    if (String(expireAtRaw || '').trim()) {
+      expireDate = notifParseLocalDate(expireAtRaw);
+      if (!expireDate) { showToast(tr('notifErrExpireAt'), 'error'); return; }
+      var earliest = publishDate ? publishDate.getTime() : Date.now();
+      if (expireDate.getTime() <= earliest) { showToast(tr('notifErrExpireOrder'), 'error'); return; }
+    }
     if (notifState.submitting) return;
     notifState.submitting = true;
     notifSetSubmitLocked(true);
+
+    const audienceIds = audienceType === 'all' ? [] :
+      audienceIdsRaw.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+    const sourceLang = (document.getElementById('notifInputSourceLang') || {}).value || '';
+
+    const body = {
+      title: title,
+      content: content,
+      category: category,
+      priority: priority,
+      audience_type: audienceType,
+      audience_ids: audienceIds,
+      im_push: imPush && priority === 'urgent',
+      pinned: pinned,
+      pinned_forever: pinned && pinnedForever,
+      link_url: linkUrl,
+      button_text: buttonText,
+      source_lang: sourceLang,
+      target_langs: notifSelectedTargetLangs(),
       status: mode === 'publish' ? 'published' : 'draft'
     };
 
-    if (publishMode === 'scheduled' && publishAtRaw) {
-      body.publish_at = new Date(publishAtRaw).toISOString();
-    }
-    if (expireAtRaw) {
-      body.expire_at = new Date(expireAtRaw).toISOString();
-    }
+    if (mode === 'publish' && publishDate) body.publish_at = publishDate.toISOString();
+    if (expireDate) body.expire_at = expireDate.toISOString();
 
     try {
-      await api('/api/v1/admin/notifications', {
+      const data = await api('/api/v1/admin/notifications', {
         method: 'POST',
         body: JSON.stringify(body)
       });
-      showToast(tr('notifCreateSuccess'), 'info');
+      const saved = data && data.notification;
+      const scheduled = !!(saved && saved.status === 'draft' && saved.publish_at);
+      showToast(tr(scheduled ? 'notifScheduledSaved' : 'notifCreateSuccess'), 'info');
       notifState.currentView = 'list';
       notifState.statusFilter = '';
       notifState.categoryFilter = '';
@@ -702,7 +956,7 @@
   if (global.AdminTabRegistry && typeof global.AdminTabRegistry.onLanguageChange === 'function') {
     global.AdminTabRegistry.onLanguageChange(function() {
       if (notifState.currentView === 'list') renderListView();
-      else if (notifState.currentView === 'create') renderCreateView();
+      else if (notifState.currentView === 'create') renderCreateView(readNotifCreateDraft());
       else if (notifState.currentView === 'detail' && notifDetailData) renderDetailView(notifDetailData);
     });
   }

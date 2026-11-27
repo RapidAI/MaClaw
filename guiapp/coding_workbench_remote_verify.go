@@ -131,15 +131,44 @@ func runCodingWorkbenchRemoteStepVerifyScoped(
 	if strings.TrimSpace(cmd) == "" {
 		return true, "", "", true
 	}
+	return runCodingWorkbenchRemoteStepVerifyScopedJudge(h, sessionID, projectDir, cmd, taskFiles, taskFiles, taskScoped)
+}
+
+// runCodingWorkbenchRemoteStepVerifyForRepair matches the local repair
+// verify. The project command is scoped to the original task files, and a
+// package the repair opened is typechecked with go build. Analyzer findings
+// are judged against the original task files only.
+func runCodingWorkbenchRemoteStepVerifyForRepair(h *IMMessageHandler, sessionID, projectDir string, commandFiles, judgeFiles []string) (ok bool, cmd, output string, skipped bool) {
+	sessionID = strings.TrimSpace(sessionID)
+	projectDir = strings.TrimSpace(projectDir)
+	if h == nil || sessionID == "" || projectDir == "" {
+		return true, "", "", true
+	}
+	cmd = detectRemoteProjectVerifyCommand(h, sessionID, projectDir)
+	if strings.TrimSpace(cmd) == "" {
+		return true, "", "", true
+	}
+	scoped, scopeSkip, scopeReason := repairGoVerifyCommand(cmd, projectDir, commandFiles, judgeFiles, remoteVerifyBuildOutDir)
+	if scopeSkip {
+		return true, "", scopeReason, true
+	}
+	return executeRemoteStepVerify(h, sessionID, projectDir, scoped, judgeFiles, true)
+}
+
+func runCodingWorkbenchRemoteStepVerifyScopedJudge(h *IMMessageHandler, sessionID, projectDir, cmd string, commandFiles, judgeFiles []string, taskScoped bool) (ok bool, outCmd, output string, skipped bool) {
 	if taskScoped {
 		// projectDir is on the remote host. Package paths still come from the
 		// task's relative files; a missing local tree keeps the root module.
-		scoped, scopeSkip, scopeReason := scopeGoVerifyToTaskAt(cmd, projectDir, taskFiles, remoteVerifyBuildOutDir)
+		scoped, scopeSkip, scopeReason := scopeGoVerifyToTaskAt(cmd, projectDir, commandFiles, remoteVerifyBuildOutDir)
 		if scopeSkip {
 			return true, "", scopeReason, true
 		}
 		cmd = scoped
 	}
+	return executeRemoteStepVerify(h, sessionID, projectDir, cmd, judgeFiles, taskScoped)
+}
+
+func executeRemoteStepVerify(h *IMMessageHandler, sessionID, projectDir, cmd string, taskFiles []string, taskScoped bool) (ok bool, outCmd, output string, skipped bool) {
 	// Capture exit code in output so we can parse success without relying on
 	// sshExec's soft success heuristics alone.
 	wrapped := fmt.Sprintf(

@@ -1056,19 +1056,52 @@ func TestDesktopCodingRootStepRelationContinuationBudgetCapsChain(t *testing.T) 
 		app.closeCodingTaskRelationService()
 	})
 	owner := projectSessionOwnerID("C:/workspace/a")
-	// One plan step arms 2*1+2 = 4 continuation mints: the request token bind
-	// plus four chained binds succeed, the sixth dispatch must fail closed.
+	// One plan step reserves a writer, a reviewer, and every compile-repair
+	// round, plus two retry mints. The request token is the first bind and
+	// is not itself a mint, so the chain stops one bind after the budget.
 	app.armDesktopCodingContinuationBudget(owner, 1)
 	requestToken := app.beginDesktopCodingTaskIngress(owner)
+	want := desktopCodingContinuationBudget(1) + 1
 	bound := 0
-	for i := 0; i < 10; i++ {
+	for i := 0; i < want+4; i++ {
 		if _, _, _, _, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner); !ok {
 			break
 		}
 		bound++
 	}
-	if bound != 5 {
-		t.Fatalf("budgeted chain bound %d turns, want 5 (request token + 4 chained)", bound)
+	if bound != want {
+		t.Fatalf("budgeted chain bound %d turns, want %d", bound, want)
+	}
+}
+
+func TestDesktopCodingContinuationBudgetCoversCompileRepair(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	const steps = 6
+	// Writer and reviewer per step, plus one compile-repair root for every
+	// repair round. The opening ingress is one of those binds.
+	reserved := steps * (2 + subAgentMaxVerifyFixRounds)
+	if got := desktopCodingContinuationBudget(steps); got+1 < reserved {
+		t.Fatalf("budget %d allows %d binds, want at least %d", got, got+1, reserved)
+	}
+	app.armDesktopCodingContinuationBudget(owner, steps)
+	requestToken := app.beginDesktopCodingTaskIngress(owner)
+	want := desktopCodingContinuationBudget(steps) + 1
+	bound := 0
+	for i := 0; i < want+4; i++ {
+		if _, _, _, _, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner); !ok {
+			break
+		}
+		bound++
+	}
+	if bound < reserved {
+		t.Fatalf("chain bound %d roots, a %d-step plan with compile repair needs %d", bound, steps, reserved)
+	}
+	if bound != want {
+		t.Fatalf("chain bound %d, budget allows %d", bound, want)
 	}
 }
 
@@ -1512,6 +1545,102 @@ func TestDesktopCodingRunnerBindsExactMaterializedSurfaceBeforeConsumption(t *te
 	resolved, ok := app.resolveDesktopCodingStaticWorkspace(owner, binding)
 	if !ok || !sameNormalizedPath(resolved, surface) {
 		t.Fatalf("runner-bound workspace=%q ok=%v, want exact dispatch surface %q", resolved, ok, surface)
+	}
+}
+
+// TestDesktopCodingGoalExecuteBindsMaterializedWritableSurface is the
+// contended-work-root incident: several coding tasks shared one checkout, the
+// turn minted its ingress before the private worktree existed, and the
+// goal-continuation execute step was then dispatched on that worktree while
+// the admission policy still named the shared primary. The step must carry a
+// complete local workspace in the same credential as its semantic identity.
+// A directory that is not on disk yet must fail closed without consuming the
+// continuation and without reporting an identity that has no writable surface.
+func TestDesktopCodingGoalExecuteBindsMaterializedWritableSurface(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		if app.enterpriseClient != nil {
+			_ = app.enterpriseClient.Close()
+			app.enterpriseClient = nil
+		}
+		CloseAutoRecallStore()
+		closeCodingKnowledgeStore(t, app)
+		app.closeCodingTaskRelationService()
+	})
+	handler := &IMMessageHandler{app: app}
+	owner := projectSessionOwnerID("C:/workspace/qmstampreg")
+	primary := t.TempDir()
+	surface := filepath.Join(t.TempDir(), "parallel-task", "QmStampRegV26")
+	requestToken := app.beginDesktopCodingTaskIngress(owner)
+	if requestToken == "" {
+		t.Fatal("request ingress was not issued")
+	}
+	task := &TaskItem{
+		Index: 1,
+		Title: "使用macmini作为测试环境，优化neon指令及metalGPU指令推理性能。",
+		Description: "[系统续接][execute] 按步骤执行目标：使用macmini作为测试环境，优化neon指令及metalGPU指令推理性能。\n\n" +
+			"本轮只能提交步骤 1：确认优化边界。已完成的步骤不要再调用 goal。",
+		RequestKind: codingRequestImplementation,
+	}
+	reqCtx := "Continue full coding workbench session (turn 2). Prefer incremental changes on prior work."
+	loopCtx := NewLoopContext("coding-workbench", 1, nil)
+	loopCtx.UserID = owner
+	loopCtx.CodingTaskIngressToken = requestToken
+
+	missing := filepath.Join(t.TempDir(), "missing-worktree")
+	missingResult := runTaskWithSubAgentRuntimeOptions(handler, corelib.MaclawLLMConfig{}, nil, task, missing, reqCtx, "", nil, loopCtx, nil, nil, nil)
+	if missingResult == nil || !strings.Contains(missingResult.Error, desktopCodingVerifiedSurfaceUnavailableDiagnostic) {
+		t.Fatalf("missing execution surface must fail closed before a relation is issued, got %+v", missingResult)
+	}
+	if strings.Contains(missingResult.Error, desktopCodingWritableSurfaceBindFailedDiagnostic) {
+		t.Fatalf("missing execution surface was reported as an issued identity with no workspace: %s", missingResult.Error)
+	}
+	app.codingCaps.mu.Lock()
+	_, requestStillLive := app.codingCaps.ingress[requestToken]
+	consumedSlot := app.codingCaps.continuationTokens[owner]
+	app.codingCaps.mu.Unlock()
+	if !requestStillLive || consumedSlot != "" {
+		t.Fatalf("missing execution surface consumed the request credential live=%v continuation=%q", requestStillLive, consumedSlot)
+	}
+
+	if err := os.MkdirAll(surface, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepoWithCommit(t, surface)
+	options := defaultGUICodingRuntimeOptions(task, primary)
+	options.PolicyProjectRoot = primary
+	options.DeferredWorktree = true
+	options.WorkspaceIsolated = true
+	options.RequireFinalDiffGate = true
+	result := runTaskWithSubAgentRuntimeOptions(handler, corelib.MaclawLLMConfig{}, nil, task, surface, reqCtx, "", nil, loopCtx, nil, nil, options)
+	if result == nil {
+		t.Fatal("runner returned no result")
+	}
+	// Reaching the unconfigured model is what proves the refuse gate ran and
+	// let the step through. A ledger or workspace-probe stop before onStart
+	// still chains a workspace and would otherwise look like a pass.
+	if result.Status != TaskExecFailed || !strings.Contains(result.Error, "LLM not configured") {
+		t.Fatalf("materialized goal execute step did not reach the model loop, status=%q err=%q", result.Status, result.Error)
+	}
+	if strings.Contains(result.Error, desktopCodingWritableSurfaceBindFailedDiagnostic) {
+		t.Fatalf("materialized goal execute step stopped with an unbound writable surface: %s", result.Error)
+	}
+	if strings.Contains(result.Error, desktopCodingVerifiedSurfaceUnavailableDiagnostic) {
+		t.Fatalf("materialized goal execute step did not receive a desktop relation: %s", result.Error)
+	}
+
+	app.codingCaps.mu.Lock()
+	_, requestStillLive = app.codingCaps.ingress[requestToken]
+	continuation := app.codingCaps.continuationTokens[owner]
+	ingress, ingressOK := app.codingCaps.ingress[continuation]
+	binding := ingress.workspace
+	app.codingCaps.mu.Unlock()
+	if requestStillLive || continuation == "" || continuation == requestToken || !ingressOK || !binding.complete() {
+		t.Fatalf("goal execute step did not consume the request token into a local workspace continuation=%q requestStillLive=%v ingress=%v binding=%#v result=%+v", continuation, requestStillLive, ingressOK, binding, result)
+	}
+	resolved, ok := app.resolveDesktopCodingStaticWorkspace(owner, binding)
+	if !ok || !sameNormalizedPath(resolved, surface) {
+		t.Fatalf("chained workspace=%q ok=%v, want dispatch surface %q (policy root %q)", resolved, ok, surface, primary)
 	}
 }
 

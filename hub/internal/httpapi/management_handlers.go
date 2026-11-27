@@ -902,6 +902,10 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 		referralRepo = referralRepos[0]
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		// This list is per admin and gains created_at when the process is
+		// updated. A cacheable GET kept the previous body, and the card then
+		// reported that registration had stored no time.
+		w.Header().Set("Cache-Control", "private, no-store")
 		registrationSource := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("registration_source")))
 		if registrationSource == "" {
 			registrationSource = "all"
@@ -1050,10 +1054,20 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 }
 
 func boundUserCreatedAt(user *store.User) string {
-	if user == nil || user.CreatedAt.IsZero() {
+	if user == nil {
 		return ""
 	}
-	return user.CreatedAt.UTC().Format(time.RFC3339)
+	if !user.CreatedAt.IsZero() {
+		return user.CreatedAt.UTC().Format(time.RFC3339)
+	}
+	raw := strings.TrimSpace(user.CreatedAtText)
+	if raw == "" || strings.HasPrefix(raw, "0001-01-01") {
+		return ""
+	}
+	if parsed := store.ParseStoredClock(raw); !parsed.IsZero() {
+		return parsed.UTC().Format(time.RFC3339)
+	}
+	return raw
 }
 
 func maskBoundUserReferralInviter(value string) string {

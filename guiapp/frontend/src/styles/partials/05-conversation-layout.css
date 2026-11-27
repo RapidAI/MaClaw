@@ -62,14 +62,22 @@
   }
 }
 
-/* Long-conversation rendering cost. The transcript is not virtualized (the
-   node cache + incremental markdown keep markdown work near zero), but every
-   row still pays layout/paint during streaming recalcs. content-visibility
-   lets the engine skip offscreen rows without removing them from the DOM.
-   `auto` intrinsic sizing remembers each row's last-rendered height, so
-   scrollbar geometry stays stable after rows have been seen once. */
+/* The live transcript's paint budget is the render window
+   (useConversationRenderWindow): the viewport plus two screens stay mounted
+   and everything older is one spacer. Rows themselves must stay
+   content-visibility: visible. content-visibility: auto skips paint on the
+   rows sitting just above the viewport — the ones a scroll-up enters — and
+   contain-intrinsic-size: auto then both balloons scrollHeight (a few
+   thousand DOM nodes reached ~1.8e6 px) and collapses it on the way up.
+   Anchor restore parks the reader in that hole: a white transcript that
+   only fills in again when scrolling back down onto the still-painted tail. */
 .mc-conversation-body > [data-testid^='assistant-chat-user-'],
 .mc-conversation-body > [data-testid^='assistant-chat-ai-'] {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 96px;
+  content-visibility: visible;
+}
+/* Native scroll anchoring fights the spacer swap. The render window sets this
+   attribute on the scroller for the commit that reconciles the spacer, and
+   clears it once the height is stable. */
+[data-testid='ai-output-container'][data-transcript-window-adjusting] {
+  overflow-anchor: none;
 }

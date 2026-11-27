@@ -174,11 +174,18 @@ func ParseNonStreamResponsesAPIBody(body []byte) (*Response, error) {
 	}
 	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 
-	return &Response{
+	out := &Response{
 		ResponseID: strings.TrimSpace(wire.ID),
 		Choices:    []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
 		Usage:      wire.Usage,
-	}, nil
+	}
+	// Official Responses failures are HTTP 200 with status "failed". The
+	// non-stream retry after a stream error is this body. Leaving it as a
+	// successful parse turns a temporary server_error into the step's answer.
+	if strings.EqualFold(strings.TrimSpace(wire.Status), "failed") {
+		return out, responsesStreamEventError(string(body))
+	}
+	return out, nil
 }
 
 // ParseNonStreamResponsesAPIResponse reads and parses a non-streaming

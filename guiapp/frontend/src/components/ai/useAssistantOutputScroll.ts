@@ -13,6 +13,7 @@ import {
     type AssistantScrollIntentEvent,
 } from "./assistantOutputScrollLogic";
 import { locatorCssEscape, userTurnScrollTop } from "./chatSessionLocatorModel";
+import { TRANSCRIPT_WINDOW_ADJUSTING_ATTR, cssPerVisualPx } from "./conversationRenderWindow";
 
 export { ASSISTANT_OUTPUT_NEAR_BOTTOM_PX };
 
@@ -41,6 +42,11 @@ function transcriptAnchorElement(host: Element, node: HTMLElement): HTMLElement 
         current = parent;
     }
     return current;
+}
+
+/** CSS-pixel offset of a row from the scrollport top. Visual rects scale with `--ui-scale`; this does not. */
+function anchorCssRelTop(el: HTMLElement, container: HTMLElement): number {
+    return (el.getBoundingClientRect().top - container.getBoundingClientRect().top) * cssPerVisualPx(container);
 }
 
 function childIndexOf(host: Element, el: Element): number {
@@ -120,8 +126,8 @@ export function useAssistantOutputScroll({ activityKey, conversationKey = "", ha
     const [unreadTail, setUnreadTail] = useState(false);
     const latchedTailStampRef = useRef("");
     // Viewport anchor for a scrolled-up reader: the first transcript row
-    // whose bottom edge is inside the viewport, plus its distance to the
-    // scrollport top, its position among the host's children, and its
+    // whose bottom edge is inside the viewport, plus its CSS-pixel distance
+    // to the scrollport top, its position among the host's children, and its
     // data-testid (which carries the message id) for an exact remount match.
     // Chromium's own overflow-anchor loses the anchor whenever React
     // re-projects the transcript (history merge, archive-window shift, a
@@ -189,7 +195,11 @@ export function useAssistantOutputScroll({ activityKey, conversationKey = "", ha
         const container = outputContainerRef.current;
         // The anchor only matters while a reader is parked away from the
         // tail; while the view follows, measuring rows is pure cost.
+        // Sampling during a spacer swap stores the hole. Restore is skipped
+        // for that commit, then the next commit chases the bad sample and
+        // yanks the reader by the whole loaded batch.
         if (!container || !userScrolledUpRef.current || outputHostHidden(container)) return;
+        if (container.hasAttribute(TRANSCRIPT_WINDOW_ADJUSTING_ATTR)) return;
         const top = container.getBoundingClientRect().top;
         const host = anchorHost(container);
         const kids = host.children;
@@ -210,26 +220,39 @@ export function useAssistantOutputScroll({ activityKey, conversationKey = "", ha
         // element/index so the next non-empty commit can still restore —
         // otherwise a transient collapse drops the reader at scrollTop 0.
         if (!(el instanceof HTMLElement)) return;
-        anchorRef.current = { el, relTop: el.getBoundingClientRect().top - top, index: childIndexOf(host, el), testId: el.getAttribute("data-testid") };
+        anchorRef.current = { el, relTop: anchorCssRelTop(el, container), index: childIndexOf(host, el), testId: el.getAttribute("data-testid") };
     }, [anchorHost]);
 
     const restoreAnchor = useCallback(() => {
         const container = outputContainerRef.current;
         const anchor = anchorRef.current;
         if (!container || !anchor || outputHostHidden(container)) return;
+        // The render window is mid spacer swap. The rows above the anchor just
+        // left the DOM and the spacer has not replaced their height yet, so
+        // the anchor's rect sits in a hole. Following that drift is the white
+        // screen on scroll-up. Capture stands down for the same reason: a
+        // sample taken in the hole is what the next commit would restore.
+        if (container.hasAttribute(TRANSCRIPT_WINDOW_ADJUSTING_ATTR)) return;
         const host = anchorHost(container);
         const kids = host.children;
         let el: Element | null = anchor.el && anchor.el.isConnected && anchor.el.parentElement === host ? anchor.el : null;
         // The anchor node may have been remounted with the same identity
-        // (a transcript re-projection): data-testid carries the message id,
-        // so match it before falling back to the stored child index.
+        // (a transcript re-projection): a message row's data-testid is unique,
+        // so match it before falling back to the stored child index. A shared
+        // testid (goal-stage-command, the coding timeline) is not an identity —
+        // the first match can sit a whole turn away from the row the reader
+        // was on.
         if (!el && anchor.testId) {
+            let found: Element | null = null;
             for (let i = 0; i < kids.length; i += 1) {
-                if (kids[i].getAttribute("data-testid") === anchor.testId) {
-                    el = kids[i];
+                if (kids[i].getAttribute("data-testid") !== anchor.testId) continue;
+                if (found) {
+                    found = null;
                     break;
                 }
+                found = kids[i];
             }
+            el = found;
         }
         if (!el && kids.length > 0) el = kids[Math.min(anchor.index, kids.length - 1)];
         if (!(el instanceof HTMLElement)) return;
@@ -237,7 +260,10 @@ export function useAssistantOutputScroll({ activityKey, conversationKey = "", ha
         // measured: after a remount the stored node is dead, and leaving it in
         // place forces captureAnchor into a full rescan on every commit.
         anchorRef.current = { el, relTop: anchor.relTop, index: childIndexOf(host, el), testId: el.getAttribute("data-testid") };
-        const drift = el.getBoundingClientRect().top - (container.getBoundingClientRect().top + anchor.relTop);
+        // relTop is CSS pixels. Keeping the visual offset would scroll the
+        // reader when --ui-scale changes, because the same row is a different
+        // number of visual pixels away from the scrollport.
+        const drift = anchorCssRelTop(el, container) - anchor.relTop;
         if (Math.abs(drift) <= 1) return;
         programmaticScrollRef.current = true;
         try {
@@ -297,7 +323,8 @@ export function useAssistantOutputScroll({ activityKey, conversationKey = "", ha
         if (!container || !id || outputHostHidden(container)) return false;
         const node = container.querySelector(`[data-testid="assistant-chat-user-${locatorCssEscape(id)}"]`);
         if (!(node instanceof HTMLElement)) return false;
-        const top = userTurnScrollTop(node.getBoundingClientRect().top, container.getBoundingClientRect().top, container.scrollTop);
+        const visualGap = node.getBoundingClientRect().top - container.getBoundingClientRect().top;
+        const top = userTurnScrollTop(visualGap * cssPerVisualPx(container), 0, container.scrollTop);
         programmaticScrollRef.current = true;
         try {
             container.scrollTop = top;
@@ -308,7 +335,7 @@ export function useAssistantOutputScroll({ activityKey, conversationKey = "", ha
         const anchorEl = transcriptAnchorElement(host, node);
         anchorRef.current = {
             el: anchorEl,
-            relTop: anchorEl.getBoundingClientRect().top - container.getBoundingClientRect().top,
+            relTop: anchorCssRelTop(anchorEl, container),
             index: childIndexOf(host, anchorEl),
             testId: anchorEl.getAttribute("data-testid"),
         };

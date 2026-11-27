@@ -43,8 +43,8 @@ const (
 type RunStatus string
 
 const (
-	RunStatusRunning     RunStatus = "running"
-	RunStatusSucceeded   RunStatus = "succeeded"
+	RunStatusRunning   RunStatus = "running"
+	RunStatusSucceeded RunStatus = "succeeded"
 	// RunStatusPaused is a terminal run that stopped to wait for the person:
 	// the task is not done, so it must not be read as succeeded. Statistics,
 	// cleanup, long-job follow-up and clients all separate it from succeeded.
@@ -991,6 +991,9 @@ type PostMessageInput struct {
 	RefineTask bool `json:"refine_task,omitempty"`
 	// OnToken, if set, receives streaming text deltas during execution (not serialized).
 	OnToken func(string) `json:"-"`
+	// OnReasoning receives private reasoning-lane deltas with the U+0001
+	// marker already removed. It is not part of the visible answer.
+	OnReasoning func(string) `json:"-"`
 	// OnToolCall and OnToolResult report tool progress for live chat status.
 	// They are host callbacks and are not serialized.
 	OnToolCall   func(name string)         `json:"-"`
@@ -1047,6 +1050,9 @@ type SendMessageInput struct {
 	MoAPreset string `json:"moa_preset,omitempty"`
 	// OnToken, if set, receives streaming text deltas during execution (not serialized).
 	OnToken func(string) `json:"-"`
+	// OnReasoning receives private reasoning-lane deltas with the U+0001
+	// marker already removed. It is not part of the visible answer.
+	OnReasoning func(string) `json:"-"`
 	// OnToolCall and OnToolResult report tool progress for live chat status.
 	OnToolCall   func(name string)         `json:"-"`
 	OnToolResult func(name, result string) `json:"-"`
@@ -1155,7 +1161,12 @@ type ExecuteRequest struct {
 	// OnToken, if set, is called with each streaming text delta during the agent
 	// loop. Used by maclawsrv to send progressive stream_chunk messages via SSE.
 	// This is per-request (not shared across concurrent requests).
-	OnToken func(delta string)
+	OnToken func(delta string) `json:"-"`
+
+	// OnReasoning receives private reasoning-lane text with the U+0001 marker
+	// already removed. Callers that show 思考过程 use it. It must not be folded
+	// into the visible answer or counted as the first answer token.
+	OnReasoning func(delta string) `json:"-"`
 
 	// OnToolCall is invoked before a tool runs (optional UI/SSE progress).
 	OnToolCall func(name string)

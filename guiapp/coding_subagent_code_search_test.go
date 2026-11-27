@@ -100,6 +100,22 @@ func TestCodeSearchInventoryIsLocalReadOnly(t *testing.T) {
 	}
 }
 
+func TestCodingOCRInventoryIsLocalReadOnlyCompatibility(t *testing.T) {
+	item, ok := codingStaticCompatibilityInventoryLookup(codingStaticCompatibilityHostLocal, "ocr_recognize")
+	if !ok {
+		t.Fatal("local inventory missing ocr_recognize")
+	}
+	if item.Capability != tool.CapabilityID("ocr.recognize.local") || item.Effect != tool.EffectReadOnly || item.BindingScope != "local-workspace" || item.ControlPlane {
+		t.Fatalf("inventory item = %#v", item)
+	}
+	if !codingStaticCompatibilityItemAllowedWithoutTransportCorrelation(item) {
+		t.Fatal("observational OCR must survive the uncorrelated compatibility surface")
+	}
+	if _, ok := codingStaticCompatibilityInventoryLookup(codingStaticCompatibilityHostRemote, "ocr_recognize"); ok {
+		t.Fatal("remote inventory must not own host-local OCR")
+	}
+}
+
 func TestLocalPromptsRouteCodeSearch(t *testing.T) {
 	zh := []string{
 		buildFullCodingEnvironmentPromptPreamble(),
@@ -133,12 +149,15 @@ func TestLocalPromptsRouteCodeSearch(t *testing.T) {
 		buildUncorrelatedLocalCodingCompatibilityPrompt(nil),
 	}
 	var preflight strings.Builder
-	appendCodingSubAgentPreflightChecklist(&preflight, true)
+	appendCodingSubAgentPreflightChecklist(&preflight, true, false)
 	en = append(en, preflight.String())
 	for i, prompt := range en {
 		if !strings.Contains(prompt, codeSearchRouteEN) {
 			t.Fatalf("local English prompt %d missing code_search route", i)
 		}
+	}
+	if compat := buildUncorrelatedLocalCodingCompatibilityPrompt(nil); !strings.Contains(compat, "ocr_recognize") || !strings.Contains(compat, "omit output_path") {
+		t.Fatal("uncorrelated compatibility prompt should document read-only OCR use")
 	}
 }
 

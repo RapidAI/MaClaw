@@ -275,6 +275,9 @@ func (s *Syncer) syncPeer(ctx context.Context, peer *PeerRuntimeState) {
 					backlog = resp.MaxSeq - nextSeq
 				}
 				s.svc.updatePeerSync(peer.NodeID, backlog)
+				if backlog == 0 {
+					s.svc.notePeerDispatchSynced(peer.NodeID)
+				}
 				return
 			}
 			_ = s.svc.cursors.Upsert(ctx, &store.HAPeerCursor{PeerNodeID: peer.NodeID, LastPulledSeq: nextSeq, LastPulledAt: &now, LastSuccessAt: &now, LastError: ""})
@@ -283,6 +286,9 @@ func (s *Syncer) syncPeer(ctx context.Context, peer *PeerRuntimeState) {
 				backlog = resp.MaxSeq - nextSeq
 			}
 			s.svc.updatePeerSync(peer.NodeID, backlog)
+			if backlog == 0 {
+				s.svc.notePeerDispatchSynced(peer.NodeID)
+			}
 			return
 		}
 		if err := s.svc.ApplyRemoteOps(ctx, resp.Ops); err != nil {
@@ -306,6 +312,9 @@ func (s *Syncer) syncPeer(ctx context.Context, peer *PeerRuntimeState) {
 		s.svc.updatePeerSync(peer.NodeID, backlog)
 		afterSeq = lastSeq
 		if !resp.HasMore {
+			if backlog == 0 {
+				s.svc.notePeerDispatchSynced(peer.NodeID)
+			}
 			return
 		}
 	}

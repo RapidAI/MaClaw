@@ -454,6 +454,53 @@ func TestShouldRetrySimpleLLMError_UnexpectedEOF(t *testing.T) {
 	}
 }
 
+func TestShouldRetrySimpleLLMError_ResponsesStreamFailure(t *testing.T) {
+	overloaded := errors.New("Responses API stream failed: provider overloaded (code=overloaded)")
+	if !shouldRetrySimpleLLMError(overloaded) {
+		t.Fatal("an in-stream overloaded error should wait on the outer backoff")
+	}
+	if !gatewayRejectedLLMFailure(nil, overloaded) {
+		t.Fatal("a coding host must retry an in-stream error that delivered no payload")
+	}
+	if gatewayRejectedLLMFailure(&llm.Response{Choices: []llm.Choice{{Message: llm.Message{Content: "partial answer"}}}}, overloaded) {
+		t.Fatal("visible assistant text must not be resent")
+	}
+	leftover := errors.New("Responses API stream failed: payload_len=115")
+	if !shouldRetrySimpleLLMError(leftover) || !gatewayRejectedLLMFailure(nil, leftover) {
+		t.Fatal("an unparsed in-stream error is still a temporary upstream failure")
+	}
+	blocked := errors.New("Responses API stream failed: blocked by content filter (code=content_filter)")
+	if shouldRetrySimpleLLMError(blocked) || gatewayRejectedLLMFailure(nil, blocked) {
+		t.Fatal("a content filter must not be retried")
+	}
+	quotedClose := errors.New("Responses API stream failed: blocked by content filter (code=content_filter) WebSocket unexpected close (code=1011)")
+	if shouldRetrySimpleLLMError(quotedClose) || gatewayRejectedLLMFailure(nil, quotedClose) {
+		t.Fatal("a permanent frame that quotes a close code must not be retried")
+	}
+}
+
+func TestShouldRetrySimpleLLMError_TransientWebSocketClose(t *testing.T) {
+	for _, code := range []string{"1011", "1012", "1013"} {
+		err := errors.New("WebSocket unexpected close (code=" + code + "): websocket: close " + code)
+		if !shouldRetrySimpleLLMError(err) || !gatewayRejectedLLMFailure(nil, err) {
+			t.Fatalf("close %s should reach the outer backoff", code)
+		}
+	}
+	policy := errors.New("WebSocket unexpected close (code=1008): websocket: close 1008 (policy violation)")
+	if shouldRetrySimpleLLMError(policy) || gatewayRejectedLLMFailure(nil, policy) {
+		t.Fatal("a policy close must not be retried")
+	}
+	abnormal := errors.New("WebSocket unexpected close (code=1006): websocket: close 1006")
+	if shouldRetrySimpleLLMError(abnormal) || gatewayRejectedLLMFailure(nil, abnormal) {
+		t.Fatal("an abnormal close is not a server retry")
+	}
+	answered := &llm.Response{Choices: []llm.Choice{{Message: llm.Message{Content: "partial answer"}}}}
+	server := errors.New("WebSocket unexpected close (code=1011): websocket: close 1011")
+	if gatewayRejectedLLMFailure(answered, server) {
+		t.Fatal("assistant text must not be resent after a server close")
+	}
+}
+
 // headerTimeoutError mirrors the transport's response-header timeout: a
 // net.Error whose Timeout reports true and that carries no model payload.
 type headerTimeoutError struct{}

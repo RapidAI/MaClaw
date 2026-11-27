@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useRef } from "react";
 import { describe, expect, it } from "vitest";
@@ -6,8 +9,10 @@ import {
     conversationRenderCanWindow,
     conversationRenderLoadStart,
     conversationRenderRowHeightPx,
+    conversationRenderTrimCeilingPx,
     conversationRenderTrimStart,
     conversationRenderTurnStart,
+    scrollTopDeltaCssPx,
 } from "./conversationRenderWindow";
 import { useConversationRenderWindow } from "./useConversationRenderWindow";
 
@@ -28,6 +33,39 @@ function alternating(count: number): Row[] {
         content: `body ${index}`,
     }));
 }
+
+describe("conversationRenderTrimCeilingPx", () => {
+    it("allows a long hot window and rejects the million-pixel balloon", () => {
+        expect(conversationRenderTrimCeilingPx(758, 40)).toBe(758 * 40 * 8);
+        expect(conversationRenderTrimCeilingPx(5000, 400)).toBe(1_000_000);
+    });
+});
+
+describe("scrollTopDeltaCssPx", () => {
+    function scaledBox(visualHeight: number, cssHeight: number): HTMLElement {
+        const el = document.createElement("div");
+        el.getBoundingClientRect = () => ({
+            top: 0, bottom: visualHeight, left: 0, right: 10, width: 10, height: visualHeight, x: 0, y: 0, toJSON() { return {}; },
+        });
+        Object.defineProperty(el, "clientHeight", { value: cssHeight });
+        return el;
+    }
+
+    it("converts a viewport wheel delta into local CSS pixels", () => {
+        const box = scaledBox(200, 100);
+        expect(scrollTopDeltaCssPx(40, box)).toBe(20);
+        expect(scrollTopDeltaCssPx(-40, box)).toBe(-20);
+        expect(scrollTopDeltaCssPx(40, scaledBox(100, 100))).toBe(40);
+        expect(scrollTopDeltaCssPx(Number.NaN, box)).toBe(0);
+    });
+});
+
+describe("conversation row paint", () => {
+    it("keeps mounted transcript rows painted instead of skipping them", () => {
+        const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../styles/partials/05-conversation-layout.css"), "utf8");
+        expect(css).toMatch(/\.mc-conversation-body > \[data-testid\^='assistant-chat-user-'\],\s*\.mc-conversation-body > \[data-testid\^='assistant-chat-ai-'\] \{\s*content-visibility: visible;\s*\}/);
+    });
+});
 
 describe("conversationRenderTurnStart", () => {
     it("walks back to the user row that opens the turn", () => {
@@ -210,5 +248,367 @@ describe("useConversationRenderWindow", () => {
         await waitFor(() => expect(screen.getByTestId("start").textContent).toBe("0"));
         expect(screen.getByTestId("row-m0")).toBeTruthy();
         expect(screen.getByTestId("spacer").style.height).toBe("0px");
+    });
+
+    it("does not treat a scaled gap inside the blank threshold as the spacer", async () => {
+        const messages = userRows(40);
+        const view = render(<Probe messages={messages} />);
+        const container = screen.getByTestId("scroll");
+        mockPaneLayout(container);
+        view.rerender(<Probe messages={[...messages]} />);
+        await waitFor(() => expect(screen.getByTestId("start").textContent).toBe("25"));
+
+        // Visual gap is 50px, but the scroller's box is twice its CSS height
+        // (ui-scale 2). 25 CSS px is inside the 40px blank threshold, so this
+        // is one batch. Once that batch mounts, the body top jumps above the
+        // viewport the way production does when new rows replace spacer pixels.
+        const body = container.querySelector(".mc-conversation-body") as HTMLElement;
+        body.getBoundingClientRect = () => {
+            const start = Number(container.querySelector('[data-testid="start"]')?.textContent || "0");
+            const top = start >= 25 ? 50 : -2000;
+            return { top, bottom: top + 4000, left: 0, right: 0, width: 0, height: 4000, x: 0, y: top, toJSON: () => ({}) };
+        };
+        container.getBoundingClientRect = () => ({ top: 0, bottom: 1000, left: 0, right: 0, width: 0, height: 1000, x: 0, y: 0, toJSON: () => ({}) });
+        view.rerender(<Probe messages={[...messages]} latched />);
+
+        await waitFor(() => expect(screen.getByTestId("start").textContent).toBe("10"));
+        // 15 rows came back (1500px). The spacer keeps the other 1000px.
+        // A blank mount would have zeroed it and jumped straight to 0.
+        expect(screen.getByTestId("spacer").style.height).toBe("1000px");
+    });
+
+    it("grows the spacer in the same commit that unmounts the prefix", async () => {
+        const messages = userRows(40);
+        const hole = { current: false };
+        function MeasuredProbe({ rows }: { rows: Row[] }) {
+            const containerRef = useRef<HTMLDivElement | null>(null);
+            const scrolledUpRef = useRef(false);
+            const window = useConversationRenderWindow({
+                containerRef,
+                messages: rows,
+                conversationKey: "probe",
+                scrolledUpRef,
+                enabled: true,
+            });
+            if (window.windowStart > 0 && window.spacerPx <= 0) hole.current = true;
+            return (
+                <div ref={containerRef} data-testid="scroll">
+                    <div ref={window.spacerRef} style={{ height: window.spacerPx }} data-testid="spacer" />
+                    <div className="mc-conversation-body">
+                        {rows.slice(window.windowStart).map((message) => (
+                            <div key={message.id} data-testid={`assistant-chat-user-${message.id}`}>{message.content}</div>
+                        ))}
+                    </div>
+                    <span data-testid="start">{window.windowStart}</span>
+                </div>
+            );
+        }
+        const view = render(<MeasuredProbe rows={messages} />);
+        const container = screen.getByTestId("scroll");
+        mockPaneLayout(container);
+        Object.defineProperty(container, "scrollHeight", {
+            configurable: true,
+            get: () => container.querySelectorAll('[data-testid^="assistant-chat-user-"]').length * 100
+                + (parseFloat((container.querySelector('[data-testid="spacer"]') as HTMLElement).style.height) || 0),
+        });
+        const body = container.querySelector(".mc-conversation-body") as HTMLElement;
+        messages.forEach((message, index) => {
+            const row = body.querySelector(`[data-testid="assistant-chat-user-${message.id}"]`) as HTMLElement;
+            row.getBoundingClientRect = () => ({
+                top: index * 100,
+                bottom: (index + 1) * 100,
+                left: 0,
+                right: 0,
+                width: 0,
+                height: 100,
+                x: 0,
+                y: index * 100,
+                toJSON: () => ({}),
+            });
+        });
+
+        view.rerender(<MeasuredProbe rows={[...messages]} />);
+
+        await waitFor(() => expect(screen.getByTestId("start").textContent).toBe("25"));
+        // 25 prefix rows at 100px, applied with the unmount rather than after a collapsed frame.
+        expect(screen.getByTestId("spacer").style.height).toBe("2500px");
+        expect(hole.current).toBe(false);
+        expect(screen.queryByTestId("assistant-chat-user-m0")).toBeNull();
+        expect(screen.getByTestId("assistant-chat-user-m39")).toBeTruthy();
+    });
+
+    it("stores the prefix in CSS pixels when the app scale doubles visual rects", async () => {
+        const messages = userRows(40);
+        const hole = { current: false };
+        function ScaledProbe({ rows }: { rows: Row[] }) {
+            const containerRef = useRef<HTMLDivElement | null>(null);
+            const scrolledUpRef = useRef(false);
+            const window = useConversationRenderWindow({
+                containerRef,
+                messages: rows,
+                conversationKey: "probe",
+                scrolledUpRef,
+                enabled: true,
+            });
+            if (window.windowStart > 0 && window.spacerPx <= 0) hole.current = true;
+            return (
+                <div ref={containerRef} data-testid="scroll">
+                    <div ref={window.spacerRef} style={{ height: window.spacerPx }} data-testid="spacer" />
+                    <div className="mc-conversation-body">
+                        {rows.slice(window.windowStart).map((message) => (
+                            <div key={message.id} data-testid={`assistant-chat-user-${message.id}`}>{message.content}</div>
+                        ))}
+                    </div>
+                    <span data-testid="start">{window.windowStart}</span>
+                </div>
+            );
+        }
+        const view = render(<ScaledProbe rows={messages} />);
+        const container = screen.getByTestId("scroll");
+        mockPaneLayout(container);
+        Object.defineProperty(container, "scrollHeight", {
+            configurable: true,
+            get: () => container.querySelectorAll('[data-testid^="assistant-chat-user-"]').length * 100
+                + (parseFloat((container.querySelector('[data-testid="spacer"]') as HTMLElement).style.height) || 0),
+        });
+        const body = container.querySelector(".mc-conversation-body") as HTMLElement;
+        messages.forEach((message, index) => {
+            const row = body.querySelector(`[data-testid="assistant-chat-user-${message.id}"]`) as HTMLElement;
+            Object.defineProperty(row, "offsetHeight", { configurable: true, value: 100 });
+            row.getBoundingClientRect = () => ({
+                top: index * 200,
+                bottom: index * 200 + 200,
+                left: 0,
+                right: 0,
+                width: 0,
+                height: 200,
+                x: 0,
+                y: index * 200,
+                toJSON: () => ({}),
+            });
+        });
+
+        view.rerender(<ScaledProbe rows={[...messages]} />);
+
+        await waitFor(() => expect(screen.getByTestId("start").textContent).toBe("25"));
+        // Visual span is 25 * 200. offsetHeight/rect is 100/200, so the spacer stays 2500 CSS px.
+        expect(screen.getByTestId("spacer").style.height).toBe("2500px");
+        expect(hole.current).toBe(false);
+    });
+
+    it("prefers offsetTop CSS pixels over a doubled visual rect", async () => {
+        const messages = userRows(40);
+        function OffsetProbe({ rows }: { rows: Row[] }) {
+            const containerRef = useRef<HTMLDivElement | null>(null);
+            const scrolledUpRef = useRef(false);
+            const window = useConversationRenderWindow({
+                containerRef,
+                messages: rows,
+                conversationKey: "probe",
+                scrolledUpRef,
+                enabled: true,
+            });
+            return (
+                <div ref={containerRef} data-testid="scroll">
+                    <div ref={window.spacerRef} style={{ height: window.spacerPx }} data-testid="spacer" />
+                    <div className="mc-conversation-body">
+                        {rows.slice(window.windowStart).map((message) => (
+                            <div key={message.id} data-testid={`assistant-chat-user-${message.id}`}>{message.content}</div>
+                        ))}
+                    </div>
+                    <span data-testid="start">{window.windowStart}</span>
+                </div>
+            );
+        }
+        const view = render(<OffsetProbe rows={messages} />);
+        const container = screen.getByTestId("scroll");
+        mockPaneLayout(container);
+        Object.defineProperty(container, "scrollHeight", {
+            configurable: true,
+            get: () => container.querySelectorAll('[data-testid^="assistant-chat-user-"]').length * 100
+                + (parseFloat((container.querySelector('[data-testid="spacer"]') as HTMLElement).style.height) || 0),
+        });
+        const body = container.querySelector(".mc-conversation-body") as HTMLElement;
+        messages.forEach((message, index) => {
+            const row = body.querySelector(`[data-testid="assistant-chat-user-${message.id}"]`) as HTMLElement;
+            Object.defineProperty(row, "offsetParent", { configurable: true, value: body });
+            Object.defineProperty(row, "offsetHeight", { configurable: true, value: 100 });
+            Object.defineProperty(row, "offsetTop", { configurable: true, value: index * 100 });
+            row.getBoundingClientRect = () => ({
+                top: index * 200,
+                bottom: index * 200 + 200,
+                left: 0,
+                right: 0,
+                width: 0,
+                height: 200,
+                x: 0,
+                y: index * 200,
+                toJSON: () => ({}),
+            });
+        });
+
+        view.rerender(<OffsetProbe rows={[...messages]} />);
+
+        await waitFor(() => expect(screen.getByTestId("start").textContent).toBe("25"));
+        // 25 rows at offsetTop 100px. The doubled rects must not win.
+        expect(screen.getByTestId("spacer").style.height).toBe("2500px");
+    });
+
+    it("adds the leading row margin the border box does not include", async () => {
+        const messages = userRows(40);
+        function MarginProbe({ rows }: { rows: Row[] }) {
+            const containerRef = useRef<HTMLDivElement | null>(null);
+            const scrolledUpRef = useRef(false);
+            const window = useConversationRenderWindow({
+                containerRef,
+                messages: rows,
+                conversationKey: "probe",
+                scrolledUpRef,
+                enabled: true,
+            });
+            return (
+                <div ref={containerRef} data-testid="scroll">
+                    <div ref={window.spacerRef} style={{ height: window.spacerPx }} data-testid="spacer" />
+                    <div className="mc-conversation-body">
+                        {rows.slice(window.windowStart).map((message, index) => (
+                            <div key={message.id} data-testid={`assistant-chat-user-${message.id}`} style={{ margin: "18px 0" }}>{message.content}{index}</div>
+                        ))}
+                    </div>
+                    <span data-testid="start">{window.windowStart}</span>
+                </div>
+            );
+        }
+        const view = render(<MarginProbe rows={messages} />);
+        const container = screen.getByTestId("scroll");
+        mockPaneLayout(container);
+        Object.defineProperty(container, "scrollHeight", {
+            configurable: true,
+            get: () => container.querySelectorAll('[data-testid^="assistant-chat-user-"]').length * 100
+                + (parseFloat((container.querySelector('[data-testid="spacer"]') as HTMLElement).style.height) || 0),
+        });
+        const body = container.querySelector(".mc-conversation-body") as HTMLElement;
+        messages.forEach((message, index) => {
+            const row = body.querySelector(`[data-testid="assistant-chat-user-${message.id}"]`) as HTMLElement;
+            // 100px border box, 18px collapsed gap. The first margin sits above the span.
+            row.getBoundingClientRect = () => ({
+                top: index * 118,
+                bottom: index * 118 + 100,
+                left: 0,
+                right: 0,
+                width: 0,
+                height: 100,
+                x: 0,
+                y: index * 118,
+                toJSON: () => ({}),
+            });
+        });
+
+        view.rerender(<MarginProbe rows={[...messages]} />);
+
+        await waitFor(() => expect(screen.getByTestId("start").textContent).toBe("25"));
+        // 25 boxes + 24 gaps + the leading 18px. The trailing 18px collapses with the kept row.
+        expect(screen.getByTestId("spacer").style.height).toBe("2950px");
+    });
+
+    it("measures a wrapped row from its direct child, not the nested testid", async () => {
+        const messages = userRows(40);
+        const hole = { current: false };
+        function WrappedProbe({ rows }: { rows: Row[] }) {
+            const containerRef = useRef<HTMLDivElement | null>(null);
+            const scrolledUpRef = useRef(false);
+            const window = useConversationRenderWindow({
+                containerRef,
+                messages: rows,
+                conversationKey: "probe",
+                scrolledUpRef,
+                enabled: true,
+            });
+            if (window.windowStart > 0 && window.spacerPx <= 0) hole.current = true;
+            return (
+                <div ref={containerRef} data-testid="scroll">
+                    <div ref={window.spacerRef} style={{ height: window.spacerPx }} data-testid="spacer" />
+                    <div className="mc-conversation-body">
+                        {rows.slice(window.windowStart).map((message) => (
+                            <div key={message.id} data-wrap={message.id}>
+                                <div data-testid={`assistant-chat-user-${message.id}`}>{message.content}</div>
+                            </div>
+                        ))}
+                    </div>
+                    <span data-testid="start">{window.windowStart}</span>
+                </div>
+            );
+        }
+        const view = render(<WrappedProbe rows={messages} />);
+        const container = screen.getByTestId("scroll");
+        mockPaneLayout(container);
+        Object.defineProperty(container, "scrollHeight", {
+            configurable: true,
+            get: () => container.querySelectorAll("[data-wrap]").length * 100
+                + (parseFloat((container.querySelector('[data-testid="spacer"]') as HTMLElement).style.height) || 0),
+        });
+        const body = container.querySelector(".mc-conversation-body") as HTMLElement;
+        messages.forEach((message, index) => {
+            const row = body.querySelector(`[data-wrap="${message.id}"]`) as HTMLElement;
+            row.getBoundingClientRect = () => ({
+                top: index * 100,
+                bottom: (index + 1) * 100,
+                left: 0,
+                right: 0,
+                width: 0,
+                height: 100,
+                x: 0,
+                y: index * 100,
+                toJSON: () => ({}),
+            });
+        });
+
+        view.rerender(<WrappedProbe rows={[...messages]} />);
+
+        await waitFor(() => expect(screen.getByTestId("start").textContent).toBe("25"));
+        expect(screen.getByTestId("spacer").style.height).toBe("2500px");
+        expect(hole.current).toBe(false);
+    });
+
+    it("puts the prefix back when the scroll-height delta is corrupt", async () => {
+        const messages = userRows(40);
+        const trimmed = { current: false };
+        function WatchingProbe({ rows }: { rows: Row[] }) {
+            const containerRef = useRef<HTMLDivElement | null>(null);
+            const scrolledUpRef = useRef(false);
+            const window = useConversationRenderWindow({
+                containerRef,
+                messages: rows,
+                conversationKey: "probe",
+                scrolledUpRef,
+                enabled: true,
+            });
+            if (window.windowStart > 0) trimmed.current = true;
+            return (
+                <div ref={containerRef} data-testid="scroll">
+                    <div ref={window.spacerRef} style={{ height: window.spacerPx }} data-testid="spacer" />
+                    <div className="mc-conversation-body">
+                        {rows.slice(window.windowStart).map((message) => (
+                            <div key={message.id} data-testid={`row-${message.id}`}>{message.content}</div>
+                        ))}
+                    </div>
+                    <span data-testid="start">{window.windowStart}</span>
+                </div>
+            );
+        }
+        const view = render(<WatchingProbe rows={messages} />);
+        const container = screen.getByTestId("scroll");
+        mockPaneLayout(container);
+        Object.defineProperty(container, "scrollHeight", {
+            configurable: true,
+            get: () => (container.querySelectorAll('[data-testid^="row-"]').length > 20 ? 2_000_000 : 1000),
+        });
+
+        view.rerender(<WatchingProbe rows={[...messages]} />);
+
+        await waitFor(() => expect(trimmed.current).toBe(true));
+        expect(screen.getByTestId("start").textContent).toBe("0");
+        expect(screen.getByTestId("spacer").style.height).toBe("0px");
+        expect(screen.getByTestId("row-m0")).toBeTruthy();
+        expect(screen.getByTestId("row-m39")).toBeTruthy();
     });
 });

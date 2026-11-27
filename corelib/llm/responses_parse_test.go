@@ -1,6 +1,9 @@
 package llm
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseNonStreamResponsesAPIBody_AcceptsProviderCompatibleTextParts(t *testing.T) {
 	response, err := ParseNonStreamResponsesAPIBody([]byte(`{
@@ -84,6 +87,45 @@ func TestParseNonStreamResponsesAPIBody_IncompleteIsLength(t *testing.T) {
 	}
 	if got := completed.Choices[0].FinishReason; got != "stop" {
 		t.Fatalf("completed finish reason = %q, want stop", got)
+	}
+}
+
+func TestParseNonStreamResponsesAPIBody_FailedStatusIsRetryableError(t *testing.T) {
+	body := []byte(`{
+        "id": "resp_failed",
+        "status": "failed",
+        "error": {"code": "server_error", "message": "The server had an error while processing your request."},
+        "output": [{"type": "reasoning", "summary": [{"type": "summary_text", "text": "still thinking"}]}]
+    }`)
+	response, err := ParseNonStreamResponsesAPIBody(body)
+	if err == nil || !IsTransientResponsesStreamError(err) || !strings.Contains(err.Error(), "code=server_error") {
+		t.Fatalf("err = %v, want a transient failed status", err)
+	}
+	if response == nil || ResponseHasCommittedAnswer(response) {
+		t.Fatalf("response = %#v, want an uncommitted partial", response)
+	}
+	if got := response.Choices[0].Message.Content; got != "" {
+		t.Fatalf("content = %q, want reasoning kept off the answer", got)
+	}
+
+	answered := []byte(`{
+        "status": "failed",
+        "error": {"code": "server_error", "message": "The server had an error while processing your request."},
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "partial answer"}]}]
+    }`)
+	response, err = ParseNonStreamResponsesAPIBody(answered)
+	if err == nil || !IsTransientResponsesStreamError(err) || !ResponseHasCommittedAnswer(response) {
+		t.Fatalf("answered failed status: err=%v response=%#v", err, response)
+	}
+
+	filtered := []byte(`{
+        "status": "failed",
+        "error": {"code": "content_filter", "message": "blocked by content filter"},
+        "output": [{"type": "reasoning", "summary": [{"type": "summary_text", "text": "thinking"}]}]
+    }`)
+	_, err = ParseNonStreamResponsesAPIBody(filtered)
+	if err == nil || IsTransientResponsesStreamError(err) || !IsResponsesStreamFailure(err) {
+		t.Fatalf("err = %v, want a permanent failed status", err)
 	}
 }
 

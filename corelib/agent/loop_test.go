@@ -3038,9 +3038,10 @@ type unexpectedEOFRetryCallbacks struct {
 func (*unexpectedEOFRetryCallbacks) ContainToolSurfaceAmbiguousDelivery() bool { return true }
 
 type unexpectedEOFTransport struct {
-	mu       sync.Mutex
-	arrivals []time.Time
-	partial  bool
+	mu        sync.Mutex
+	arrivals  []time.Time
+	partial   bool
+	reasoning bool
 }
 
 func (s *unexpectedEOFTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -3048,12 +3049,19 @@ func (s *unexpectedEOFTransport) RoundTrip(req *http.Request) (*http.Response, e
 	s.arrivals = append(s.arrivals, time.Now())
 	n := len(s.arrivals)
 	partial := s.partial
+	reasoning := s.reasoning
 	s.mu.Unlock()
 	header := make(http.Header)
 	if n == 1 {
 		header.Set("Content-Type", "text/event-stream")
 		var body io.Reader = unexpectedEOFReader{}
-		if partial {
+		switch {
+		case reasoning:
+			body = &prefixThenErrReader{
+				rest: []byte("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n"),
+				err:  io.ErrUnexpectedEOF,
+			}
+		case partial:
 			body = &prefixThenErrReader{
 				rest: []byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"),
 				err:  io.ErrUnexpectedEOF,
@@ -3262,6 +3270,208 @@ func (s *upstreamIdleTransport) RoundTrip(req *http.Request) (*http.Response, er
 	}, nil
 }
 
+func TestRunLoopResponsesStreamErrorRecovery(t *testing.T) {
+	const success = `{"output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}`
+	reasoningThenServerError := "event: response.reasoning_summary_text.delta\n" +
+		"data: {\"delta\":\"Thinking about the step.\"}\n\n" +
+		"data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"The server had an error while processing your request.\",\"param\":null,\"sequence_number\":1}\n\n"
+	partialThenOverloaded := "event: response.output_text.delta\n" +
+		"data: {\"delta\":\"partial answer\"}\n\n" +
+		"event: response.failed\n" +
+		"data: {\"response\":{\"id\":\"resp-failed\",\"error\":{\"message\":\"provider overloaded\",\"code\":\"overloaded\"}}}\n\n"
+	reasoningThenFilter := "event: response.reasoning_summary_text.delta\n" +
+		"data: {\"delta\":\"Thinking.\"}\n\n" +
+		"data: {\"type\":\"error\",\"code\":\"content_filter\",\"message\":\"blocked by content filter\"}\n\n"
+	reasoningThenUnparsed := "event: response.reasoning_summary_text.delta\n" +
+		"data: {\"delta\":\"Thinking.\"}\n\n" +
+		"event: error\n" +
+		"data: not-json\n\n"
+	openedCallThenServerError := "event: response.output_item.added\n" +
+		"data: {\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"bash\"}}\n\n" +
+		"data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"The server had an error while processing your request.\"}\n\n"
+	finishedCallThenServerError := "event: response.output_item.added\n" +
+		`data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"bash","arguments":"{\"command\":\"pwd\"}"}}` + "\n\n" +
+		"data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"The server had an error while processing your request.\"}\n\n"
+	reasoningThenCompletedFailed := "event: response.reasoning_summary_text.delta\n" +
+		"data: {\"delta\":\"Thinking about the step.\"}\n\n" +
+		"event: response.completed\n" +
+		"data: {\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"The server had an error while processing your request.\"}}}\n\n"
+	textThenCompletedFailed := "event: response.output_text.delta\n" +
+		"data: {\"delta\":\"partial answer\"}\n\n" +
+		"event: response.completed\n" +
+		"data: {\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"The server had an error while processing your request.\"}}}\n\n"
+
+	run := func(t *testing.T, firstFrame string, wantRetry bool) (*deliveryObserverCallbacks, *responsesStreamFailureTransport, LoopResult) {
+		t.Helper()
+		useLLMRetryBackoff(t, 200*time.Millisecond)
+		transport := &responsesStreamFailureTransport{first: firstFrame, success: success}
+		cb := &deliveryObserverCallbacks{
+			containment: true,
+			mockCallbacks: mockCallbacks{
+				config:    corelib.MaclawLLMConfig{URL: "https://api.x.ai/v1", Model: "grok-4.7", WireAPI: "responses"},
+				maxIter:   1,
+				sysPrompt: "sys",
+			},
+		}
+		result := RunLoop(cb, "test", nil, &http.Client{Transport: transport})
+		transport.mu.Lock()
+		n := len(transport.arrivals)
+		gap := time.Duration(0)
+		if n >= 2 {
+			gap = transport.arrivals[1].Sub(transport.arrivals[0])
+		}
+		transport.mu.Unlock()
+		if wantRetry {
+			if result.Error != "" || result.Text != "done" {
+				t.Fatalf("result=%+v, want the temporary stream failure to recover", result)
+			}
+			if n != 2 {
+				t.Fatalf("requests=%d, want the failed stream plus one outer retry", n)
+			}
+			if gap < 150*time.Millisecond {
+				t.Fatalf("retry gap %s, want the outer backoff rather than an immediate fallback", gap)
+			}
+			if len(cb.finishes) != 2 || cb.finishes[0] != ToolSurfaceTransportRejected || cb.finishes[1] != ToolSurfaceResponseConsumed {
+				t.Fatalf("finishes=%#v, want transport rejection then a consumed retry", cb.finishes)
+			}
+		} else if n != 1 {
+			t.Fatalf("requests=%d, want no resend", n)
+		}
+		return cb, transport, result
+	}
+
+	t.Run("reasoning only server_error", func(t *testing.T) {
+		cb, _, _ := run(t, reasoningThenServerError, true)
+		if strings.Contains(strings.Join(cb.tokens, ""), "done") {
+			t.Fatalf("tokens=%q, the retry answer must not be appended to the failed stream", cb.tokens)
+		}
+	})
+	t.Run("unparsed error event", func(t *testing.T) {
+		run(t, reasoningThenUnparsed, true)
+	})
+	t.Run("opened tool call", func(t *testing.T) {
+		run(t, openedCallThenServerError, true)
+	})
+	t.Run("finished tool call", func(t *testing.T) {
+		cb, _, result := run(t, finishedCallThenServerError, false)
+		if result.Error == "" || !strings.Contains(result.Error, "code=server_error") {
+			t.Fatalf("result=%+v, want the stream error kept", result)
+		}
+		if len(cb.finishes) != 1 || cb.finishes[0] != ToolSurfaceAmbiguousDelivery {
+			t.Fatalf("finishes=%#v, want the finished call kept as ambiguous delivery", cb.finishes)
+		}
+	})
+	t.Run("partial answer", func(t *testing.T) {
+		cb, _, result := run(t, partialThenOverloaded, false)
+		if result.Error == "" || !strings.Contains(result.Error, "provider overloaded") {
+			t.Fatalf("result=%+v, want the overloaded error kept", result)
+		}
+		if strings.Count(strings.Join(cb.tokens, ""), "partial answer") != 1 {
+			t.Fatalf("tokens=%q, want the partial answer once", cb.tokens)
+		}
+		if len(cb.finishes) != 1 || cb.finishes[0] != ToolSurfaceAmbiguousDelivery {
+			t.Fatalf("finishes=%#v, want the visible partial kept as ambiguous delivery", cb.finishes)
+		}
+	})
+	t.Run("content filter", func(t *testing.T) {
+		cb, _, result := run(t, reasoningThenFilter, false)
+		if result.Error == "" || !strings.Contains(result.Error, "blocked by content filter") {
+			t.Fatalf("result=%+v, want the permanent error", result)
+		}
+		if len(cb.finishes) != 1 || cb.finishes[0] == ToolSurfaceTransportRejected {
+			t.Fatalf("finishes=%#v, a content filter must not look like a clean rejection", cb.finishes)
+		}
+	})
+	t.Run("completed status failed", func(t *testing.T) {
+		run(t, reasoningThenCompletedFailed, true)
+	})
+	t.Run("completed status failed after answer", func(t *testing.T) {
+		cb, _, result := run(t, textThenCompletedFailed, false)
+		if result.Error == "" || !strings.Contains(result.Error, "code=server_error") {
+			t.Fatalf("result=%+v, want the failed status kept", result)
+		}
+		if len(cb.finishes) != 1 || cb.finishes[0] != ToolSurfaceAmbiguousDelivery {
+			t.Fatalf("finishes=%#v, want the visible answer kept as ambiguous delivery", cb.finishes)
+		}
+	})
+}
+
+func TestRunLoopResponsesFailedJSONRetriesAgain(t *testing.T) {
+	useLLMRetryBackoff(t, 200*time.Millisecond)
+	const failed = `{"status":"failed","error":{"code":"server_error","message":"The server had an error while processing your request."},"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"still thinking"}]}]}`
+	const success = `{"output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}`
+	first := "event: response.reasoning_summary_text.delta\n" +
+		"data: {\"delta\":\"Thinking about the step.\"}\n\n" +
+		"data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"The server had an error while processing your request.\"}\n\n"
+	transport := &responsesStreamFailureTransport{first: first, second: failed, success: success}
+	cb := &deliveryObserverCallbacks{
+		containment: true,
+		mockCallbacks: mockCallbacks{
+			config:    corelib.MaclawLLMConfig{URL: "https://api.x.ai/v1", Model: "grok-4.7", WireAPI: "responses"},
+			maxIter:   1,
+			sysPrompt: "sys",
+		},
+	}
+	result := RunLoop(cb, "test", nil, &http.Client{Transport: transport})
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v, want the failed JSON retry to recover", result)
+	}
+	transport.mu.Lock()
+	n := len(transport.arrivals)
+	var gap1, gap2 time.Duration
+	if n >= 3 {
+		gap1 = transport.arrivals[1].Sub(transport.arrivals[0])
+		gap2 = transport.arrivals[2].Sub(transport.arrivals[1])
+	}
+	transport.mu.Unlock()
+	if n != 3 {
+		t.Fatalf("requests=%d, want the stream, the failed JSON, then one more retry", n)
+	}
+	if gap1 < 150*time.Millisecond || gap2 < 150*time.Millisecond {
+		t.Fatalf("gaps %s then %s, want the outer backoff both times", gap1, gap2)
+	}
+	if len(cb.finishes) != 3 || cb.finishes[0] != ToolSurfaceTransportRejected || cb.finishes[1] != ToolSurfaceTransportRejected || cb.finishes[2] != ToolSurfaceResponseConsumed {
+		t.Fatalf("finishes=%#v, want two transport rejections then a consumed retry", cb.finishes)
+	}
+}
+
+// responsesStreamFailureTransport answers the first Responses stream with one
+// SSE body, then a normal non-stream Responses document.
+type responsesStreamFailureTransport struct {
+	mu       sync.Mutex
+	arrivals []time.Time
+	first    string
+	second   string
+	success  string
+}
+
+func (s *responsesStreamFailureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	s.mu.Lock()
+	s.arrivals = append(s.arrivals, time.Now())
+	n := len(s.arrivals)
+	first, second, success := s.first, s.second, s.success
+	s.mu.Unlock()
+	header := make(http.Header)
+	body := success
+	contentType := "application/json"
+	if n == 1 {
+		body = first
+		contentType = "text/event-stream"
+	} else if n == 2 && second != "" {
+		body = second
+	}
+	header.Set("Content-Type", contentType)
+	return &http.Response{
+		StatusCode:    http.StatusOK,
+		Status:        "200 OK",
+		Proto:         "HTTP/1.1",
+		Header:        header,
+		Body:          io.NopCloser(strings.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Request:       req,
+	}, nil
+}
+
 func TestRunLoopUnexpectedEOFUsesOuterRetry(t *testing.T) {
 	useLLMRetryBackoff(t, 200*time.Millisecond)
 	transport := &unexpectedEOFTransport{}
@@ -3302,6 +3512,29 @@ func TestRunLoopPartialUnexpectedEOFDoesNotRetry(t *testing.T) {
 	transport.mu.Unlock()
 	if n != 1 {
 		t.Fatalf("requests=%d, want no retry after visible stream output", n)
+	}
+}
+
+func TestRunLoopReasoningOnlyUnexpectedEOFUsesOuterRetry(t *testing.T) {
+	useLLMRetryBackoff(t, 200*time.Millisecond)
+	transport := &unexpectedEOFTransport{reasoning: true}
+	cb := &unexpectedEOFRetryCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://api.example.test/v1", Model: "qax-codegen/Auto"},
+		maxIter:   1,
+		sysPrompt: "sys",
+	}}
+	result := RunLoop(cb, "test", nil, &http.Client{Transport: transport})
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v, want the thinking-only cut to recover", result)
+	}
+	transport.mu.Lock()
+	got := append([]time.Time(nil), transport.arrivals...)
+	transport.mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("requests=%d, want the dropped stream plus one outer retry", len(got))
+	}
+	if gap := got[1].Sub(got[0]); gap < 150*time.Millisecond {
+		t.Fatalf("retry gap %s, want the outer backoff rather than an immediate fallback", gap)
 	}
 }
 

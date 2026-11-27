@@ -10,8 +10,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -333,6 +335,14 @@ func DoResponsesAPIRequestStreamWithOptions(
 			}
 
 		case "response.completed", "response.incomplete":
+			// A gateway can label the final frame response.completed while
+			// response.status is failed. That is the same denial as
+			// response.failed. Do not fold its snapshot in: text that exists
+			// only inside the failure object has not been shown, and copying
+			// it would block the retry.
+			if strings.TrimSpace(eventType) == "response.completed" && responsesStatusFailed(payload) {
+				return responsesStreamPartialResponse(responseID, textBuf.String(), reasoningBuf.String(), items, usage, finishReason), responsesStreamEventError(payload)
+			}
 			// Incomplete is the same final snapshot as completed, cut by the
 			// output cap. Read its text before marking length; a body that
 			// never sent deltas still has the partial program here.
@@ -904,32 +914,241 @@ func firstResponsesStreamText(primary, fallback string) string {
 	return fallback
 }
 
+// responsesStreamFailedPrefix is the stable text the retry classifier
+// matches. Keep it on every in-stream failure, including the leftover that
+// still has no readable message.
+const responsesStreamFailedPrefix = "Responses API stream failed:"
+
 func responsesStreamEventError(payload string) error {
+	fields := extractLLMErrorFields([]byte(payload))
+	mergeResponsesStreamFailureFields(&fields, payload)
+	message := strings.TrimSpace(fields.Message)
+	code := strings.TrimSpace(fields.Code)
+	// A nested class such as server_error is the code when the envelope
+	// itself only said "error" or "response.failed".
+	if code == "" && !responsesStreamEnvelopeType(fields.Type) {
+		code = strings.TrimSpace(fields.Type)
+	}
+	if message == "" {
+		message = code
+	}
+	if message == "" {
+		return fmt.Errorf("%s payload_len=%d", responsesStreamFailedPrefix, len(payload))
+	}
+	if code != "" && code != message {
+		return fmt.Errorf("%s %s (code=%s)", responsesStreamFailedPrefix, message, code)
+	}
+	return fmt.Errorf("%s %s", responsesStreamFailedPrefix, message)
+}
+
+// mergeResponsesStreamFailureFields fills blanks from response.error.
+// response.failed nests the provider error there. The top-level extractor
+// already reads a top-level message, a numeric code, and error-as-string.
+func mergeResponsesStreamFailureFields(fields *llmErrorFields, payload string) {
+	if fields == nil {
+		return
+	}
 	var event struct {
-		Error struct {
-			Message string `json:"message"`
-			Code    string `json:"code"`
-		} `json:"error"`
 		Response struct {
-			Error struct {
-				Message string `json:"message"`
-				Code    string `json:"code"`
-			} `json:"error"`
+			Error json.RawMessage `json:"error"`
 		} `json:"response"`
 	}
-	if json.Unmarshal([]byte(payload), &event) == nil {
-		message, code := event.Error.Message, event.Error.Code
-		if message == "" {
-			message, code = event.Response.Error.Message, event.Response.Error.Code
+	if json.Unmarshal([]byte(payload), &event) != nil {
+		return
+	}
+	raw := bytes.TrimSpace(event.Response.Error)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return
+	}
+	if raw[0] == '"' {
+		var text string
+		if json.Unmarshal(raw, &text) == nil && fields.Message == "" {
+			fields.Message = strings.TrimSpace(text)
 		}
-		if message != "" {
-			if code != "" {
-				return fmt.Errorf("Responses API stream failed: %s (code=%s)", message, code)
+		return
+	}
+	nested := extractLLMErrorFields(raw)
+	if fields.Message == "" {
+		fields.Message = nested.Message
+	}
+	if fields.Code == "" {
+		fields.Code = nested.Code
+	}
+	if nested.Type != "" && responsesStreamEnvelopeType(fields.Type) {
+		fields.Type = nested.Type
+	}
+}
+
+func responsesStreamEnvelopeType(typ string) bool {
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "", "error", "response.failed":
+		return true
+	default:
+		return false
+	}
+}
+
+// responsesStatusFailed reports a Responses object whose status is failed.
+// The status sits on the object itself for a JSON body, and under response
+// for an SSE or WebSocket frame.
+func responsesStatusFailed(payload string) bool {
+	var event struct {
+		Status   string `json:"status"`
+		Response struct {
+			Status string `json:"status"`
+		} `json:"response"`
+	}
+	if json.Unmarshal([]byte(payload), &event) != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(event.Status), "failed") ||
+		strings.EqualFold(strings.TrimSpace(event.Response.Status), "failed")
+}
+
+// ResponsesStatusFailed reports a Responses object whose status is failed.
+func ResponsesStatusFailed(payload string) bool {
+	return responsesStatusFailed(payload)
+}
+
+// responsesStreamPermanentMarkers are in-stream denials that another send of
+// the same prompt will not fix. Comparison is against the lowercased error
+// text, so the Chinese phrases stay as written.
+var responsesStreamPermanentMarkers = []string{
+	"content_filter",
+	"content_policy",
+	"content policy",
+	"content-policy",
+	"blocked by content",
+	"content management",
+	"sensitive content",
+	"内容审核",
+	"内容过滤",
+	"敏感内容",
+	"invalid_request",
+	"context_length",
+	"context window",
+	"maximum context",
+	"prompt is too long",
+	"insufficient_quota",
+	"billing",
+	"credits",
+	"payment",
+	"authentication",
+	"invalid_api_key",
+	"unauthorized",
+	"permission_error",
+	"model_not_found",
+	"model_not_available",
+	"code=14018",
+}
+
+// ResponsesStreamEventError formats an official Responses error or
+// response.failed frame. Desktop HTTP and WebSocket parsers share it with
+// the coding stream so one classifier covers every wire.
+func ResponsesStreamEventError(payload string) error {
+	return responsesStreamEventError(payload)
+}
+
+// IsResponsesStreamFailure reports an error produced from that frame,
+// including a permanent denial. A classifier that also scans for
+// "overloaded" or "429" must stop here instead of falling through.
+func IsResponsesStreamFailure(err error) bool {
+	return err != nil && strings.Contains(err.Error(), responsesStreamFailedPrefix)
+}
+
+// ResponseHasCommittedAnswer reports assistant text or a tool call whose
+// arguments already arrived. An opened call with an empty argument string
+// is not committed: the provider stopped before that call closed, and a
+// retry does not execute it twice. "{}" is a finished call with no fields.
+func ResponseHasCommittedAnswer(resp *Response) bool {
+	if resp == nil {
+		return false
+	}
+	for _, choice := range resp.Choices {
+		if strings.TrimSpace(choice.Message.Content) != "" {
+			return true
+		}
+		for _, call := range choice.Message.ToolCalls {
+			if strings.TrimSpace(call.Function.Arguments) != "" {
+				return true
 			}
-			return fmt.Errorf("Responses API stream failed: %s", message)
 		}
 	}
-	return fmt.Errorf("Responses API stream failed: payload_len=%d", len(payload))
+	return false
+}
+
+// IsTransientResponsesStreamError reports an in-stream Responses failure the
+// same task can wait out. Content policy, context length, authentication,
+// billing, and quota stay terminal. Anything else with this prefix, including
+// the payload_len leftover, is transient: a shape the parser still misses
+// must not stop the step.
+func IsTransientResponsesStreamError(err error) bool {
+	if !IsResponsesStreamFailure(err) {
+		return false
+	}
+	text := err.Error()
+	if IsQuotaExhaustedText(text) {
+		return false
+	}
+	lower := strings.ToLower(text)
+	for _, marker := range responsesStreamPermanentMarkers {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+// UncommittedStreamCutCanRetry reports a failure the same task can resend
+// when the partial has no assistant text and no finished tool call. Reasoning
+// and an opened call with an empty argument string are display. A copied
+// "connection reset" string is not this cut. A Responses frame is classified
+// only by its own predicate, so a permanent denial cannot become a resend by
+// quoting a close code.
+func UncommittedStreamCutCanRetry(err error) bool {
+	if err == nil {
+		return false
+	}
+	if IsResponsesStreamFailure(err) {
+		return IsTransientResponsesStreamError(err)
+	}
+	if IsUnexpectedStreamEOF(err) || IsStreamIdleStall(err) || IsTransientWebSocketClose(err) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// IsTransientWebSocketClose reports a provider close that asks for the same
+// request again. 1011 is an internal server error, 1012 a service restart,
+// and 1013 try-again-later. The text is the one responsesWSReadFailure
+// writes: "WebSocket unexpected close (code=N)". A policy close (1008), an
+// abnormal closure (1006), and a copied "connection reset" string are not
+// this close.
+func IsTransientWebSocketClose(err error) bool {
+	if err == nil {
+		return false
+	}
+	return transientWebSocketCloseCode(err.Error())
+}
+
+func transientWebSocketCloseCode(s string) bool {
+	const marker = "WebSocket unexpected close (code="
+	i := strings.Index(s, marker)
+	if i < 0 {
+		return false
+	}
+	rest := s[i+len(marker):]
+	end := strings.IndexByte(rest, ')')
+	if end <= 0 {
+		return false
+	}
+	switch rest[:end] {
+	case "1011", "1012", "1013":
+		return true
+	default:
+		return false
+	}
 }
 
 // responsesStreamEventTooLarge is a synthetic event type. The splitter emits

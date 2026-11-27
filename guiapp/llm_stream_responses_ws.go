@@ -469,31 +469,31 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			if streamCtx.Err() != nil {
 				goto postLoop
 			}
-			// Handle WebSocket close errors
-			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-				break
-			}
-			if websocket.IsUnexpectedCloseError(err) {
-				closeCode := -1
-				if ce, ok := err.(*websocket.CloseError); ok {
-					closeCode = ce.Code
-				}
-				if contentBuf.Len() > 0 || reasoningBuf.Len() > 0 || len(itemAccums) > 0 {
-					break // return partial content
-				}
-				return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("WebSocket unexpected close (code=%d): %w", closeCode, err)
-			}
-			// Generic read error
-			if contentBuf.Len() > 0 || reasoningBuf.Len() > 0 || len(itemAccums) > 0 {
-				break // return partial content
-			}
+			// The idle watchdog closes this socket itself. That close frame is a
+			// normal closure, and treating it as a finished answer would paste
+			// the thinking trace into the reply.
 			if wsTimedOut.Load() {
 				if metrics != nil {
 					metrics.IdleTimeoutCount++
 				}
-				return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("WebSocket idle timeout (%v): no data received from %s", guiSSEIdleTimeout, wsURL)
+				streamErr = fmt.Errorf("WebSocket idle timeout (%v): no data received from %s", guiSSEIdleTimeout, wsURL)
+				if contentBuf.Len() == 0 && reasoningBuf.Len() == 0 && len(itemAccums) == 0 {
+					return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, streamErr
+				}
+				goto postLoop
 			}
-			return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("WebSocket read error: %w", err)
+			// A normal close is the provider ending the stream. An unexpected
+			// close or a read error is a dropped socket: keep the partial and
+			// the error. Breaking here used to return err=nil, and the loop
+			// then copied reasoning into the answer.
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				break
+			}
+			streamErr = responsesWSReadFailure(err)
+			if contentBuf.Len() == 0 && reasoningBuf.Len() == 0 && len(itemAccums) == 0 {
+				return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, streamErr
+			}
+			goto postLoop
 		}
 
 		// Reset idle timer on every received frame
@@ -689,6 +689,12 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			}
 
 		case responsesEventCompleted:
+			// Same denial as the HTTP stream: a completed frame whose status
+			// is failed must not close the socket as a successful answer.
+			if llm.ResponsesStatusFailed(string(msgData)) {
+				streamErr = llm.ResponsesStreamEventError(string(msgData))
+				goto postLoop
+			}
 			if eventUsage := llm.ExtractResponsesAPIUsageFromEventPayload(msgData); eventUsage != nil {
 				usage = eventUsage
 			}
@@ -702,49 +708,16 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			}
 			goto postLoop
 
-		case responsesEventFailed:
-			var failed struct {
-				Response struct {
-					Error struct {
-						Message string `json:"message"`
-						Code    string `json:"code"`
-					} `json:"error"`
-				} `json:"response"`
-			}
-			if json.Unmarshal(msgData, &failed) != nil {
-				continue
-			}
-			errMsg := failed.Response.Error.Message
-			if errMsg == "" {
-				errMsg = "unknown error"
-			}
-			// Keep the partial response so already-accumulated
-			// content/reasoning is not lost with the error.
-			streamErr = fmt.Errorf("Responses API error: %s (code=%s)", errMsg, failed.Response.Error.Code)
+		case responsesEventFailed, responsesEventError:
+			// Same frame the HTTP stream formats. A top-level message used to
+			// become "unknown error", and a numeric code failed the unmarshal
+			// and was ignored. Coding on this socket retries that shared text.
+			// Already-accumulated content and reasoning stay on the response.
+			streamErr = llm.ResponsesStreamEventError(string(msgData))
 			goto postLoop
 
 		case responsesEventIncomplete:
 			finishReason = "length"
-			goto postLoop
-
-		case responsesEventError:
-			var errFrame struct {
-				Status int `json:"status"`
-				Error  struct {
-					Code    string `json:"code"`
-					Message string `json:"message"`
-				} `json:"error"`
-			}
-			if json.Unmarshal(msgData, &errFrame) != nil {
-				continue
-			}
-			errMsg := errFrame.Error.Message
-			if errMsg == "" {
-				errMsg = "unknown error"
-			}
-			// Keep the partial response so already-accumulated
-			// content/reasoning is not lost with the error.
-			streamErr = fmt.Errorf("Responses API WebSocket error: %s (code=%s, status=%d)", errMsg, errFrame.Error.Code, errFrame.Status)
 			goto postLoop
 		}
 	}
@@ -860,6 +833,20 @@ postLoop:
 		streamErr = nil
 	}
 	return agent.VerifiedToolSurfaceDispatch{Response: out, Receipt: receipt}, streamErr
+}
+
+// responsesWSReadFailure formats a dropped socket. A normal close is handled
+// by the caller and is not passed here. The close code stays in the text so
+// a policy close and a transport drop remain distinguishable.
+func responsesWSReadFailure(err error) error {
+	if websocket.IsUnexpectedCloseError(err) {
+		closeCode := -1
+		if ce, ok := err.(*websocket.CloseError); ok {
+			closeCode = ce.Code
+		}
+		return fmt.Errorf("WebSocket unexpected close (code=%d): %w", closeCode, err)
+	}
+	return fmt.Errorf("WebSocket read error: %w", err)
 }
 
 // responsesWSResponseID extracts the provider response ID from a Responses

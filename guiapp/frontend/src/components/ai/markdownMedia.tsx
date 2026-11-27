@@ -1,5 +1,6 @@
 import React, { useCallback, useContext, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
+import { useChatMediaMenu } from "./chatMediaMenu";
 
 /**
  * Chat images and links are painted by the markdown renderer.
@@ -306,6 +307,10 @@ export function ImageZoomOverlay({
         // (伴读 fullscreen exit, an open menu) sees the same keypress.
         const onKey = (event: KeyboardEvent) => {
             if (event.key !== "Escape") return;
+            // The picture menu is also a window capture listener, and it was
+            // registered later, so it cannot outrun this one. While it is open,
+            // Escape closes only the menu and this preview stays.
+            if (document.querySelector("[data-chat-media-menu]")) return;
             event.preventDefault();
             event.stopPropagation();
             onClose();
@@ -371,7 +376,13 @@ export function MarkdownImagePreview({
     const [zoom, setZoom] = useState(false);
     const [failed, setFailed] = useState(false);
     const closeZoom = useCallback(() => setZoom(false), []);
+    const { onContextMenu, menu } = useChatMediaMenu();
     const safe = document ? documentMarkdownImageSrc(src) : safeMarkdownImageSrc(src);
+    const openMediaMenu = (event: MouseEvent) => onContextMenu(event, {
+        kind: "image",
+        source: safe,
+        fileName: alt || "image.png",
+    });
     if (!safe) return alt ? <span>{alt}</span> : null;
     const open = (event: MouseEvent) => {
         event.preventDefault();
@@ -392,6 +403,7 @@ export function MarkdownImagePreview({
                 type="button"
                 data-testid="markdown-image-preview"
                 onClick={open}
+                onContextMenu={openMediaMenu}
                 title={alt || safe}
                 aria-label={alt || safe}
                 style={{
@@ -439,10 +451,12 @@ export function MarkdownImagePreview({
                         alt={alt}
                         referrerPolicy="no-referrer"
                         draggable={false}
+                        onContextMenu={openMediaMenu}
                         style={{ display: "block", maxWidth: "90vw", maxHeight: "86vh", background: "#ffffff", borderRadius: 6 }}
                     />
                 </ImageZoomOverlay>
             ) : null}
+            {menu}
         </>
     );
 }

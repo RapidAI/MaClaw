@@ -57,10 +57,9 @@ export function sanitizeVisibleVEText(value: unknown): string {
 }
 
 /**
- * VE chat does not render a reasoning panel. The shared agent loop prefixes
- * private reasoning deltas with \x01, which Chromium displays as a square when
- * it leaks through an older backend or a remote Hub. Drop those deltas and any
- * remaining non-whitespace control characters as a client-side safety net.
+ * Answer lane for VE chat. The shared agent loop prefixes private reasoning
+ * deltas with \x01. Those belong on ve:reasoning, not in the reply. Drop them
+ * here so an older backend cannot paint a hollow square in the answer.
  */
 export function visibleVEStreamContent(value: unknown): string {
     const content = typeof value === "string" ? value : "";

@@ -143,6 +143,12 @@ type DynamicCapabilityNeedResolution struct {
 	Needs       []coretool.CapabilityNeed
 	Facts       []coretool.RoutingFact
 	Constraints []coretool.RoutingConstraint
+	// Classification is the reading that produced Needs. Only the primary
+	// label mints the first grant wave, so a companion such as
+	// document_generate beside live_data stays here instead of in Needs.
+	// Hosts that stage that successor read it from this field. The value is
+	// not persisted.
+	Classification intent.ClassificationResult `json:"-"`
 }
 
 // DynamicInventoryProvider optionally projects lifecycle coverage alongside a
@@ -476,6 +482,7 @@ func finishIntentNeedResolution(ctx context.Context, registry *coretool.Capabili
 	if bundles {
 		resolution.Needs = ExpandArchetypeBundleNeeds(registry, rules, classification, resolution.Managed, resolution.Needs, ArchetypeBundleKeyFor(ctx, classification))
 	}
+	resolution.Classification = classification
 	return resolution
 }
 

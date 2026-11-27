@@ -1142,7 +1142,7 @@ func HoldContentToolCallStream(s string, force bool) (visible, hold string, supp
 }
 
 func holdContentToolCallStreamMatching(s string, force bool, allowCompactName func(string) bool) (visible, hold string, suppress bool) {
-	if idx := firstContentToolCallMarkerIndexMatching(s, allowCompactName); idx >= 0 {
+	if idx := firstContentToolCallMarkerIndexMatching(s, allowCompactName); idx >= 0 && !markerIsOpenBareToolName(s, idx) {
 		if idx > 0 {
 			visible = s[:idx]
 		}
@@ -1168,6 +1168,17 @@ func holdContentToolCallStreamMatching(s string, force bool, allowCompactName fu
 		partial = n
 	}
 	if n := parenToolCallIncompleteLineHoldLen(s); n > partial {
+		partial = n
+	}
+	// "web_fetch (" can still become a call or a sentence. Hold it until a
+	// JSON key arrives or the next character shows it is prose.
+	if n := compactParenPendingHoldLenMatching(s, allowCompactName); n > partial {
+		partial = n
+	}
+	// OpenCode spells the same tools "webfetch" / "websearch". Hold that bare
+	// name so the next chunk can complete the call. A finished line that never
+	// becomes a call is shown on flush.
+	if n := compactOfficialNamePendingHoldLenMatching(s, allowCompactName); n > partial {
 		partial = n
 	}
 	if partial <= 0 {
@@ -1202,6 +1213,9 @@ func dropPartialContentToolCallOnFlushMatching(suffix string, allowCompactName f
 		if asciiHasPrefix(trimmed, marker) {
 			return true
 		}
+	}
+	if _, _, _, kind := classifyParenCompact(suffix, allowCompactName); kind == parenCompactCutOff || kind == parenCompactHy3Open {
+		return true
 	}
 	return couldBecomeLeakedLineOrientedToolLineMatching(suffix, allowCompactName)
 }
@@ -1830,47 +1844,694 @@ func closedParenMarkdownSpan(s string) bool {
 // `<tool-name> <json-object>`. Hy3 can lose its <tool_call:suffix> wrapper
 // while the model still writes the separator payload as text; the observed
 // remainder is an orphaned close tag plus ordinary <arg_key>/<arg_value>
-// pairs. A complete JSON object plus recognizable Hy3 residue is therefore
-// executable intent, not prose for the user.
+// pairs, sometimes on the following line. hy4-flash-free also writes the
+// object in parentheses (`web_fetch ("url":"...")`). A closed parenthesis
+// that is not a JSON object stays prose. A cut-off value (`"key":`,
+// `"key":"https://`, `{}`) does not. A colon followed by a non-value
+// (`"note": not`, `{"note":{see`), and an unclosed `{"key` with no colon,
+// stay prose.
 func parseCompactJSONContentToolCallsMatching(content string, allowName func(string) bool) ([]ToolCall, bool) {
 	if allowName == nil {
 		allowName = looksLikeLineOrientedToolName
 	}
+	lines := strings.Split(content, "\n")
 	var calls []ToolCall
 	malformed := false
-	for _, line := range strings.Split(content, "\n") {
-		line = stripContentSpecialTokens(strings.TrimSpace(line))
+	for i := 0; i < len(lines); i++ {
+		line := stripContentSpecialTokens(strings.TrimSpace(lines[i]))
 		if line == "" {
 			continue
 		}
-		name, rest, ok := splitLeadingToolName(line)
-		if !ok || !allowName(name) || !strings.HasPrefix(rest, "{") {
+		if name, rest, ok := splitLeadingToolName(line); ok && strings.HasPrefix(rest, "{") && allowName(name) {
+			raw, tail, ok := braceCompactObject(rest)
+			if !ok {
+				malformed = true
+				continue
+			}
+			var bad bool
+			i, calls, bad = finishCompactCall(lines, i, calls, name, raw, tail)
+			if bad {
+				malformed = true
+			}
 			continue
 		}
-		raw, ok := extractJSONObjectAfter(rest)
-		if !ok {
+		name, raw, tail, kind := classifyParenCompact(line, allowName)
+		switch kind {
+		case parenCompactCall, parenCompactHy3Open:
+			var bad bool
+			i, calls, bad = finishCompactCall(lines, i, calls, name, raw, tail)
+			if bad {
+				malformed = true
+			}
+		case parenCompactCutOff:
 			malformed = true
-			continue
 		}
-		start := strings.Index(rest, raw)
-		if start < 0 {
-			malformed = true
-			continue
-		}
-		tail := strings.TrimSpace(rest[start+len(raw):])
-		args, ok := parseCompactJSONObjectArguments(json.RawMessage(raw), tail)
-		if !ok {
-			malformed = true
-			continue
-		}
-		call, ok := normalizePlainContentToolCall(name, args)
-		if !ok {
-			malformed = true
-			continue
-		}
-		calls = append(calls, call)
 	}
 	return calls, malformed
+}
+
+func finishCompactCall(lines []string, i int, calls []ToolCall, name, raw, tail string) (int, []ToolCall, bool) {
+	for i+1 < len(lines) {
+		next := stripContentSpecialTokens(strings.TrimSpace(lines[i+1]))
+		if !hy3ArgResidueLine(next) {
+			break
+		}
+		tail += next
+		i++
+	}
+	args, ok := parseCompactJSONObjectArguments(json.RawMessage(raw), tail)
+	if !ok {
+		return i, calls, true
+	}
+	call, ok := normalizePlainContentToolCall(name, args)
+	if !ok {
+		return i, calls, true
+	}
+	return i, append(calls, call), false
+}
+
+func braceCompactObject(rest string) (raw, tail string, ok bool) {
+	raw, ok = extractJSONObjectAfter(rest)
+	if !ok {
+		return "", "", false
+	}
+	start := strings.Index(rest, raw)
+	if start < 0 {
+		return "", "", false
+	}
+	return raw, strings.TrimSpace(rest[start+len(raw):]), true
+}
+
+func splitParenCompactToolHead(line string) (name, rest string, ok bool) {
+	trimmed := strings.TrimSpace(line)
+	m := contentLeadingToolNameRe.FindStringSubmatch(trimmed)
+	if len(m) < 2 {
+		return "", "", false
+	}
+	name = strings.TrimSpace(m[1])
+	if name == "" {
+		return "", "", false
+	}
+	rest = strings.TrimSpace(trimmed[len(m[0]):])
+	if rest == "" || rest[0] != '(' {
+		return "", "", false
+	}
+	return name, rest, true
+}
+
+type parenCompactKind int
+
+const (
+	parenCompactNone parenCompactKind = iota
+	parenCompactPending
+	parenCompactCall
+	parenCompactCutOff
+	parenCompactHy3Open
+)
+
+// classifyParenCompact reads one `name (... )` line.
+// A confirmed JSON object is a call. An unfinished JSON value (`"key":`,
+// `"key":"https://`, `{}`) is held, and hidden once the line ends that way.
+// A colon followed by a non-value (`"note": not`, `{"see": the`,
+// `{"note":{see`) is prose.
+// An unclosed `{"key` with no colon stays pending and is shown on flush.
+// "name (see", "name ({see", and `name ({"hello" world` are prose. A closed
+// parenthesis that is not an object is prose too. An unfinished `<arg` tail
+// after a closed object is held; `thanks`, `</x`, and `<3` stay prose.
+func classifyParenCompact(line string, allowName func(string) bool) (name, raw, tail string, kind parenCompactKind) {
+	if allowName == nil {
+		allowName = looksLikeLineOrientedToolName
+	}
+	line = stripContentSpecialTokens(strings.TrimSpace(line))
+	var rest string
+	var ok bool
+	name, rest, ok = splitParenCompactToolHead(line)
+	if !ok || !allowName(name) {
+		return "", "", "", parenCompactNone
+	}
+	closeAt, closed := matchingOuterParen(rest)
+	if !closed {
+		if parenUnclosedObjectAttempt(rest) {
+			return name, "", "", parenCompactCutOff
+		}
+		if parenOpenCouldBecomeObject(rest) {
+			return name, "", "", parenCompactPending
+		}
+		return "", "", "", parenCompactNone
+	}
+	raw, ok = parenObjectJSON(rest[1:closeAt])
+	if !ok {
+		return "", "", "", parenCompactNone
+	}
+	tail = strings.TrimSpace(rest[closeAt+1:])
+	committed, status := hy3TailStatus(tail)
+	switch status {
+	case hy3TailCall:
+		return name, raw, tail, parenCompactCall
+	case hy3TailPending:
+		// The object is already a call. Hold an unfinished <arg tag so the
+		// URL is not emitted. Arguments that already closed stay on the call;
+		// the unfinished tag is dropped if the stream ends there.
+		return name, raw, committed, parenCompactHy3Open
+	default:
+		return "", "", "", parenCompactNone
+	}
+}
+
+// parenObjectJSON accepts ("k":v) and ({"k":v}) and returns a JSON object.
+// A quoted phrase is not an object.
+func parenObjectJSON(inner string) (string, bool) {
+	inner = strings.TrimSpace(inner)
+	if inner == "" {
+		return "", false
+	}
+	candidate := inner
+	if inner[0] != '{' {
+		if inner[0] != '"' {
+			return "", false
+		}
+		candidate = "{" + inner + "}"
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(candidate), &obj); err != nil || obj == nil {
+		return "", false
+	}
+	return candidate, true
+}
+
+// parenUnclosedObjectAttempt reports a parenthesis whose inside is already a
+// JSON value that has not finished. "({", "({"see", `({"hello" world`, and
+// `("note": not` can still be prose.
+func parenUnclosedObjectAttempt(rest string) bool {
+	body, ok := parenCompactInner(rest)
+	if !ok || body == "" {
+		return false
+	}
+	cutoff, _ := parenInnerAttemptState(body)
+	return cutoff
+}
+
+func parenCompactInner(rest string) (string, bool) {
+	rest = strings.TrimSpace(rest)
+	if rest == "" || rest[0] != '(' {
+		return "", false
+	}
+	return strings.TrimSpace(rest[1:]), true
+}
+
+// parenInnerAttemptState classifies an unclosed parenthesis body.
+// pending can still grow into either a call or a sentence. cutoff is a JSON
+// value that has started and not yet failed. Anything else is a sentence.
+func parenInnerAttemptState(body string) (cutoff, pending bool) {
+	if body == "" {
+		return false, true
+	}
+	n, status := scanParenBody(body)
+	switch status {
+	case jsonValNeedMore:
+		return false, true
+	case jsonValHold:
+		return true, false
+	case jsonValDone:
+		if n < len(body) && strings.TrimSpace(body[n:]) != "" {
+			return false, false
+		}
+		return true, false
+	default:
+		return false, false
+	}
+}
+
+func scanParenBody(body string) (int, int) {
+	switch body[0] {
+	case '{':
+		return scanJSONObject(body)
+	case '"':
+		return scanJSONMembers(body, false)
+	default:
+		return 0, jsonValNo
+	}
+}
+
+const (
+	jsonValDone     = iota
+	jsonValNeedMore // a key may still grow a colon; not a call yet
+	jsonValHold     // a value has started; flush hides the line
+	jsonValNo
+)
+
+func scanJSONValue(s string) (int, int) {
+	if s == "" {
+		return 0, jsonValNeedMore
+	}
+	switch s[0] {
+	case '"':
+		end, closed := jsonStringEnd(s)
+		if !closed {
+			return 0, jsonValNeedMore
+		}
+		return end, jsonValDone
+	case '{':
+		return scanJSONObject(s)
+	case '[':
+		return scanJSONArray(s)
+	case 't':
+		return scanJSONKeyword(s, "true")
+	case 'f':
+		return scanJSONKeyword(s, "false")
+	case 'n':
+		return scanJSONKeyword(s, "null")
+	default:
+		if s[0] == '-' || isDigitByte(s[0]) {
+			return scanJSONNumber(s)
+		}
+		return 0, jsonValNo
+	}
+}
+
+// scanJSONObject reads one object. `{see` is not an object. `{}` is complete.
+func scanJSONObject(s string) (int, int) {
+	if s == "" || s[0] != '{' {
+		return 0, jsonValNo
+	}
+	i := skipSpaceTab(s, 1)
+	if i >= len(s) {
+		return 0, jsonValNeedMore
+	}
+	if s[i] == '}' {
+		return i + 1, jsonValDone
+	}
+	if s[i] != '"' {
+		return 0, jsonValNo
+	}
+	n, status := scanJSONMembers(s[i:], true)
+	if status != jsonValDone {
+		return 0, status
+	}
+	return i + n, jsonValDone
+}
+
+// scanJSONMembers reads `"key": value` pairs. brace allows a closing `}`.
+// A later unfinished key stays held once any colon has been seen.
+func scanJSONMembers(s string, brace bool) (int, int) {
+	committed := false
+	i := 0
+	for {
+		if i >= len(s) || s[i] != '"' {
+			return 0, jsonValNo
+		}
+		end, closed := jsonStringEnd(s[i:])
+		if !closed {
+			if committed {
+				return 0, jsonValHold
+			}
+			return 0, jsonValNeedMore
+		}
+		i = skipSpaceTab(s, i+end)
+		if i >= len(s) {
+			if committed {
+				return 0, jsonValHold
+			}
+			return 0, jsonValNeedMore
+		}
+		if s[i] != ':' {
+			return 0, jsonValNo
+		}
+		committed = true
+		i = skipSpaceTab(s, i+1)
+		if i >= len(s) {
+			return 0, jsonValHold
+		}
+		n, status := scanJSONValue(s[i:])
+		switch status {
+		case jsonValDone:
+		case jsonValNo:
+			return 0, jsonValNo
+		default:
+			return 0, jsonValHold
+		}
+		i = skipSpaceTab(s, i+n)
+		if i >= len(s) {
+			return 0, jsonValHold
+		}
+		switch s[i] {
+		case ',':
+			i = skipSpaceTab(s, i+1)
+			if i >= len(s) {
+				return 0, jsonValHold
+			}
+		case '}':
+			if !brace {
+				return 0, jsonValNo
+			}
+			return i + 1, jsonValDone
+		default:
+			return 0, jsonValNo
+		}
+	}
+}
+
+func scanJSONArray(s string) (int, int) {
+	if s == "" || s[0] != '[' {
+		return 0, jsonValNo
+	}
+	i := skipSpaceTab(s, 1)
+	if i >= len(s) {
+		return 0, jsonValNeedMore
+	}
+	if s[i] == ']' {
+		return i + 1, jsonValDone
+	}
+	for {
+		n, status := scanJSONValue(s[i:])
+		if status == jsonValNo {
+			return 0, jsonValNo
+		}
+		if status != jsonValDone {
+			return 0, jsonValHold
+		}
+		i = skipSpaceTab(s, i+n)
+		if i >= len(s) {
+			return 0, jsonValHold
+		}
+		switch s[i] {
+		case ',':
+			i = skipSpaceTab(s, i+1)
+			if i >= len(s) {
+				return 0, jsonValHold
+			}
+		case ']':
+			return i + 1, jsonValDone
+		default:
+			return 0, jsonValNo
+		}
+	}
+}
+
+func scanJSONKeyword(s, word string) (int, int) {
+	if len(s) < len(word) {
+		if strings.HasPrefix(word, s) {
+			return 0, jsonValNeedMore
+		}
+		return 0, jsonValNo
+	}
+	if s[:len(word)] != word {
+		return 0, jsonValNo
+	}
+	if len(s) > len(word) && isJSONIdentByte(s[len(word)]) {
+		return 0, jsonValNo
+	}
+	return len(word), jsonValDone
+}
+
+func scanJSONNumber(s string) (int, int) {
+	i := 0
+	if s[0] == '-' {
+		i++
+		if i >= len(s) {
+			return 0, jsonValNeedMore
+		}
+	}
+	if i >= len(s) || !isDigitByte(s[i]) {
+		return 0, jsonValNo
+	}
+	if s[i] == '0' {
+		i++
+	} else {
+		for i < len(s) && isDigitByte(s[i]) {
+			i++
+		}
+	}
+	if i < len(s) && isDigitByte(s[i]) {
+		return 0, jsonValNo
+	}
+	if i >= len(s) {
+		return i, jsonValDone
+	}
+	if s[i] == '.' {
+		i++
+		if i >= len(s) {
+			return 0, jsonValNeedMore
+		}
+		if !isDigitByte(s[i]) {
+			return 0, jsonValNo
+		}
+		for i < len(s) && isDigitByte(s[i]) {
+			i++
+		}
+		if i >= len(s) {
+			return i, jsonValDone
+		}
+	}
+	if s[i] == 'e' || s[i] == 'E' {
+		i++
+		if i >= len(s) {
+			return 0, jsonValNeedMore
+		}
+		if s[i] == '+' || s[i] == '-' {
+			i++
+			if i >= len(s) {
+				return 0, jsonValNeedMore
+			}
+		}
+		if !isDigitByte(s[i]) {
+			return 0, jsonValNo
+		}
+		for i < len(s) && isDigitByte(s[i]) {
+			i++
+		}
+	}
+	return i, jsonValDone
+}
+
+func skipSpaceTab(s string, i int) int {
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	return i
+}
+
+func isDigitByte(c byte) bool {
+	return c >= '0' && c <= '9'
+}
+
+func isJSONIdentByte(c byte) bool {
+	return isDigitByte(c) || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+// jsonStringEnd returns the index just after the closing quote. s must begin
+// with a quote. closed is false when that quote never ends.
+func jsonStringEnd(s string) (int, bool) {
+	if s == "" || s[0] != '"' {
+		return 0, false
+	}
+	escaped := false
+	for i := 1; i < len(s); i++ {
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch s[i] {
+		case '\\':
+			escaped = true
+		case '"':
+			return i + 1, true
+		}
+	}
+	return 0, false
+}
+
+func matchingOuterParen(s string) (int, bool) {
+	if s == "" || s[0] != '(' {
+		return -1, false
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return -1, false
+}
+
+// hy3ArgResidueLine reports a line that is only an orphaned Hy3 close tag or
+// <arg_key>/<arg_value> pairs. Those lines continue the call above them.
+func hy3ArgResidueLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	stripped := strings.TrimSpace(stripLeadingHy3OrphanClosers(line))
+	if stripped == "" {
+		return true
+	}
+	suffix, _, ok := hy3ArgTagSuffix(stripped, "<arg_key:")
+	if !ok {
+		return false
+	}
+	_, ok = parseHy3ArgPairs(suffix, stripped)
+	return ok
+}
+
+const (
+	hy3TailNone = iota
+	hy3TailPending
+	hy3TailCall
+)
+
+const (
+	hy3ReadNo = iota
+	hy3ReadPartial
+	hy3ReadComplete
+)
+
+// hy3TailStatus reports whether text after a closed parenthesis is Hy3
+// argument residue, a prefix of that residue, or ordinary prose.
+// committed is the residue that already closed. An unfinished tag is not
+// part of it, so a flush still keeps arguments that finished.
+func hy3TailStatus(tail string) (committed string, status int) {
+	tail = strings.TrimSpace(tail)
+	if tail == "" || hy3ArgResidueLine(tail) {
+		return tail, hy3TailCall
+	}
+	committed, pending := walkHy3Prefix(tail)
+	if pending {
+		return committed, hy3TailPending
+	}
+	return "", hy3TailNone
+}
+
+// walkHy3Prefix mirrors stripLeadingHy3OrphanClosers and parseHy3ArgPairs.
+// A value runs until its exact close tag, so a "<" inside the value is still
+// the same call. The walk stops before a tag that has not closed.
+func walkHy3Prefix(s string) (committed string, pending bool) {
+	i := 0
+	commit := 0
+	for {
+		base := hy3SkipSpace(s, i)
+		kind, next := hy3ReadCloserAt(s, base)
+		if kind == hy3ReadPartial {
+			return strings.TrimSpace(s[:commit]), true
+		}
+		if kind != hy3ReadComplete {
+			i = base
+			break
+		}
+		i = next
+		commit = next
+	}
+	for {
+		base := hy3SkipSpace(s, i)
+		if base >= len(s) {
+			// The bytes were consumed, but they are not valid residue
+			// (hy3ArgResidueLine already rejected them). Show the line.
+			return "", false
+		}
+		kind, suffix, next := hy3ReadTagAt(s, base, "<arg_key:")
+		if kind == hy3ReadPartial {
+			return strings.TrimSpace(s[:commit]), true
+		}
+		if kind != hy3ReadComplete {
+			return "", false
+		}
+		closeTag := "</arg_key:" + suffix + ">"
+		rel := strings.Index(s[next:], closeTag)
+		if rel < 0 {
+			return strings.TrimSpace(s[:commit]), true
+		}
+		next += rel + len(closeTag)
+		base = hy3SkipSpace(s, next)
+		kind, valSuffix, next := hy3ReadTagAt(s, base, "<arg_value:")
+		if kind == hy3ReadPartial {
+			return strings.TrimSpace(s[:commit]), true
+		}
+		if kind != hy3ReadComplete || valSuffix != suffix {
+			return "", false
+		}
+		valClose := "</arg_value:" + suffix + ">"
+		rel = strings.Index(s[next:], valClose)
+		if rel < 0 {
+			return strings.TrimSpace(s[:commit]), true
+		}
+		i = next + rel + len(valClose)
+		commit = i
+	}
+}
+
+func hy3ReadCloserAt(s string, at int) (kind int, next int) {
+	kind, _, next = hy3ReadTagAt(s, at, "</arg_value:")
+	if kind == hy3ReadNo {
+		kind, _, next = hy3ReadTagAt(s, at, "</arg_key:")
+	}
+	return kind, next
+}
+
+func hy3ReadTagAt(s string, at int, lowerOpen string) (kind int, suffix string, next int) {
+	if at < 0 || at > len(s) {
+		return hy3ReadNo, "", at
+	}
+	kind, suffix, after := hy3ReadTag(s[at:], lowerOpen)
+	if kind != hy3ReadComplete {
+		return kind, "", at
+	}
+	return kind, suffix, len(s) - len(after)
+}
+
+func hy3SkipSpace(s string, i int) int {
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r') {
+		i++
+	}
+	return i
+}
+
+func hy3ReadTag(s, lowerOpen string) (kind int, suffix, after string) {
+	if asciiProperPrefix(s, lowerOpen) {
+		return hy3ReadPartial, "", ""
+	}
+	if !asciiHasPrefix(s, lowerOpen) {
+		return hy3ReadNo, "", ""
+	}
+	rest := s[len(lowerOpen):]
+	end := strings.IndexByte(rest, '>')
+	if end < 0 {
+		return hy3ReadPartial, "", ""
+	}
+	if end == 0 {
+		return hy3ReadNo, "", ""
+	}
+	return hy3ReadComplete, rest[:end], rest[end+1:]
+}
+
+func asciiProperPrefix(s, lowerOpen string) bool {
+	if s == "" || len(s) >= len(lowerOpen) {
+		return false
+	}
+	return asciiFoldEqual(s, lowerOpen[:len(s)])
 }
 
 func parseCompactJSONObjectArguments(raw json.RawMessage, tail string) (json.RawMessage, bool) {
@@ -2160,14 +2821,78 @@ func compactJSONToolLineName(line string) string {
 
 func compactJSONToolLineNameMatching(line string, allowName func(string) bool) string {
 	line = stripContentSpecialTokens(strings.TrimSpace(line))
-	if line == "" {
+	if line == "" || allowName == nil {
 		return ""
 	}
-	name, rest, ok := splitLeadingToolName(line)
-	if !ok || !strings.HasPrefix(rest, "{") || !allowName(name) {
-		return ""
+	if name, rest, ok := splitLeadingToolName(line); ok && strings.HasPrefix(rest, "{") && allowName(name) {
+		return name
 	}
-	return name
+	if name, _, _, kind := classifyParenCompact(line, allowName); kind == parenCompactCall {
+		return name
+	}
+	return ""
+}
+
+func compactOfficialNamePendingHoldLenMatching(s string, allowName func(string) bool) int {
+	allowName = compactStreamNameValidator(allowName)
+	idx := strings.LastIndexByte(s, '\n')
+	last := s
+	if idx >= 0 {
+		last = s[idx+1:]
+	}
+	trimmed := stripContentSpecialTokens(strings.TrimSpace(last))
+	if len(strings.Fields(trimmed)) != 1 || !compactOfficialFetchName(trimmed, allowName) {
+		return 0
+	}
+	return len(last)
+}
+
+// compactOfficialFetchName reports the unsuffixed OpenCode spellings. They are
+// not line-oriented names, so a chunk that ends on the name must stay buffered
+// until the parenthesis or the next word arrives.
+func compactOfficialFetchName(name string, allowName func(string) bool) bool {
+	if allowName == nil || !allowName(name) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "webfetch", "websearch":
+		return true
+	default:
+		return false
+	}
+}
+
+func compactParenPendingHoldLenMatching(s string, allowName func(string) bool) int {
+	allowName = compactStreamNameValidator(allowName)
+	idx := strings.LastIndexByte(s, '\n')
+	last := s
+	if idx >= 0 {
+		last = s[idx+1:]
+	}
+	if last == "" || !compactParenPendingLine(last, allowName) {
+		return 0
+	}
+	return len(last)
+}
+
+func compactParenPendingLine(line string, allowName func(string) bool) bool {
+	_, _, _, kind := classifyParenCompact(line, allowName)
+	return kind == parenCompactPending || kind == parenCompactCutOff || kind == parenCompactHy3Open
+}
+
+// parenOpenCouldBecomeObject reports an unclosed "(" that can still become a
+// JSON object. "web_fetch (see", "web_fetch ({see", a non-value after a colon,
+// and a closed quote with a following non-colon are already prose.
+func parenOpenCouldBecomeObject(rest string) bool {
+	body, ok := parenCompactInner(rest)
+	if !ok {
+		return false
+	}
+	if body == "" {
+		return true
+	}
+	_, pending := parenInnerAttemptState(body)
+	return pending
 }
 
 func compactJSONToolMarkerIndex(s string) int {
@@ -2178,9 +2903,17 @@ func compactJSONToolMarkerIndexMatching(s string, allowName func(string) bool) i
 	allowName = compactStreamNameValidator(allowName)
 	parts := strings.Split(s, "\n")
 	offset := 0
+	last := len(parts) - 1
 	for i, line := range parts {
 		if name := compactJSONToolLineNameMatching(line, allowName); name != "" {
 			return offset
+		}
+		// A cut-off call can still close on the last line. Once a newline
+		// arrives, that line will not become a valid call.
+		if i != last {
+			if _, _, _, kind := classifyParenCompact(line, allowName); kind == parenCompactCutOff || kind == parenCompactHy3Open {
+				return offset
+			}
 		}
 		offset += len(line)
 		if i < len(parts)-1 {
@@ -2188,6 +2921,26 @@ func compactJSONToolMarkerIndexMatching(s string, allowName func(string) bool) i
 		}
 	}
 	return -1
+}
+
+// markerIsOpenBareToolName reports a suppress-worthy tool name that is still
+// the unfinished last line. "web_fetch" can grow into prose, a parenthesized
+// call, or a JSON call. A later newline means the name line is already the
+// line-oriented call.
+func markerIsOpenBareToolName(s string, idx int) bool {
+	if idx < 0 || idx > len(s) {
+		return false
+	}
+	rest := s[idx:]
+	if strings.IndexByte(rest, '\n') >= 0 {
+		return false
+	}
+	fields := strings.Fields(strings.TrimSpace(rest))
+	if len(fields) != 1 {
+		return false
+	}
+	name := lineOrientedToolName(fields[0])
+	return name != "" && leakedToolNameShouldSuppressStream(name)
 }
 
 func leakedLineOrientedToolMarkerIndex(s string) int {

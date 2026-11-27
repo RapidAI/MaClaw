@@ -2,6 +2,7 @@ package agentservice
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1138,5 +1139,76 @@ func TestServiceConfigureDynamicSemanticRoutingOwnsDurableResources(t *testing.T
 	}
 	if err := svc.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestResolveDynamicCapabilityNeedsRequiresRouting(t *testing.T) {
+	var exec CoreAgentExecutor
+	_, err := exec.ResolveDynamicCapabilityNeeds(context.Background(), Principal{TenantID: "ten", UserID: "usr"}, "task-1", "生成pdf")
+	if err == nil {
+		t.Fatal("bare executor must report semantic routing unavailable")
+	}
+}
+
+func TestResolveDynamicCapabilityNeedsForwardsCloudTurn(t *testing.T) {
+	var got DynamicCapabilityNeedRequest
+	exec := &CoreAgentExecutor{}
+	exec.dynamicSemanticRouting = &DynamicSemanticRouting{
+		Resolver: dynamicNeedResolverFunc(func(ctx context.Context, req DynamicCapabilityNeedRequest) (DynamicCapabilityNeedResolution, error) {
+			if ctx == nil {
+				t.Fatal("nil context reached the resolver")
+			}
+			got = req
+			return DynamicCapabilityNeedResolution{Managed: true}, nil
+		}),
+	}
+	res, err := exec.ResolveDynamicCapabilityNeeds(nil, Principal{TenantID: "ten", UserID: "usr"}, "  task-9 ", "生成pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Managed || got.ChannelScope != "cloud-agent" || got.RootTaskID != "task-9" || got.SessionID != "task-9" || got.TurnID != "task-9" || got.UserText != "生成pdf" || got.Principal.TenantID != "ten" || got.Principal.UserID != "usr" {
+		t.Fatalf("resolution=%+v request=%+v", res, got)
+	}
+	if _, err := exec.ResolveDynamicCapabilityNeeds(context.Background(), Principal{}, "", "生成pdf"); err != nil {
+		t.Fatal(err)
+	}
+	if got.RootTaskID != "cloud-agent" || got.SessionID != "cloud-agent" || got.TurnID != "cloud-agent" {
+		t.Fatalf("empty task id request = %+v", got)
+	}
+}
+
+func TestResolveDynamicCapabilityNeedsOnService(t *testing.T) {
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "test"}, NewMemoryStore(), &CoreAgentExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	if _, err := svc.ResolveDynamicCapabilityNeeds(context.Background(), Principal{TenantID: "ten", UserID: "usr"}, "task-1", "生成pdf"); err == nil {
+		t.Fatal("service must surface a resolver that has no routing")
+	}
+}
+
+func TestResolveDynamicCapabilityNeedsKeepsClassification(t *testing.T) {
+	classification := intent.ClassificationResult{
+		Primary:    intent.LabelLiveData,
+		Secondary:  []intent.IntentLabel{intent.LabelDocumentGenerate},
+		Confidence: 0.99,
+	}
+	got := finishIntentNeedResolution(context.Background(), nil, nil, false, false, classification, DynamicCapabilityNeedResolution{
+		Managed: true,
+		Needs:   []coretool.CapabilityNeed{{ID: "search", Capability: CapabilityInformationSearchWeb}},
+	})
+	if got.Classification.Primary != intent.LabelLiveData || !got.Classification.HasLabel(intent.LabelDocumentGenerate) {
+		t.Fatalf("classification = %+v", got.Classification)
+	}
+	if len(got.Needs) != 1 || got.Needs[0].Capability != CapabilityInformationSearchWeb {
+		t.Fatalf("needs changed: %+v", got.Needs)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "document_generate") || strings.Contains(string(raw), "Classification") {
+		t.Fatalf("classification leaked into persistence: %s", raw)
 	}
 }

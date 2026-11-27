@@ -417,6 +417,12 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			}
 
 		case responsesEventCompleted:
+			// status failed inside a completed frame is the provider denial,
+			// not a finished answer. Text already streamed stays accumulated.
+			if llm.ResponsesStatusFailed(payload) {
+				streamErr = llm.ResponsesStreamEventError(payload)
+				goto postLoop
+			}
 			if eventUsage := llm.ExtractResponsesAPIUsageFromEventPayload([]byte(payload)); eventUsage != nil {
 				usage = eventUsage
 			}
@@ -431,25 +437,13 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			log.Printf("[LLM Stream Responses] response.completed received; closing SSE stream without waiting for trailing DONE")
 			goto postLoop
 
-		case responsesEventFailed:
-			var failed struct {
-				Response struct {
-					Error struct {
-						Message string `json:"message"`
-						Code    string `json:"code"`
-					} `json:"error"`
-				} `json:"response"`
-			}
-			if json.Unmarshal([]byte(payload), &failed) != nil {
-				continue
-			}
-			errMsg := failed.Response.Error.Message
-			if errMsg == "" {
-				errMsg = "unknown error"
-			}
-			// Keep the partial response so already-accumulated
-			// content/reasoning is not lost with the error.
-			streamErr = fmt.Errorf("Responses API error: %s (code=%s)", errMsg, failed.Response.Error.Code)
+		case responsesEventFailed, responsesEventError:
+			// Official error events put message and code on the frame itself.
+			// response.failed nests them, and the code may be a number. A
+			// failed unmarshal used to skip the event and look like success.
+			// The shared text is what the coding and desktop retries recognize.
+			// Already-accumulated content and reasoning stay on the response.
+			streamErr = llm.ResponsesStreamEventError(payload)
 			goto postLoop
 
 		case responsesEventIncomplete:
@@ -465,8 +459,21 @@ postLoop:
 	// Post-loop error checks
 	// -----------------------------------------------------------------------
 	if err := scanner.Err(); err != nil {
+		// A clean end is scanner.Err() == nil. A reset or a cut after the
+		// first event used to fall through with streamErr still nil, so the
+		// partial was returned as a completed answer.
+		readErr := fmt.Errorf("SSE stream read error: %w", err)
+		if sseTimedOut.Load() {
+			if metrics != nil {
+				metrics.IdleTimeoutCount++
+			}
+			readErr = fmt.Errorf("SSE stream idle timeout (%v): no data received from %s", idleFor, endpoint)
+		}
 		if len(itemAccums) == 0 && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 {
-			return nil, fmt.Errorf("SSE stream read error: %w", err)
+			return nil, readErr
+		}
+		if streamErr == nil {
+			streamErr = readErr
 		}
 	}
 	if sseTimedOut.Load() && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 && len(itemAccums) == 0 {

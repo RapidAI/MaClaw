@@ -313,6 +313,12 @@ func TestCodingToolEventTargetShowsSearchAndExplore(t *testing.T) {
 	if got := codingToolEventTarget("read_file", `{"path":"a.go"}`, root); got != "" {
 		t.Fatalf("read target = %q, want empty", got)
 	}
+	if got := codingToolEventTarget("ocr_recognize", `{"image_path":"docs/screenshot.png"}`, root); got != "docs/screenshot.png" {
+		t.Fatalf("ocr target = %q", got)
+	}
+	if got := codingToolEventTarget("ocr_recognize", `{"image_base64":"aGVsbG8="}`, root); got != "" {
+		t.Fatalf("ocr base64 target = %q, want empty", got)
+	}
 	if got := codingToolEventTarget("bash", `{"command":"codegraph explore \"buildTask\""}`, root); got != "buildTask" {
 		t.Fatalf("codegraph explore target = %q", got)
 	}

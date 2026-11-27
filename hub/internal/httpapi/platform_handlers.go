@@ -2743,9 +2743,11 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 			// Unlike onReply, this does NOT persist chunks to discussion history —
 			// only the final aggregated answer is persisted.
 			streamedChunks := false
+			reasoningStarted := false
 			chunkCount := 0
 			var streamed strings.Builder
 			var liveChunks veStreamChunkCoalescer
+			var liveReasoning veStreamChunkCoalescer
 			pushChunk := func(chunk string) {
 				if chunk == "" || initiatorID == "" {
 					return
@@ -2776,7 +2778,27 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 				streamed.WriteString(chunk)
 				liveChunks.add(chunk, pushChunk)
 			}
-			reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode), macLawSrvStreamHooks{onChunk: chunkCb, onStatus: pushActivity})
+			pushReasoning := func(text string) {
+				if text == "" || initiatorID == "" {
+					return
+				}
+				_ = s.SendToMachine(initiatorID, discussionReasoningWire(groupDiscussionSessionID(sessionCopy), targetID, text))
+			}
+			reasoningCb := func(text string) {
+				if strings.TrimSpace(text) == "" {
+					return
+				}
+				// The model has started. Do not retry the turn, and do not mark
+				// the answer as streamed: the settled reply still has to be
+				// notified when no answer chunk was pushed.
+				reasoningStarted = true
+				if initiatorID == "" {
+					return
+				}
+				liveReasoning.add(text, pushReasoning)
+			}
+			streamHooks := macLawSrvStreamHooks{onChunk: chunkCb, onReasoning: reasoningCb, onStatus: pushActivity}
+			reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode), streamHooks)
 			deliveryErr := err
 			if deliveryErr == nil && strings.TrimSpace(reply) == "" {
 				deliveryErr = errors.New("MaClawSrv runtime response did not include assistant content")
@@ -2785,10 +2807,10 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 			// visible work. A tool status means the turn may already have run;
 			// retrying it could repeat that work. A dropped connection before
 			// any token or tool still retries, which covers a MaClawSrv redeploy.
-			if deliveryErr != nil && !streamedChunks && !runtimeStarted && isTransientDeliveryError(deliveryErr) {
+			if deliveryErr != nil && !streamedChunks && !runtimeStarted && !reasoningStarted && isTransientDeliveryError(deliveryErr) {
 				log.Printf("[ve-platform-delivery] async runtime delivery transient failure, retrying in %s session=%s target=%s: %v", veRuntimeDeliveryRetryDelay, groupDiscussionSessionID(sessionCopy), targetID, deliveryErr)
 				time.Sleep(veRuntimeDeliveryRetryDelay)
-				reply, err = s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode), macLawSrvStreamHooks{onChunk: chunkCb, onStatus: pushActivity})
+				reply, err = s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode), streamHooks)
 				deliveryErr = err
 				if deliveryErr == nil && strings.TrimSpace(reply) == "" {
 					deliveryErr = errors.New("MaClawSrv runtime response did not include assistant content")
@@ -2797,6 +2819,7 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 			release(deliveryErr)
 			recordVERuntimeDeliveryResult(circuitKey, deliveryErr, time.Now())
 			liveChunks.flush(pushChunk)
+			liveReasoning.flush(pushReasoning)
 			if deliveryErr != nil {
 				log.Printf("[ve-platform-delivery] async runtime delivery failed session=%s target=%s tenant=%s employee=%s platform_employee=%s duration=%s: %v", groupDiscussionSessionID(sessionCopy), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), time.Since(started), deliveryErr)
 				// Send stream_end with error so the frontend closes the
@@ -3284,8 +3307,9 @@ func isPlatformRuntimeEmployeeEntry(entry digitalEmployeeEntry) bool {
 }
 
 type macLawSrvStreamHooks struct {
-	onChunk  func(string)
-	onStatus func(phase, name string)
+	onChunk     func(string)
+	onReasoning func(string)
+	onStatus    func(phase, name string)
 }
 
 func (s platformAwareMachineSender) postMacLawSrvDiscussionMessage(ctx context.Context, entry digitalEmployeeEntry, runtime macLawSrvRuntimeEntry, tenantID string, msg any, hooks macLawSrvStreamHooks) (string, error) {
@@ -3337,7 +3361,7 @@ func (s platformAwareMachineSender) postMacLawSrvDiscussionMessage(ctx context.C
 	}
 	if strings.Contains(contentType, "text/event-stream") {
 		log.Printf("[VE-STREAMING] ===== HUB STAGE C: consuming SSE stream =====")
-		return s.consumeRuntimeSSEResponse(resp.Body, tenantID, entry, started, hooks.onChunk, hooks.onStatus)
+		return s.consumeRuntimeSSEResponseWithReasoning(resp.Body, tenantID, entry, started, hooks.onChunk, hooks.onReasoning, hooks.onStatus)
 	}
 	log.Printf("[VE-STREAMING] ===== HUB: NOT SSE — falling back to JSON response =====")
 
@@ -3438,8 +3462,13 @@ func macLawSrvRuntimeFailureContent(err error, platformEmployeeID string) string
 // aggregates the text content from "chunk" events, and returns the final
 // content from the "done" event. If onChunk is non-nil, it's called for each
 // text chunk (used by SendDiscussionMessageAsync to push stream_chunk messages
-// to the requesting client in real-time via Hub WebSocket).
+// to the requesting client in real-time via Hub WebSocket). Reasoning frames
+// are ignored here; consumeRuntimeSSEResponseWithReasoning forwards them.
 func (s platformAwareMachineSender) consumeRuntimeSSEResponse(body io.Reader, tenantID string, entry digitalEmployeeEntry, started time.Time, onChunk func(string), onStatus ...func(string, string)) (string, error) {
+	return s.consumeRuntimeSSEResponseWithReasoning(body, tenantID, entry, started, onChunk, nil, onStatus...)
+}
+
+func (s platformAwareMachineSender) consumeRuntimeSSEResponseWithReasoning(body io.Reader, tenantID string, entry digitalEmployeeEntry, started time.Time, onChunk func(string), onReasoning func(string), onStatus ...func(string, string)) (string, error) {
 	var statusFn func(string, string)
 	if len(onStatus) > 0 {
 		statusFn = onStatus[0]
@@ -3472,8 +3501,27 @@ func (s platformAwareMachineSender) consumeRuntimeSSEResponse(body io.Reader, te
 				}
 			}
 		}
+		if reasoning, ok := evt["reasoning"].(string); ok && strings.TrimSpace(reasoning) != "" {
+			if cleaned := sanitizeDiscussionReasoning(reasoning); cleaned != "" && onReasoning != nil {
+				onReasoning(cleaned)
+			}
+			if _, hasChunk := evt["chunk"]; !hasChunk {
+				if done, _ := evt["done"].(bool); !done {
+					if _, hasError := evt["error"]; !hasError {
+						continue
+					}
+				}
+			}
+		}
 		if chunk, ok := evt["chunk"].(string); ok && chunk != "" {
-			chunk = textutil.VisibleChatStreamDelta(chunk)
+			marker, visible := textutil.SplitVisibleStreamDelta(chunk)
+			if marker == "\x01" {
+				if visible != "" && onReasoning != nil {
+					onReasoning(visible)
+				}
+				continue
+			}
+			chunk = visible
 			if chunk == "" {
 				continue
 			}
@@ -3519,6 +3567,26 @@ func (s platformAwareMachineSender) pushDiscussionActivity(machineID, sessionID,
 		return
 	}
 	_ = s.SendToMachine(strings.TrimSpace(machineID), discussionActivityWire(sessionID, fromID, phase, name))
+}
+
+func sanitizeDiscussionReasoning(text string) string {
+	text = textutil.SanitizeVisibleChatText(text)
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	return text
+}
+
+func discussionReasoningWire(sessionID, fromID, text string) map[string]any {
+	return map[string]any{
+		"type": "ve:discussion_reasoning",
+		"ts":   time.Now().Unix(),
+		"payload": map[string]any{
+			"session_id": strings.TrimSpace(sessionID),
+			"from_id":    strings.TrimSpace(fromID),
+			"text":       text,
+		},
+	}
 }
 
 func discussionActivityWire(sessionID, fromID, phase, name string) map[string]any {

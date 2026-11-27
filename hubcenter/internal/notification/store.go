@@ -47,7 +47,9 @@ func (s *SQLiteStore) InitSchema(ctx context.Context) error {
 			publish_at      TEXT,
 			expire_at       TEXT,
 			created_at      TEXT NOT NULL,
-			updated_at      TEXT NOT NULL
+			updated_at      TEXT NOT NULL,
+			dispatch_node   TEXT NOT NULL DEFAULT '',
+			dispatch_until  TEXT
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_hc_notif_status ON hc_notifications(status, publish_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_hc_notif_category ON hc_notifications(category)`,
@@ -75,6 +77,8 @@ func (s *SQLiteStore) InitSchema(ctx context.Context) error {
 		`ALTER TABLE hc_notifications ADD COLUMN button_text TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE hc_notifications ADD COLUMN source_lang TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE hc_notifications ADD COLUMN locales_json TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE hc_notifications ADD COLUMN dispatch_node TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE hc_notifications ADD COLUMN dispatch_until TEXT`,
 	} {
 		_, _ = s.db.ExecContext(ctx, stmt)
 	}
@@ -86,7 +90,7 @@ func (s *SQLiteStore) InitSchema(ctx context.Context) error {
 const (
 	hcNotificationColumns = `id, title, content, category, priority, audience_type, audience_ids, status, im_push, ` +
 		`pinned, pinned_forever, link_url, button_text, source_lang, locales_json, ` +
-		`created_by, publish_at, expire_at, created_at, updated_at`
+		`created_by, publish_at, expire_at, created_at, updated_at, dispatch_node, dispatch_until`
 )
 
 // Create inserts a new HubCenter notification into the database.
@@ -98,7 +102,7 @@ func (s *SQLiteStore) Create(ctx context.Context, n *Notification) error {
 
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO hc_notifications (`+hcNotificationColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		args...,
 	)
 	return err
@@ -114,7 +118,7 @@ func (s *SQLiteStore) Upsert(ctx context.Context, n *Notification) error {
 
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO hc_notifications (`+hcNotificationColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 			title = excluded.title,
 			content = excluded.content,
@@ -134,7 +138,9 @@ func (s *SQLiteStore) Upsert(ctx context.Context, n *Notification) error {
 			publish_at = excluded.publish_at,
 			expire_at = excluded.expire_at,
 			created_at = excluded.created_at,
-			updated_at = excluded.updated_at`,
+			updated_at = excluded.updated_at,
+			dispatch_node = excluded.dispatch_node,
+			dispatch_until = excluded.dispatch_until`,
 		args...,
 	)
 	return err
@@ -197,6 +203,61 @@ func (s *SQLiteStore) List(ctx context.Context, filter ListFilter) ([]*Notificat
 		results = append(results, n)
 	}
 	return results, total, rows.Err()
+}
+
+// ListDueDrafts returns drafts whose publish_at has arrived. publish_at is
+// stored as UTC RFC3339, so the string comparison matches that format.
+func (s *SQLiteStore) ListDueDrafts(ctx context.Context, now time.Time) ([]*Notification, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+hcNotificationColumns+` FROM hc_notifications
+		 WHERE status = ? AND publish_at IS NOT NULL AND publish_at != '' AND publish_at <= ?
+		 ORDER BY publish_at ASC LIMIT 50`,
+		string(StatusDraft), now.UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []*Notification
+	for rows.Next() {
+		n, err := scanNotificationFromRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, n)
+	}
+	return results, rows.Err()
+}
+
+// ClaimDraft moves a draft to next. A second caller sees ok=false.
+func (s *SQLiteStore) ClaimDraft(ctx context.Context, id string, next Status, updatedAt time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE hc_notifications SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		string(next), updatedAt.UTC().Format(time.RFC3339), id, string(StatusDraft))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// ClaimDispatch fences a draft for node until the lease time. A second node
+// loses while that lease is still current. The holder may renew it. until
+// and updatedAt are stored as UTC RFC3339 so the comparison matches ListDueDrafts.
+func (s *SQLiteStore) ClaimDispatch(ctx context.Context, id, node string, until, updatedAt time.Time) (bool, error) {
+	now := updatedAt.UTC().Format(time.RFC3339)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE hc_notifications
+		 SET dispatch_node = ?, dispatch_until = ?, updated_at = ?
+		 WHERE id = ? AND status = ?
+		   AND (dispatch_until IS NULL OR dispatch_until = '' OR dispatch_until <= ? OR dispatch_node = ?)`,
+		node, until.UTC().Format(time.RFC3339), now,
+		id, string(StatusDraft), now, node)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 // UpdateStatus updates the status and updated_at of a notification.
@@ -299,6 +360,8 @@ func scanNotificationRow(scan rowScanner) (*Notification, error) {
 		sourceLang, localesJSON          string
 		publishAt, expireAt              sql.NullString
 		createdAt, updatedAt             string
+		dispatchNode                     string
+		dispatchUntil                    sql.NullString
 	)
 	err := scan.Scan(
 		&n.ID, &n.Title, &n.Content,
@@ -307,6 +370,7 @@ func scanNotificationRow(scan rowScanner) (*Notification, error) {
 		&sourceLang, &localesJSON,
 		&createdBy,
 		&publishAt, &expireAt, &createdAt, &updatedAt,
+		&dispatchNode, &dispatchUntil,
 	)
 	if err != nil {
 		return nil, err
@@ -332,6 +396,13 @@ func scanNotificationRow(scan rowScanner) (*Notification, error) {
 	if expireAt.Valid {
 		t := mustParseTime(expireAt.String)
 		n.ExpireAt = &t
+	}
+	n.DispatchNode = dispatchNode
+	if dispatchUntil.Valid && dispatchUntil.String != "" {
+		t := mustParseTime(dispatchUntil.String)
+		if !t.IsZero() {
+			n.DispatchUntil = &t
+		}
 	}
 	if err := json.Unmarshal([]byte(audienceJSON), &n.AudienceIDs); err != nil {
 		n.AudienceIDs = nil
@@ -416,5 +487,6 @@ func notificationSQLArgs(n *Notification) ([]interface{}, error) {
 		n.CreatedBy,
 		formatNullableTime(n.PublishAt), formatNullableTime(n.ExpireAt),
 		n.CreatedAt.UTC().Format(time.RFC3339), n.UpdatedAt.UTC().Format(time.RFC3339),
+		n.DispatchNode, formatNullableTime(n.DispatchUntil),
 	}, nil
 }

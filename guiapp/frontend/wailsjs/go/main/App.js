@@ -6918,3 +6918,11 @@ export function UploadFilesToCloudAgent(arg1) {
 export function UploadDirectoryToCloudAgent(arg1) {
   return window['go']['main']['App']['UploadDirectoryToCloudAgent'](arg1);
 }
+
+export function CopyChatMediaToClipboard(arg1, arg2) {
+  return window['go']['main']['App']['CopyChatMediaToClipboard'](arg1, arg2);
+}
+
+export function SaveChatMediaAs(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SaveChatMediaAs'](arg1, arg2, arg3, arg4);
+}

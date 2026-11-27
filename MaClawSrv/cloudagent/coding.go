@@ -538,6 +538,17 @@ type agentHost struct {
 	// streamedThinking is the reasoning text already published for this turn.
 	// The terminal frame only sends a suffix the live deltas did not carry.
 	streamedThinking strings.Builder
+	// routeDecided is set once this turn has asked the semantic resolver.
+	// Empty user text does not decide: the loop may build the prompt first.
+	routeDecided bool
+	routed       cloudRoutedSurface
+	searchDone   bool
+	fetchDone    bool
+	// searchAttempted and fetchAttempted record a call that reached the
+	// engine. A missing argument does not. The PDF denial uses them to name
+	// a lookup that has not been tried yet.
+	searchAttempted bool
+	fetchAttempted  bool
 }
 
 // hostWriteEvent is one write_file call's canonical path and exact line
@@ -621,9 +632,19 @@ func (h *agentHost) verificationFacts() []codingagent.FinalAnswerVerificationFac
 	return out
 }
 
-func (h *agentHost) BuildSystemPrompt(string, bool) string {
+func (h *agentHost) BuildSystemPrompt(userText string, _ bool) string {
+	h.ensureSessionRoute(userText)
 	var base string
-	if !h.coding {
+	if h.routed.active {
+		// The routed wave has no bash, read_file, write_file, git, or
+		// update_plan_step. The workspace sentence that names reading and
+		// writing sends the model into calls this turn rejects.
+		who := "你是这个云端会话实例。"
+		if h.coding {
+			who = "你是这个云端编程实例。"
+		}
+		base = who + "不能读取 git.json 或 llm.json。"
+	} else if !h.coding {
 		base = "你是这个云端会话实例。读和写必须留在工作区里，不能读取 git.json 或 llm.json。" +
 			"运行命令用 bash，读文件用 read_file，写文件用 write_file。"
 	} else if _, err := readGit(h.inst.dir); err != nil {
@@ -646,20 +667,32 @@ func (h *agentHost) BuildSystemPrompt(string, bool) string {
 		persona += "\n请始终以该专家身份回应，不越界处理无关事务。"
 		base = persona + "\n\n" + base
 	}
-	if h.coding {
+	if h.coding && !h.routed.active {
 		base += "\n\n## Final answer — coding-agent summary contract\n" + codingagent.FinalAnswerPresentationContract()
 	}
 	if h.plan != nil && len(h.plan.Steps) > 0 {
-		base += "\n本次任务按用户已确认的计划执行：\n" + planTextOf(h.plan.Steps) +
-			"\n开始每一步之前先调用 update_plan_step {\"index\":<步骤号>,\"status\":\"running\"}；" +
-			"完成时用 \"passed\"，失败用 \"failed\"，跳过用 \"skipped\"，可附 \"summary\" 写一句结果。"
+		base += "\n本次任务按用户已确认的计划执行：\n" + planTextOf(h.plan.Steps)
+		if !h.routed.active {
+			base += "\n开始每一步之前先调用 update_plan_step {\"index\":<步骤号>,\"status\":\"running\"}；" +
+				"完成时用 \"passed\"，失败用 \"failed\"，跳过用 \"skipped\"，可附 \"summary\" 写一句结果。"
+		}
 	}
 	if h.phasePrompt != "" {
 		base += "\n\n" + h.phasePrompt
 	}
+	if note := h.routedPrompt(); note != "" {
+		base += "\n" + note
+	}
 	return base
 }
-func (h *agentHost) BuildTools(string) []map[string]interface{} {
+func (h *agentHost) BuildTools(userText string) []map[string]interface{} {
+	h.ensureSessionRoute(userText)
+	if h.routed.active {
+		return h.routedTools()
+	}
+	return h.workspaceTools()
+}
+func (h *agentHost) workspaceTools() []map[string]interface{} {
 	tools := []map[string]interface{}{
 		fnTool("bash", "在工作区里运行一个 argv 命令。不要用 shell 字符串。", map[string]interface{}{
 			"type": "object",
@@ -879,6 +912,25 @@ func (h *agentHost) beginTurnJail() func() {
 func (h *agentHost) runTool(name, argsJSON string) (string, bool) {
 	// A stale write operand must never attach to another tool's finished event.
 	h.lastWrite = hostWriteEvent{}
+	if h.routed.active {
+		if !h.routedToolListed(name) {
+			return h.routedToolDenied(name), true
+		}
+		switch name {
+		case "web_search":
+			// Search and fetch do not touch the workspace. Counting them as
+			// in-flight jail work would hold ConnectGit for the whole request.
+			return h.execWebSearch(argsJSON)
+		case "web_fetch":
+			return h.execWebFetch(argsJSON)
+		case "generate_pdf":
+			end := h.beginTurnJail()
+			defer end()
+			return h.execGeneratePDF(argsJSON)
+		default:
+			return h.routedToolDenied(name), true
+		}
+	}
 	end := h.beginTurnJail()
 	defer end()
 	switch name {
@@ -1321,6 +1373,15 @@ func cloudToolStatusLine(name, argsJSON string) string {
 		detail = stringArg(args, "message")
 	case "git_push":
 		action = "推送代码"
+	case "web_search":
+		action = "检索网页"
+		detail = stringArg(args, "query")
+	case "web_fetch":
+		action = "读取网页"
+		detail = stringArg(args, "url")
+	case "generate_pdf":
+		action = "生成 PDF"
+		detail = stringArg(args, "title")
 	default:
 		detail = name
 	}

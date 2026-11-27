@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -418,8 +419,8 @@ func TestResponsesAPIStreamFailedEventReturnsPartialResponseWithReasoning(t *tes
 		nil,
 		nil,
 	)
-	if err == nil || !strings.Contains(err.Error(), "Responses API error: boom") {
-		t.Fatalf("err = %v, want Responses API error", err)
+	if err == nil || !strings.Contains(err.Error(), "Responses API stream failed: boom") || !strings.Contains(err.Error(), "code=server_error") {
+		t.Fatalf("err = %v, want Responses API stream failed", err)
 	}
 	if resp == nil || len(resp.Choices) != 1 {
 		t.Fatalf("partial response was dropped with the error: %#v", resp)
@@ -429,6 +430,148 @@ func TestResponsesAPIStreamFailedEventReturnsPartialResponseWithReasoning(t *tes
 	}
 	if got := resp.Choices[0].Message.Content; got != "partial answer" {
 		t.Fatalf("content = %q, want accumulated partial content", got)
+	}
+}
+
+func TestResponsesAPIStreamTopLevelErrorEventKeepsReasoning(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"thinking step\"}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"The server had an error while processing your request.\",\"param\":null,\"sequence_number\":1}\n\n")
+	}))
+	defer srv.Close()
+
+	resp, err := (&IMMessageHandler{}).doResponsesAPILLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "Responses API stream failed: The server had an error while processing your request.") || !strings.Contains(err.Error(), "code=server_error") {
+		t.Fatalf("err = %v, want the top-level server_error", err)
+	}
+	if strings.Contains(err.Error(), "payload_len=") {
+		t.Fatalf("err = %v, top-level message was dropped", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("partial response was dropped with the error: %#v", resp)
+	}
+	if got := resp.Choices[0].Message.ReasoningContent; got != "thinking step" {
+		t.Fatalf("reasoning_content = %q, want accumulated partial reasoning", got)
+	}
+	if got := resp.Choices[0].Message.Content; got != "" {
+		t.Fatalf("content = %q, want no assistant text", got)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type responsesStreamPrefixThenErr struct {
+	rest []byte
+	err  error
+}
+
+func (r *responsesStreamPrefixThenErr) Read(p []byte) (int, error) {
+	if len(r.rest) == 0 {
+		return 0, r.err
+	}
+	n := copy(p, r.rest)
+	r.rest = r.rest[n:]
+	return n, nil
+}
+
+func TestResponsesAPIStreamCompletedFailedStatusIsNotSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "event: response.reasoning_summary_text.delta\ndata: {\"delta\":\"thinking step\"}\n\n")
+		_, _ = fmt.Fprint(w, "event: response.completed\ndata: {\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"The server had an error while processing your request.\"},\"output\":[{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"failed summary\"}]}]}}\n\n")
+	}))
+	defer srv.Close()
+
+	resp, err := (&IMMessageHandler{}).doResponsesAPILLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "code=server_error") {
+		t.Fatalf("err = %v, want the failed completed frame", err)
+	}
+	if resp == nil || resp.Choices[0].Message.ReasoningContent != "thinking step" {
+		t.Fatalf("partial reasoning dropped: %#v", resp)
+	}
+	if resp.Choices[0].Message.Content != "" {
+		t.Fatalf("content = %q, want no assistant text", resp.Choices[0].Message.Content)
+	}
+	if strings.Contains(resp.Choices[0].Message.ReasoningContent, "failed summary") {
+		t.Fatalf("reasoning = %q, want the failed snapshot summary left out", resp.Choices[0].Message.ReasoningContent)
+	}
+}
+
+func TestResponsesAPIStreamReadErrorAfterReasoningIsNotSuccess(t *testing.T) {
+	const event = "event: response.reasoning_summary_text.delta\ndata: {\"delta\":\"thinking step\"}\n\n"
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Proto:      "HTTP/1.1",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: io.NopCloser(&responsesStreamPrefixThenErr{
+				rest: []byte(event),
+				err:  io.ErrUnexpectedEOF,
+			}),
+			Request: r,
+		}, nil
+	})}
+	resp, err := (&IMMessageHandler{}).doResponsesAPILLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: "https://api.example.test/v1", Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		client,
+		nil,
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "SSE stream read error") || !strings.Contains(err.Error(), "unexpected EOF") {
+		t.Fatalf("err = %v, want the cut reported", err)
+	}
+	if resp == nil || resp.Choices[0].Message.ReasoningContent != "thinking step" {
+		t.Fatalf("partial reasoning dropped: %#v", resp)
+	}
+	if resp.Choices[0].Message.Content != "" {
+		t.Fatalf("content = %q, want no assistant text", resp.Choices[0].Message.Content)
+	}
+}
+
+func TestResponsesAPIStreamFailedNumericCodeIsNotSwallowed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "event: response.failed\ndata: {\"response\":{\"error\":{\"message\":\"upstream unavailable\",\"code\":503}}}\n\n")
+	}))
+	defer srv.Close()
+
+	_, err := (&IMMessageHandler{}).doResponsesAPILLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "Responses API stream failed: upstream unavailable (code=503)") {
+		t.Fatalf("err = %v, want numeric code 503", err)
 	}
 }
 

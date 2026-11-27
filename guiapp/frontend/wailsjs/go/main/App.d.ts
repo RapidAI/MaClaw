@@ -3418,3 +3418,7 @@ export function DownloadCloudAgentWorkspace(arg1:string, arg2:string):Promise<st
 export function UploadFilesToCloudAgent(arg1:string):Promise<{ files: number; dirs: number; bytes: number }>;
 
 export function UploadDirectoryToCloudAgent(arg1:string):Promise<{ files: number; dirs: number; bytes: number }>;
+
+export function CopyChatMediaToClipboard(arg1:string, arg2:string):Promise<void>;
+
+export function SaveChatMediaAs(arg1:string, arg2:string, arg3:string, arg4:string):Promise<string>;

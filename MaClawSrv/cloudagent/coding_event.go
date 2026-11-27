@@ -68,6 +68,18 @@ func cloudToolEventArgs(event map[string]any, name, argsJSON string) {
 		if msg := stringArg(args, "message"); msg != "" {
 			event["target"] = collapseToolDetail(msg)
 		}
+	case "web_search":
+		if query := stringArg(args, "query"); query != "" {
+			event["command"] = collapseToolDetail(query)
+		}
+	case "web_fetch":
+		if rawURL := stringArg(args, "url"); rawURL != "" {
+			event["target"] = collapseToolDetail(rawURL)
+		}
+	case "generate_pdf":
+		if title := stringArg(args, "title"); title != "" {
+			event["target"] = collapseToolDetail(title)
+		}
 	}
 }
 

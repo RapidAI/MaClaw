@@ -950,8 +950,8 @@ func TestResponsesWSStreamFailedFrameReturnsPartialResponseWithReasoning(t *test
 		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
 		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}}, nil, srv.Client(), nil, nil,
 	)
-	if err == nil || !strings.Contains(err.Error(), "Responses API error: boom") {
-		t.Fatalf("err = %v, want Responses API error", err)
+	if err == nil || !strings.Contains(err.Error(), "Responses API stream failed: boom") || !strings.Contains(err.Error(), "code=server_error") {
+		t.Fatalf("err = %v, want Responses API stream failed", err)
 	}
 	if resp == nil || len(resp.Choices) != 1 {
 		t.Fatalf("partial response was dropped with the error: %#v", resp)
@@ -991,14 +991,155 @@ func TestResponsesWSStreamErrorFrameReturnsPartialResponse(t *testing.T) {
 		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
 		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}}, nil, srv.Client(), nil, nil,
 	)
-	if err == nil || !strings.Contains(err.Error(), "Responses API WebSocket error: frame boom") {
-		t.Fatalf("err = %v, want Responses API WebSocket error", err)
+	if err == nil || !strings.Contains(err.Error(), "Responses API stream failed: frame boom") || !strings.Contains(err.Error(), "code=internal") {
+		t.Fatalf("err = %v, want Responses API stream failed", err)
 	}
 	if resp == nil || len(resp.Choices) != 1 {
 		t.Fatalf("partial response was dropped with the error: %#v", resp)
 	}
 	if got := resp.Choices[0].Message.ReasoningContent; got != "ws reasoning before error" {
 		t.Fatalf("reasoning_content = %q, want accumulated partial reasoning", got)
+	}
+}
+
+func TestResponsesWSStreamOfficialErrorEventKeepsReasoning(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		for _, frame := range []string{
+			`{"type":"response.reasoning_summary_text.delta","delta":"ws thinking step"}`,
+			`{"type":"error","code":"server_error","message":"The server had an error while processing your request.","param":null,"sequence_number":1}`,
+		} {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+				t.Fatalf("write frame: %v", err)
+			}
+		}
+	}))
+	defer srv.Close()
+
+	resp, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}}, nil, srv.Client(), nil, nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "Responses API stream failed: The server had an error while processing your request.") || !strings.Contains(err.Error(), "code=server_error") {
+		t.Fatalf("err = %v, want the top-level server_error", err)
+	}
+	if strings.Contains(err.Error(), "unknown error") || strings.Contains(err.Error(), "payload_len=") {
+		t.Fatalf("err = %v, top-level message was dropped", err)
+	}
+	if resp == nil || resp.Choices[0].Message.ReasoningContent != "ws thinking step" {
+		t.Fatalf("partial reasoning dropped: %#v", resp)
+	}
+	if resp.Choices[0].Message.Content != "" {
+		t.Fatalf("content = %q, want no assistant text", resp.Choices[0].Message.Content)
+	}
+}
+
+func TestResponsesWSStreamUnexpectedCloseKeepsPartialAndError(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.reasoning_summary_text.delta","delta":"ws thinking step"}`)); err != nil {
+			t.Fatalf("write frame: %v", err)
+		}
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "dropped"), time.Now().Add(time.Second))
+	}))
+	defer srv.Close()
+
+	resp, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}}, nil, srv.Client(), nil, nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "WebSocket unexpected close (code=1011)") {
+		t.Fatalf("err = %v, want the dropped socket", err)
+	}
+	if resp == nil || resp.Choices[0].Message.ReasoningContent != "ws thinking step" {
+		t.Fatalf("partial reasoning dropped: %#v", resp)
+	}
+	if resp.Choices[0].Message.Content != "" {
+		t.Fatalf("content = %q, want no assistant text", resp.Choices[0].Message.Content)
+	}
+}
+
+func TestResponsesWSStreamCompletedFailedStatusIsNotSuccess(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		for _, frame := range []string{
+			`{"type":"response.reasoning_summary_text.delta","delta":"ws thinking step"}`,
+			`{"type":"response.completed","response":{"status":"failed","error":{"code":"server_error","message":"The server had an error while processing your request."}}}`,
+		} {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+				t.Fatalf("write frame: %v", err)
+			}
+		}
+	}))
+	defer srv.Close()
+
+	resp, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}}, nil, srv.Client(), nil, nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "code=server_error") {
+		t.Fatalf("err = %v, want the failed completed frame", err)
+	}
+	if resp == nil || resp.Choices[0].Message.ReasoningContent != "ws thinking step" {
+		t.Fatalf("partial reasoning dropped: %#v", resp)
+	}
+	if resp.Choices[0].Message.Content != "" {
+		t.Fatalf("content = %q, want no assistant text", resp.Choices[0].Message.Content)
+	}
+}
+
+func TestResponsesWSStreamNumericErrorCodeIsNotSwallowed(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		frame := `{"type":"error","error":{"code":503,"message":"upstream unavailable"}}`
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+			t.Fatalf("write frame: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	_, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}}, nil, srv.Client(), nil, nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "Responses API stream failed: upstream unavailable (code=503)") {
+		t.Fatalf("err = %v, want numeric code 503", err)
 	}
 }
 

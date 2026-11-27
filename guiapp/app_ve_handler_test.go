@@ -65,6 +65,21 @@ func TestVisibleVEStreamDeltaDropsReasoningMarkersAndControls(t *testing.T) {
 	}
 }
 
+func TestSplitVEStreamDeltaKeepsReasoningOffTheAnswer(t *testing.T) {
+	visible, reasoning := splitVEStreamDelta("\x01plan the reply")
+	if visible != "" || reasoning != "plan the reply" {
+		t.Fatalf("visible=%q reasoning=%q", visible, reasoning)
+	}
+	visible, reasoning = splitVEStreamDelta("\x02kept")
+	if visible != "kept" || reasoning != "" {
+		t.Fatalf("reject marker visible=%q reasoning=%q", visible, reasoning)
+	}
+	visible, reasoning = splitVEStreamDelta("hello")
+	if visible != "hello" || reasoning != "" {
+		t.Fatalf("content visible=%q reasoning=%q", visible, reasoning)
+	}
+}
+
 func TestGroupDispatcherRespondsToAttachmentOnlyStatement(t *testing.T) {
 	msg := a2a.GroupDiscussionMessage{
 		Kind: a2a.MessageStatement,

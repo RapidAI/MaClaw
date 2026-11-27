@@ -35,6 +35,14 @@ func TestDefaultGUICodingRuntimeOptionsDeclareWriterScope(t *testing.T) {
 	if plan == nil || !plan.ReadOnly || plan.RequireFinalWorkspaceGate || len(plan.DeclaredWrites) != 0 {
 		t.Fatalf("goal plan options=%+v", plan)
 	}
+	execute := defaultGUICodingRuntimeOptions(&TaskItem{
+		Title:       "使用macmini作为测试环境，优化neon指令及metalGPU指令推理性能。",
+		Description: "[系统续接][execute] 按步骤执行目标：优化neon指令及metalGPU指令推理性能。\n\n本轮只能提交步骤 1：确认优化边界。",
+		RequestKind: codingRequestImplementation,
+	}, root)
+	if execute == nil || execute.ReadOnly || execute.RequireFinalWorkspaceGate || len(execute.DeclaredWrites) != 1 {
+		t.Fatalf("goal execute options=%+v", execute)
+	}
 	rootClaim := defaultGUICodingRuntimeOptions(&TaskItem{RequestKind: codingRequestImplementation}, root)
 	if rootClaim == nil || len(rootClaim.DeclaredWrites) != 1 || !strings.HasSuffix(rootClaim.DeclaredWrites[0], string(filepath.Separator)) {
 		t.Fatalf("dynamic writer root claim=%+v", rootClaim)
@@ -42,6 +50,54 @@ func TestDefaultGUICodingRuntimeOptionsDeclareWriterScope(t *testing.T) {
 	relative := defaultGUICodingRuntimeOptions(&TaskItem{RequestKind: codingRequestImplementation}, "repo")
 	if relative == nil || len(relative.DeclaredWrites) != 1 || relative.DeclaredWrites[0] != "."+string(filepath.Separator) {
 		t.Fatalf("relative writer root claim=%+v", relative)
+	}
+}
+
+func TestGoalExecuteTurnCompletesWithoutWorkspaceChange(t *testing.T) {
+	root := initRecoveryGitFixture(t)
+	task := &TaskItem{
+		Title:       "使用macmini作为测试环境，优化neon指令及metalGPU指令推理性能。",
+		Description: "[系统续接][execute] 按步骤执行目标：优化neon指令及metalGPU指令推理性能。\n\n本轮只能提交步骤 1：确认优化边界。",
+		RequestKind: codingRequestImplementation,
+	}
+	options := defaultGUICodingRuntimeOptions(task, root)
+	if options == nil || options.ReadOnly || options.RequireFinalWorkspaceGate || len(options.DeclaredWrites) == 0 {
+		t.Fatalf("goal execute options=%+v", options)
+	}
+	deferred := (&codingParallelTurn{primary: root, deferred: true}).runtimeOptions(task)
+	if deferred == nil || deferred.ReadOnly || deferred.RequireFinalWorkspaceGate || !deferred.DeferredWorktree || !deferred.RequireFinalDiffGate || !deferred.WorkspaceIsolated {
+		t.Fatalf("deferred goal execute options=%+v", deferred)
+	}
+	if normalizeProjectSessionPath(deferred.PolicyProjectRoot) != normalizeProjectSessionPath(root) || len(deferred.DeclaredWrites) == 0 {
+		t.Fatalf("deferred goal execute lost its writer scope: %+v", deferred)
+	}
+	result, attempt, err := runGUICodingTaskWithLedgerWithOptions(
+		context.Background(), codingruntime.NewMemoryStore(), "gui:test", "workflow", "phase", root, "confirm", nil, nil, options,
+		func() *CodingSubAgentResult {
+			return &CodingSubAgentResult{
+				Status:              TaskExecPassed,
+				Summary:             "优化边界已确认",
+				QualityStatus:       codingSubAgentQualityNotNeeded,
+				ExplorationSummary:  "goal continuation: file audit does not apply",
+				VerificationSummary: "goal continuation: no file audit",
+			}
+		},
+	)
+	if err != nil || result == nil || attempt == nil {
+		t.Fatalf("result=%#v attempt=%#v err=%v", result, attempt, err)
+	}
+	if result.Status != TaskExecPassed || attempt.Status != codingruntime.TaskCompleted || attempt.ErrorCode != "" || attempt.Policy.FinalWorkspaceGateRequired || attempt.Policy.ReadOnly {
+		t.Fatalf("unchanged goal execute was blocked: result=%#v attempt=%#v", result, attempt)
+	}
+	writer := defaultGUICodingRuntimeOptions(&TaskItem{RequestKind: codingRequestImplementation, Files: []string{"file.txt"}}, root)
+	_, blocked, blockedErr := runGUICodingTaskWithLedgerWithOptions(
+		context.Background(), codingruntime.NewMemoryStore(), "gui:test", "workflow", "phase", root, "implement", nil, nil, writer,
+		func() *CodingSubAgentResult {
+			return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "done"}
+		},
+	)
+	if blockedErr != nil || blocked == nil || blocked.Status != codingruntime.TaskBlocked || blocked.ErrorCode != "final_workspace_unchanged" {
+		t.Fatalf("ordinary unchanged writer attempt=%#v err=%v", blocked, blockedErr)
 	}
 }
 

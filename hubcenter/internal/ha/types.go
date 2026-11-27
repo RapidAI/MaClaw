@@ -36,6 +36,14 @@ type PeerRuntimeState struct {
 	LastCheckedAt *time.Time `json:"last_checked_at,omitempty"`
 	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
 	LastError     string     `json:"last_error,omitempty"`
+	// unreachableSince is the first time this peer was marked unreachable
+	// in the current outage. A deferred push sets LastCheckedAt without
+	// starting this clock. Success clears it.
+	unreachableSince *time.Time
+	// dispatchSynced is true after this process has pulled the peer's log
+	// through its current tail since the last outage started. A candidate
+	// that is not synced blocks scheduled dispatch.
+	dispatchSynced bool
 }
 
 type ClientQualityView struct {

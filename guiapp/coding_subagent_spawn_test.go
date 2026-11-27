@@ -165,8 +165,11 @@ func TestCanSpawnCodingAgentDepthAndRole(t *testing.T) {
 
 func TestToolAllowedForRole(t *testing.T) {
 	ex := &CodingSubAgent{role: codingRoleExplorer, nestDepth: 1}
-	if !ex.toolAllowedForRole("read_file") || !ex.toolAllowedForRole("Glob") {
-		t.Fatal("explorer should read/search")
+	if !ex.toolAllowedForRole("read_file") || !ex.toolAllowedForRole("Glob") || !ex.toolAllowedForRole("ocr_recognize") {
+		t.Fatal("explorer should read/search/ocr")
+	}
+	if ok, _ := ex.toolCallAllowedForRole("ocr_recognize", map[string]interface{}{"output_path": "ocr.txt"}); ok {
+		t.Fatal("explorer OCR output_path must not write")
 	}
 	if ex.toolAllowedForRole("write_file") || ex.toolAllowedForRole("edit_file") || ex.toolAllowedForRole("bash") {
 		t.Fatal("explorer must not write or bash")
@@ -176,8 +179,8 @@ func TestToolAllowedForRole(t *testing.T) {
 	}
 
 	rev := &CodingSubAgent{role: codingRoleReviewer, nestDepth: 1}
-	if !rev.toolAllowedForRole("git_diff") {
-		t.Fatal("reviewer should inspect git diff")
+	if !rev.toolAllowedForRole("git_diff") || !rev.toolAllowedForRole("ocr_recognize") {
+		t.Fatal("reviewer should inspect git diff and OCR images")
 	}
 	if rev.toolAllowedForRole("write_file") || rev.toolAllowedForRole("edit_file") {
 		t.Fatal("reviewer must not write")
@@ -279,8 +282,8 @@ func TestBuildToolsExplorerFiltersWrites(t *testing.T) {
 	if names["write_file"] || names["edit_file"] || names["edit_lines"] || names["bash"] {
 		t.Fatalf("explorer tools leaked writes/bash: %#v", names)
 	}
-	if !names["read_file"] || !names["Glob"] {
-		t.Fatalf("explorer missing read tools: %#v", names)
+	if !names["read_file"] || !names["Glob"] || !names["ocr_recognize"] {
+		t.Fatalf("explorer missing read/OCR tools: %#v", names)
 	}
 	if names[codingSubAgentSpawnToolName] {
 		t.Fatal("explorer must not expose spawn")
@@ -711,6 +714,9 @@ func TestLocalInspectionRoleSystemPrompt(t *testing.T) {
 	}
 	if !strings.Contains(p, "map auth") {
 		t.Fatal("expected req context")
+	}
+	if !strings.Contains(p, "ocr_recognize") || !strings.Contains(p, "省略 output_path") {
+		t.Fatal("inspection prompt should document read-only OCR use")
 	}
 }
 

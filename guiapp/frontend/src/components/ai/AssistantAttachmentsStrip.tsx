@@ -2,6 +2,7 @@ import { memo, useEffect, useState, type CSSProperties, type Dispatch, type SetS
 import { localizeText } from "../../i18n";
 import { AIAssistantAttachmentPreviewDataURL, AIAssistantFileTypeIconDataURL } from "../../../wailsjs/go/main/App";
 import { AttachmentImageThumbnail } from "./AttachmentImagePreview";
+import { useChatMediaMenu } from "./chatMediaMenu";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { isImageFilePath } from "./useAIAssistant";
 import { type Theme } from "./aiAssistantPanelTheme";
@@ -244,9 +245,20 @@ function AttachmentChip({ filePath, fileName, isImage, lang, theme, disabled, on
     disabled: boolean;
     onRemove: () => void;
 }) {
+    const { onContextMenu, menu } = useChatMediaMenu(lang);
     return (
         <div className="ai-attachment-row" role="listitem" title={filePath} style={attachmentRowStyle(theme)}>
-            <AttachmentChipIcon filePath={filePath} fileName={fileName} isImage={isImage} lang={lang} theme={theme} />
+            <span
+                data-testid="attachment-chip-icon"
+                onContextMenu={(event) => onContextMenu(event, {
+                    kind: isImage ? "image" : "file",
+                    source: filePath,
+                    fileName,
+                })}
+                style={{ display: "inline-flex", flexShrink: 0 }}
+            >
+                <AttachmentChipIcon filePath={filePath} fileName={fileName} isImage={isImage} lang={lang} theme={theme} />
+            </span>
             <span className="ai-attachment-name" title={fileName} aria-label={fileName}>{fileName}</span>
             <button
                 type="button"
@@ -259,6 +271,7 @@ function AttachmentChip({ filePath, fileName, isImage, lang, theme, disabled, on
             >
                 {"×"}
             </button>
+            {menu}
         </div>
     );
 }

@@ -16,9 +16,10 @@ func SanitizeVisibleChatText(s string) string {
 	return strings.Map(dropNonDisplayChatRune, s)
 }
 
-// VisibleChatStreamDelta prepares one agent-loop token for a digital-employee
-// UI that has no reasoning panel. Reasoning-lane deltas (leading U+0001) are
-// dropped entirely; remaining text is tofu-sanitized.
+// VisibleChatStreamDelta prepares one agent-loop token for a visible answer
+// lane. Reasoning-lane deltas (leading U+0001) are dropped entirely; a UI that
+// shows 思考过程 reads that lane through SplitVisibleStreamDelta on its own
+// channel. Remaining text is tofu-sanitized.
 func VisibleChatStreamDelta(s string) string {
 	if s == "" || strings.HasPrefix(s, "\x01") {
 		return ""

@@ -203,6 +203,42 @@ func (s *Store) List(ctx context.Context, filter ListFilter) ([]*Notification, e
 	return results, rows.Err()
 }
 
+// ListDueDrafts returns drafts whose publish_at has arrived. A draft with
+// no publish_at is not included. publish_at is stored as UTC RFC3339.
+func (s *Store) ListDueDrafts(ctx context.Context, now time.Time) ([]*Notification, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+notificationColumns+` FROM admin_notifications
+		 WHERE status = ? AND publish_at IS NOT NULL AND publish_at != '' AND publish_at <= ?
+		 ORDER BY publish_at ASC LIMIT 50`,
+		string(StatusDraft), now.UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []*Notification
+	for rows.Next() {
+		n, err := scanNotificationFromRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, n)
+	}
+	return results, rows.Err()
+}
+
+// ClaimDraft moves a draft to next. ok is false when the row is no longer a draft.
+func (s *Store) ClaimDraft(ctx context.Context, id string, next Status) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE admin_notifications SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		string(next), time.Now().UTC().Format(time.RFC3339), id, string(StatusDraft))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
 // UpdateStatus updates the status and updated_at of a notification.
 func (s *Store) UpdateStatus(ctx context.Context, id string, status Status) error {
 	now := time.Now().UTC().Format(time.RFC3339)

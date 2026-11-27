@@ -136,6 +136,13 @@ func (p ToolPolicy) IsToolCallAllowed(name string, args map[string]interface{}) 
 			}
 		}
 	}
+	if p.Role.ReadOnly() && strings.EqualFold(canonical, "ocr_recognize") {
+		for _, key := range []string{"output_path", "output", "result_path"} {
+			if value, ok := args[key]; ok && strings.TrimSpace(fmt.Sprint(value)) != "" {
+				return false, "ocr_recognize " + key + " is not allowed for a read-only coding child"
+			}
+		}
+	}
 	return true, ""
 }
 

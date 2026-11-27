@@ -1126,6 +1126,9 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 		stepTitle, stepDesc := resolveCodingPlanStepFocus("", "", taskText)
 		verificationStatus, verificationSummary = maybeRelaxDeferredPlanStepVerification(stepTitle, stepDesc, taskText, verificationStatus, verificationSummary)
 	}
+	if c != nil && (textIsHostCompileRepair(c.task) || textIsHostCompileRepair(c.taskContext)) {
+		verificationStatus, verificationSummary = codingSubAgentQualityNotNeeded, "host compile repair: the step gate reruns verification"
+	}
 	diffStatus, diffSummary := summarizeRemoteDiffSelfCheck(filesModified, commandsRun, lastEditSeq)
 	noChangeSummary := summarizeSubAgentNoChangeEvidence(filesModified, filesCreated, filesRead, searchesRun, commandsRun, nil)
 	failedCommands := dropInspectOnlyInventoryFailures(unresolvedFailedSubAgentCommands(filterPostEditSubAgentCommands(commandsRun, lastEditSeq)))
@@ -6309,7 +6312,7 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 2. 优先做最小、聚焦的修改；不要顺手重构无关代码
 3. ssh_edit_file 失败时先 ssh_read_file 确认当前内容，再重试。
 4. 每个改过或新建的文件，都要在它最后一次修改或新建之后，再次 ssh_read_file 读取关键片段，确认远程文件确实变成预期内容
-5. 最后一次修改或新建后用 ssh_bash 运行匹配任务的验证命令（如 "g++ -o hello hello.cpp"、"python3 -m py_compile file.py"、pytest/go test/npm test 等）。验证命令不要加管道、|| 或重定向，也不要和 git status/diff 写在同一条命令里。验证跟在最后一次非文档修改之后。文档只算 Markdown（含 mdx）、README、changelog、rst；只改这些才不必跑，改了 go.mod、CMakeLists、package.json 或其他文件都要重跑。只有当前任务是带编号的计划步骤，且后面另有编号步骤写明编译、构建或测试时，实现、编写或新建步骤才不要提前完整构建；其他步骤必须在本步骤验证。
+5. 最后一次修改或新建后用 ssh_bash 运行匹配任务的验证命令（如 "g++ -o hello hello.cpp"、"python3 -m py_compile file.py"、pytest/go test/npm test 等）。验证命令不要加管道、|| 或重定向，也不要和 git status/diff 写在同一条命令里。验证跟在最后一次非文档修改之后。文档只算 Markdown（含 mdx）、README、changelog、rst；只改这些才不必跑，改了 go.mod、CMakeLists、package.json 或其他文件都要重跑。只有当前任务是带编号的计划步骤，且后面另有编号步骤写明编译、构建或测试时，实现、编写或新建步骤才不要提前完整构建；其他步骤必须在本步骤验证。用户消息含 [host-compile-repair] 时不要运行验证命令，宿主会重跑。
 6. 最后一次修改或新建后用一条 ssh_bash 运行 git status --short && git diff --stat。不要用分号、管道或 || 拆开，也不要附带 git log，除非任务明确要求
 7. git 自检命令不要使用 2>/dev/null、>/dev/null、&>/dev/null 等重定向；保留 fatal 原文。若不是 Git 仓库，在最终回复写明“非 Git 仓库，跳过 diff 自检”即可，不要反复重试
 8. 文件改写必须使用 ssh_edit_file/ssh_write_file，不要用 ssh_bash 改写文件内容。任务原文明确要求清空或删除时，按下面的严禁行为调用 ssh_bash

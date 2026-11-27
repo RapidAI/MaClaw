@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -272,11 +271,23 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 	}
 	exitCode := -1
 	if exitErr, ok := err.(*exec.ExitError); ok {
-		exitCode = exitErr.ExitCode()
+		exitCode = codingObservedExitCode(exitErr.ExitCode())
 	}
 	output = codingEmptySearchOutput(command, output, exitCode)
 	output = appendCodingCommandExitStatus(output, exitCode)
 	return codingCommandExecutionResult{Text: output, Kind: codingCommandResultExitError, ExitCode: exitCode}
+}
+
+// codingObservedExitCode is the status the shell itself shows.
+// A Windows process status is a uint32. Go widens it to a positive int on
+// amd64, so the shell's -1 arrives as 4294967295 and an NTSTATUS such as
+// STATUS_ACCESS_VIOLATION (0xC0000005) arrives as 3221225477. cmd and
+// PowerShell print the signed 32-bit value.
+func codingObservedExitCode(code int) int {
+	if runtime.GOOS != "windows" || code < 0 || uint64(code) > uint64(^uint32(0)) {
+		return code
+	}
+	return int(int32(uint32(code)))
 }
 
 func windowsCodingBashInvocation(command string) (string, []string) {
@@ -303,7 +314,6 @@ func windowsCodingBashInvocation(command string) (string, []string) {
 	// compile plus a leftover hello.exe look like success. Keep short-circuit.
 	psCommand := convertUnquotedAndAndForPowerShell(command)
 	psCommand = ensurePowerShellCallOperator(psCommand)
-	psCommand = keepCodingPowerShellPipeReaders(psCommand)
 	// Wrap the command so Go observes the real command result. Native
 	// tools often write progress to stderr even when they exit 0, while
 	// PowerShell cmdlet errors can be hidden by 2>&1 pipelines. The wrapper
@@ -533,57 +543,6 @@ func quotedPowerShellExecutable(command string) bool {
 	return strings.ContainsAny(token, `\/`)
 }
 
-// windowsCodingPipeConsumerWaitPatterns turn the early exit of a truncating
-// pipeline consumer into a full read. `Select-Object -First N` and the array
-// slice `[0..N]` stop the pipeline once they have N objects, which kills
-// the upstream native command and leaves $LASTEXITCODE at -1 even when the
-// command itself succeeded. -Wait keeps the consumer reading so the native
-// command ends on its own and reports its real exit status.
-var windowsCodingPipeConsumerWaitPatterns = []struct {
-	pattern *regexp.Regexp
-	fix     func(match []string) string
-	// alreadyApplied reports that the command already carries this rule's
-	// rewriting, so it must not be applied a second time.
-	alreadyApplied func(command string) bool
-}{
-	{
-		pattern: regexp.MustCompile(`(?i)(\bSelect-Object\b[^|;\n]*?-First(?:\s+|:)\d+)(\s|$)`),
-		fix: func(match []string) string {
-			return match[1] + " -Wait" + match[2]
-		},
-		// Already waiting: -Wait follows the matched tail, so the match
-		// itself never contains it. Rewriting again would repeat the switch.
-		alreadyApplied: func(command string) bool {
-			return regexp.MustCompile(`(?i)(\bSelect-Object\b[^|;\n]*?-First(?:\s+|:)\d+)\s-Wait\b`).MatchString(command)
-		},
-	},
-	{
-		pattern: regexp.MustCompile(`(\[)\s*(\d+)\s*\.\.\s*(\d+)\s*(\])`),
-		fix: func(match []string) string {
-			end, err := strconv.Atoi(match[3])
-			if err != nil {
-				return match[0]
-			}
-			return fmt.Sprintf("[Math]::Min(%d, $_.Count - 1)]", end)
-		},
-	},
-}
-
-// keepCodingPowerShellPipeReaders makes a truncating pipeline consumer read
-// the whole stream. Callers keep their own slice policy; this only stops the
-// consumer from aborting a command that was still writing.
-func keepCodingPowerShellPipeReaders(command string) string {
-	for _, rule := range windowsCodingPipeConsumerWaitPatterns {
-		if rule.alreadyApplied != nil && rule.alreadyApplied(command) {
-			continue
-		}
-		command = rule.pattern.ReplaceAllStringFunc(command, func(found string) string {
-			return rule.fix(rule.pattern.FindStringSubmatch(found))
-		})
-	}
-	return command
-}
-
 func wrapCodingPowerShellCommand(psCommand string) string {
 	// `-ErrorAction SilentlyContinue/Ignore` is the model saying "not finding
 	// this is not a failure". The wrapper runs with ErrorActionPreference
@@ -605,6 +564,15 @@ $nativeExit = 0
 $exitCode = 0
 $maclawSilencedErrors = $%t
 $global:__maclawCodingPsSucceeded = $true
+# -First and -Index stop the upstream process and leave $LASTEXITCODE = -1,
+# the same value as a program that exited -1. Killing it there also drops a
+# non-zero exit the producer would reach after those lines. -Wait is the
+# switch on those parameter sets that lets the producer finish. The select
+# alias and a non-literal -First share this binding. -Last is on that same
+# set and already reads every object. -SkipLast has no -Wait. An explicit
+# -Wait:$false still wins.
+if ($null -eq $PSDefaultParameterValues) { $PSDefaultParameterValues = @{} }
+$PSDefaultParameterValues['Select-Object:Wait'] = $true
 try {
 	$maclawCommand = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%s'))
 	# Ask the block itself for the last statement's status: the invocation

@@ -1564,6 +1564,7 @@ func NewRouter(
 		}
 		notifSvc := notification.NewService(notifStore, notifPusher, nil)
 		notifSvc.SetTranslator(systemFreeTranslator{})
+		go notifSvc.RunScheduledPublisher(context.Background())
 		notifHandler := NewNotificationHandler(notifSvc)
 		// Reading-group invitations ride this notification system so an invitee
 		// who is offline still receives them on the next connect.

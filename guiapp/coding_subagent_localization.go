@@ -333,6 +333,12 @@ func extractCodingSubAgentBugSignal(text string) CodingSubAgentBugSignal {
 }
 
 func codingTaskNeedsLocalization(text string) bool {
+	// Host compile repair already has a file and line from the compiler.
+	// The diagnostic text contains "error", which would otherwise force a
+	// localization report before the one-line edit.
+	if strings.Contains(text, hostCompileRepairMarker) {
+		return false
+	}
 	lower := strings.ToLower(codingTaskLocalizationIntent(text))
 	if lower == "" {
 		return false

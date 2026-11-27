@@ -390,6 +390,9 @@ func TestListUsersHandlerReturnsBoundUsers(t *testing.T) {
 	if body := listResp.Body.String(); !containsAll(body, "listed@example.com", `"sn":`, `"enrollment_status":"approved"`) {
 		t.Fatalf("unexpected body=%s", body)
 	}
+	if got := listResp.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("cache-control = %q", got)
+	}
 }
 
 func TestListUsersHandlerReturnsLastLoginClient(t *testing.T) {
@@ -575,6 +578,16 @@ func TestBoundUserCreatedAtUsesUTCAndOmitsZero(t *testing.T) {
 	got := boundUserCreatedAt(&store.User{CreatedAt: at})
 	if got != "2026-11-01T20:05:06Z" {
 		t.Fatalf("created_at = %s, want 2026-11-01T20:05:06Z", got)
+	}
+	sqliteClock := boundUserCreatedAt(&store.User{CreatedAtText: "2026-11-02 12:00:00"})
+	if sqliteClock != "2026-11-02T12:00:00Z" {
+		t.Fatalf("sqlite created_at = %s", sqliteClock)
+	}
+	if got := boundUserCreatedAt(&store.User{CreatedAtText: "0001-01-01T00:00:00Z"}); got != "" {
+		t.Fatalf("year-1 created_at = %q", got)
+	}
+	if got := boundUserCreatedAt(&store.User{CreatedAtText: "stored-clock"}); got != "stored-clock" {
+		t.Fatalf("unparsed created_at = %q", got)
 	}
 }
 

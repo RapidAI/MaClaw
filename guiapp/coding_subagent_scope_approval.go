@@ -614,6 +614,8 @@ func formatScopeRejection(toolName, path, projectPath string) string {
 		return fmt.Sprintf("\u62d2\u7edd\u5728\u9879\u76ee\u76ee\u5f55\u5916\u6267\u884c\u547d\u4ee4\uff1a%s\u3002\u7f16\u7801 SubAgent \u7684 bash working_dir \u5fc5\u987b\u4f4d\u4e8e\u9879\u76ee\u8def\u5f84 %s \u5185\u3002", path, projectPath)
 	case "git_diff":
 		return fmt.Sprintf("\u62d2\u7edd\u67e5\u770b\u9879\u76ee\u76ee\u5f55\u5916\u7684 diff\uff1a%s\u3002\u7f16\u7801 SubAgent \u53ea\u80fd\u68c0\u67e5\u9879\u76ee\u8def\u5f84 %s \u5185\u7684 diff\u3002", path, projectPath)
+	case "ocr_recognize":
+		return fmt.Sprintf("拒绝访问项目目录外的路径：%s。编码 SubAgent 只能用 ocr_recognize 处理项目路径 %s 内的图片或输出文件。", path, projectPath)
 	default:
 		return fmt.Sprintf("\u62d2\u7edd\u4fee\u6539\u9879\u76ee\u76ee\u5f55\u5916\u7684\u6587\u4ef6\uff1a%s\u3002\u7f16\u7801 SubAgent \u53ea\u80fd\u4fee\u6539\u9879\u76ee\u8def\u5f84 %s \u5185\u7684\u6587\u4ef6\u3002", path, projectPath)
 	}

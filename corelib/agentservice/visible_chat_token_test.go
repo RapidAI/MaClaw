@@ -23,3 +23,23 @@ func TestWrapVisibleChatTokenCallbackNil(t *testing.T) {
 		t.Fatal("nil callback should stay nil")
 	}
 }
+
+func TestForwardChatTokenLanesSendsReasoningWithoutAnswer(t *testing.T) {
+	var tokens, thoughts []string
+	cb := forwardChatTokenLanes(func(delta string) {
+		tokens = append(tokens, delta)
+	}, func(delta string) {
+		thoughts = append(thoughts, delta)
+	})
+	soh := string(rune(1))
+	cb(soh + "user")
+	cb("hello")
+	cb(soh)
+	cb("\x02kept")
+	if len(thoughts) != 1 || thoughts[0] != "user" {
+		t.Fatalf("thoughts %#v", thoughts)
+	}
+	if len(tokens) != 2 || tokens[0] != "hello" || tokens[1] != "kept" {
+		t.Fatalf("tokens %#v", tokens)
+	}
+}

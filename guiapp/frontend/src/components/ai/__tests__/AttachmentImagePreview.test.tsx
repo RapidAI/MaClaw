@@ -1,18 +1,22 @@
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AttachmentImageThumbnail } from "../AttachmentImagePreview";
 import { lightTheme } from "../aiAssistantPanelTheme";
-import { AIAssistantAttachmentFullDataURL, ImportMobileDocumentFromPath, ShowItemInFolder } from "../../../../wailsjs/go/main/App";
+import { AIAssistantAttachmentFullDataURL, CopyChatMediaToClipboard, ImportMobileDocumentFromPath, SaveChatMediaAs, ShowItemInFolder } from "../../../../wailsjs/go/main/App";
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     AIAssistantAttachmentFullDataURL: vi.fn(async () => "data:image/png;base64,FULL"),
     ImportMobileDocumentFromPath: vi.fn(async () => ({})),
     ShowItemInFolder: vi.fn(async () => undefined),
+    CopyChatMediaToClipboard: vi.fn(async () => undefined),
+    SaveChatMediaAs: vi.fn(async () => "D:\\shots\\saved.png"),
 }));
 
 const fullDataURL = vi.mocked(AIAssistantAttachmentFullDataURL);
 const importToLibrary = vi.mocked(ImportMobileDocumentFromPath);
 const showInFolder = vi.mocked(ShowItemInFolder);
+const copyMedia = vi.mocked(CopyChatMediaToClipboard);
+const saveMedia = vi.mocked(SaveChatMediaAs);
 const THUMBNAIL = "data:image/png;base64,THUMB";
 const FILE_PATH = "D:\\shots\\screen.png";
 
@@ -35,6 +39,9 @@ describe("AttachmentImageThumbnail", () => {
         fullDataURL.mockResolvedValue("data:image/png;base64,FULL");
         importToLibrary.mockClear();
         showInFolder.mockClear();
+        copyMedia.mockClear();
+        saveMedia.mockClear();
+        saveMedia.mockResolvedValue("D:\\shots\\saved.png");
     });
 
     it("opens a full-image preview when the thumbnail is clicked", async () => {
@@ -74,6 +81,33 @@ describe("AttachmentImageThumbnail", () => {
         const thumbnail = getByTestId("attachment-image-thumbnail");
         expect(thumbnail.getAttribute("title")).toBe(FILE_PATH);
         expect(thumbnail.getAttribute("aria-label")).toBe("预览图片 screen.png");
+    });
+
+    it("copies the original image and saves it through a file dialog from the right-click menu", async () => {
+        const { getByTestId, queryByTestId } = renderThumbnail();
+        fireEvent.contextMenu(getByTestId("attachment-image-thumbnail"));
+
+        expect(queryByTestId("attachment-image-preview-overlay")).toBeNull();
+        const menu = screen.getByTestId("chat-media-context-menu");
+        expect(menu.textContent).toContain("复制");
+        expect(menu.textContent).toContain("保存");
+
+        fireEvent.click(screen.getByTestId("chat-media-copy"));
+        await waitFor(() => expect(copyMedia).toHaveBeenCalledWith("image", FILE_PATH));
+        await waitFor(() => expect(screen.queryByTestId("chat-media-context-menu")).toBeNull());
+
+        fireEvent.contextMenu(getByTestId("attachment-image-thumbnail"));
+        fireEvent.click(screen.getByTestId("chat-media-save"));
+        await waitFor(() => expect(saveMedia).toHaveBeenCalledWith("image", FILE_PATH, "screen.png", "保存"));
+    });
+
+    it("keeps the menu open and shows the failure when copy is rejected", async () => {
+        copyMedia.mockRejectedValueOnce(new Error("clipboard is busy"));
+        const { getByTestId } = renderThumbnail();
+        fireEvent.contextMenu(getByTestId("attachment-image-thumbnail"));
+        fireEvent.click(screen.getByTestId("chat-media-copy"));
+        expect(await screen.findByTestId("chat-media-menu-error")).toHaveProperty("textContent", "clipboard is busy");
+        expect(screen.getByTestId("chat-media-context-menu")).toBeTruthy();
     });
 
     it("closes the preview from the close button", async () => {

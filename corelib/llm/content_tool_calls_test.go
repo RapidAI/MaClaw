@@ -941,6 +941,455 @@ func TestParseContentToolCallsDetailed_CompactJSONWithDanglingHy3Args(t *testing
 	}
 }
 
+func TestParseContentToolCallsDetailed_ParenCompactHy3Args(t *testing.T) {
+	// hy4-flash-free wrote the object in parentheses and left the timeout
+	// tags on the next line. The call has to run; the tags must not be the answer.
+	content := "Neither memory nor knowledge base has Beijing weather data, so I'll use the network now. Let me fetch real-time weather data.\n" +
+		"web_fetch (\"url\":\"https://wttr.in/Beijing?format=j1\")</arg_value:6124c78e>\n" +
+		"<arg_key:6124c78e>timeout</arg_key:6124c78e><arg_value:6124c78e>30</arg_value:6124c78e>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_fetch" {
+		t.Fatalf("paren compact call = %#v malformed=%v", calls, malformed)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"url":"https://wttr.in/Beijing?format=j1"`) {
+		t.Fatalf("url missing: %q", calls[0].Function.Arguments)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"timeout":30`) {
+		t.Fatalf("next-line Hy3 timeout was not merged: %q", calls[0].Function.Arguments)
+	}
+
+	msg := &Message{Content: content}
+	finish, changed := adoptLeakedToolCalls(msg, msg.Content)
+	if !changed || finish != "tool_calls" || len(msg.ToolCalls) != 1 || msg.Content != "" {
+		t.Fatalf("adopted paren call finish=%q changed=%v content=%q calls=%#v", finish, changed, msg.Content, msg.ToolCalls)
+	}
+
+	prose := "Use web_fetch (see the docs) when you need a page."
+	calls, malformed = ParseContentToolCallsDetailed(prose)
+	if malformed || len(calls) != 0 {
+		t.Fatalf("parenthetical prose = %#v malformed=%v", calls, malformed)
+	}
+}
+
+func TestParseContentToolCallsDetailed_ParenCompactProseNotMalformed(t *testing.T) {
+	for _, prose := range []string{
+		`web_fetch ("the network tool")`,
+		`web_fetch ("hello")`,
+		`web_fetch ("url":"https://example.com") thanks`,
+		`web_fetch (`,
+		`web_fetch ()`,
+		`web_fetch (see the docs)`,
+		`web_fetch ({see the docs)`,
+		`web_fetch ("hello" world)`,
+		`web_fetch ("note": not json)`,
+		`web_fetch ({"hello" world`,
+		`web_fetch ({"hello")`,
+		`web_fetch ({"see the docs"`,
+		`web_fetch ({"hello"})`,
+		`web_fetch ("note": not json`,
+		`web_fetch ({"see": the docs`,
+		`web_fetch ({}see the docs`,
+		`web_fetch ({"url":"x"} extra`,
+		`web_fetch ("n":01`,
+		`web_fetch ("ok":true story`,
+		`web_fetch ({"note":{see the docs`,
+		`web_fetch ("note":{see the docs`,
+		`web_fetch ({"note":[see`,
+	} {
+		calls, malformed := ParseContentToolCallsDetailed(prose)
+		if malformed || len(calls) != 0 {
+			t.Fatalf("prose %q = %#v malformed=%v", prose, calls, malformed)
+		}
+		msg := &Message{Content: prose}
+		finish, changed := adoptLeakedToolCalls(msg, msg.Content)
+		if changed || finish != "" || msg.Content != prose {
+			t.Fatalf("adopt replaced prose %q finish=%q changed=%v content=%q", prose, finish, changed, msg.Content)
+		}
+	}
+
+	nospace := `web_fetch("url":"https://example.com")`
+	calls, malformed := ParseContentToolCallsDetailed(nospace)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_fetch" || !strings.Contains(calls[0].Function.Arguments, `"url":"https://example.com"`) {
+		t.Fatalf("no-space paren call = %#v malformed=%v", calls, malformed)
+	}
+	inner := `web_fetch ({"url":"https://example.com","timeout":30})`
+	calls, malformed = ParseContentToolCallsDetailed(inner)
+	if malformed || len(calls) != 1 || !strings.Contains(calls[0].Function.Arguments, `"timeout":30`) {
+		t.Fatalf("inner object = %#v malformed=%v", calls, malformed)
+	}
+	emptyObj := `web_fetch ({})`
+	calls, malformed = ParseContentToolCallsDetailed(emptyObj)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_fetch" {
+		t.Fatalf("empty object = %#v malformed=%v", calls, malformed)
+	}
+
+	mixed := "web_search {\"query\":\"北京\"}\nweb_fetch (\"not a call\")"
+	calls, malformed = ParseContentToolCallsDetailed(mixed)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_search" {
+		t.Fatalf("mixed prose paren = %#v malformed=%v", calls, malformed)
+	}
+
+	cutoff := `web_fetch ("url":"https://example.com"`
+	calls, malformed = ParseContentToolCallsDetailed(cutoff)
+	if !malformed || len(calls) != 0 {
+		t.Fatalf("cut-off paren call = %#v malformed=%v", calls, malformed)
+	}
+	braceCut := `web_fetch ({"url":"https://example.com"`
+	calls, malformed = ParseContentToolCallsDetailed(braceCut)
+	if !malformed || len(calls) != 0 {
+		t.Fatalf("cut-off inner object = %#v malformed=%v", calls, malformed)
+	}
+	emptyOpen := `web_fetch ({}`
+	calls, malformed = ParseContentToolCallsDetailed(emptyOpen)
+	if !malformed || len(calls) != 0 {
+		t.Fatalf("unclosed empty object = %#v malformed=%v", calls, malformed)
+	}
+	closedObj := `web_fetch ({"url":"https://example.com"}`
+	calls, malformed = ParseContentToolCallsDetailed(closedObj)
+	if !malformed || len(calls) != 0 {
+		t.Fatalf("object waiting for paren = %#v malformed=%v", calls, malformed)
+	}
+	nested := `web_fetch ({"opts":{"a":1}})`
+	calls, malformed = ParseContentToolCallsDetailed(nested)
+	if malformed || len(calls) != 1 || !strings.Contains(calls[0].Function.Arguments, `"opts"`) {
+		t.Fatalf("nested object = %#v malformed=%v", calls, malformed)
+	}
+	nestedOpen := `web_fetch ({"opts":{"a":1}`
+	calls, malformed = ParseContentToolCallsDetailed(nestedOpen)
+	if !malformed || len(calls) != 0 {
+		t.Fatalf("unclosed nested object = %#v malformed=%v", calls, malformed)
+	}
+
+	blank := "web_fetch (\"url\":\"https://example.com\")\n\n<arg_key:6124c78e>timeout</arg_key:6124c78e><arg_value:6124c78e>30</arg_value:6124c78e>"
+	calls, malformed = ParseContentToolCallsDetailed(blank)
+	if malformed || len(calls) != 1 || strings.Contains(calls[0].Function.Arguments, "timeout") {
+		t.Fatalf("blank line joined Hy3 args = %#v malformed=%v", calls, malformed)
+	}
+
+	openTail := `web_fetch ("url":"https://example.com")</arg`
+	calls, malformed = ParseContentToolCallsDetailed(openTail)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_fetch" || !strings.Contains(calls[0].Function.Arguments, `"url":"https://example.com"`) {
+		t.Fatalf("unfinished arg tag = %#v malformed=%v", calls, malformed)
+	}
+	openCloser := `web_fetch ("url":"https://example.com")</arg_value:6124c78e`
+	calls, malformed = ParseContentToolCallsDetailed(openCloser)
+	if malformed || len(calls) != 1 || !strings.Contains(calls[0].Function.Arguments, "example.com") {
+		t.Fatalf("unfinished closer = %#v malformed=%v", calls, malformed)
+	}
+	closedPair := `web_fetch ("url":"https://example.com")<arg_key:ab>timeout</arg_key:ab><arg_value:ab>30</arg_value:ab><arg`
+	calls, malformed = ParseContentToolCallsDetailed(closedPair)
+	if malformed || len(calls) != 1 || !strings.Contains(calls[0].Function.Arguments, `"timeout":30`) || !strings.Contains(calls[0].Function.Arguments, "example.com") {
+		t.Fatalf("closed pair before unfinished tag = %#v malformed=%v", calls, malformed)
+	}
+	angleValue := `web_fetch ("url":"https://example.com")<arg_key:ab>see <b>x</arg_key:ab><arg_value:ab>1</arg_value:ab>`
+	calls, malformed = ParseContentToolCallsDetailed(angleValue)
+	if malformed || len(calls) != 1 || !strings.Contains(calls[0].Function.Arguments, "example.com") || !strings.Contains(calls[0].Function.Arguments, `see \u003cb\u003ex`) {
+		t.Fatalf("angle inside value = %#v malformed=%v", calls, malformed)
+	}
+	openValue := `web_fetch ("url":"https://example.com")<arg_key:ab>see <b`
+	calls, malformed = ParseContentToolCallsDetailed(openValue)
+	if malformed || len(calls) != 1 || !strings.Contains(calls[0].Function.Arguments, "example.com") || strings.Contains(calls[0].Function.Arguments, "see") {
+		t.Fatalf("unfinished value was kept or dropped the call = %#v malformed=%v", calls, malformed)
+	}
+}
+
+func TestHoldContentToolCallStream_ParenCompactHy3(t *testing.T) {
+	prefix := "我先查询实时天气。\n"
+	partial := prefix + "web_fetch (\"url\":\"https://wt"
+	visible, hold, suppress := HoldContentToolCallStream(partial, false)
+	if strings.Contains(visible, "web_fetch") || strings.Contains(visible, "https://") || suppress || visible != prefix || !strings.Contains(hold, "https://wt") {
+		t.Fatalf("partial paren call leaked: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, hold, suppress = HoldContentToolCallStream(partial, true)
+	if strings.Contains(visible, "web_fetch") || strings.Contains(visible, "https://") || hold != "" || !suppress || visible != prefix {
+		t.Fatalf("partial paren call was shown on flush: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	full := prefix + "web_fetch (\"url\":\"https://wttr.in/Beijing?format=j1\")</arg_value:6124c78e>\n" +
+		"<arg_key:6124c78e>timeout</arg_key:6124c78e><arg_value:6124c78e>30</arg_value:6124c78e>"
+	visible, _, suppress = HoldContentToolCallStream(full, true)
+	if !suppress || visible != prefix || strings.Contains(visible, "arg_key") || strings.Contains(visible, "6124c78e") {
+		t.Fatalf("complete paren call was not suppressed: visible=%q suppress=%v", visible, suppress)
+	}
+	prose := "Use web_fetch (see the docs) when you need a page."
+	if got, hold, suppress := HoldContentToolCallStream(prose, true); got != prose || hold != "" || suppress {
+		t.Fatalf("parenthetical prose was held: visible=%q hold=%q suppress=%v", got, hold, suppress)
+	}
+}
+
+func TestHoldContentToolCallStream_ParenCompactPending(t *testing.T) {
+	visible, hold, suppress := HoldContentToolCallStream("先查。\nweb_fetch (", false)
+	if suppress || strings.Contains(visible, "web_fetch") || !strings.HasSuffix(hold, "web_fetch (") {
+		t.Fatalf("open paren was not held: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	flushed, hold, suppress := HoldContentToolCallStream("先查。\nweb_fetch (", true)
+	if suppress || hold != "" || flushed != "先查。\nweb_fetch (" {
+		t.Fatalf("open paren flush = visible=%q hold=%q suppress=%v", flushed, hold, suppress)
+	}
+	visible, hold, suppress = HoldContentToolCallStream("先查。\nweb_fetch (see", false)
+	if suppress || hold != "" || !strings.Contains(visible, "web_fetch (see") {
+		t.Fatalf("letter paren was held: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	quoted := `先查。\nweb_fetch ("hello")`
+	visible, hold, suppress = HoldContentToolCallStream(quoted, true)
+	if suppress || hold != "" || visible != quoted {
+		t.Fatalf("quoted paren suppressed: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, hold, suppress = HoldContentToolCallStream("先查。\nweb_fetch (\"url\"", false)
+	if suppress || strings.Contains(visible, "url") || !strings.Contains(hold, "web_fetch") {
+		t.Fatalf("unfinished key was not held: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, hold, suppress = HoldContentToolCallStream("先查。\nweb_fetch (\"url\":", false)
+	if suppress || strings.Contains(visible, "url") || !strings.Contains(hold, "url") {
+		t.Fatalf("key colon was not held: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, hold, suppress = HoldContentToolCallStream("先查。\nweb_fetch (\"url\":", true)
+	if !suppress || hold != "" || visible != "先查。\n" {
+		t.Fatalf("key colon flush = visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	proseColon := "先查。\nweb_fetch (\"note\": not json)"
+	visible, hold, suppress = HoldContentToolCallStream(proseColon, true)
+	if suppress || hold != "" || visible != proseColon {
+		t.Fatalf("closed non-JSON paren was dropped: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	seeBrace := "先查。\nweb_fetch ({see the docs)"
+	visible, hold, suppress = HoldContentToolCallStream(seeBrace, false)
+	if suppress || hold != "" || visible != seeBrace {
+		t.Fatalf("brace prose was held: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	openKey := "先查。\nweb_fetch ({\"see"
+	visible, hold, suppress = HoldContentToolCallStream(openKey, false)
+	if suppress || strings.Contains(visible, "see") || !strings.Contains(hold, "see") {
+		t.Fatalf("unclosed brace key was not held: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, hold, suppress = HoldContentToolCallStream(openKey, true)
+	if suppress || hold != "" || visible != openKey {
+		t.Fatalf("unclosed brace key flush = visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	braceQuote := "先查。\nweb_fetch ({\"hello\" world"
+	visible, hold, suppress = HoldContentToolCallStream(braceQuote, false)
+	if suppress || hold != "" || visible != braceQuote {
+		t.Fatalf("brace quote prose was held: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, hold, suppress = HoldContentToolCallStream("先查。\nweb_fetch ({\"url\":\"https://wt", true)
+	if !suppress || hold != "" || visible != "先查。\n" || strings.Contains(visible, "https://") {
+		t.Fatalf("brace key colon flush = visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	noteOpen := "先查。\nweb_fetch (\"note\": not"
+	visible, hold, suppress = HoldContentToolCallStream(noteOpen, false)
+	if suppress || strings.Contains(hold, "note") || strings.Contains(hold, "web_fetch") || !strings.Contains(visible, "note") {
+		t.Fatalf("non-value after colon was held: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, hold, suppress = HoldContentToolCallStream(noteOpen, true)
+	if suppress || hold != "" || visible != noteOpen {
+		t.Fatalf("non-value after colon flush = visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	seeColon := "先查。\nweb_fetch ({\"see\": the docs"
+	visible, hold, suppress = HoldContentToolCallStream(seeColon, false)
+	if suppress || hold != "" || visible != seeColon {
+		t.Fatalf("brace non-value was held: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	nestedProse := "先查。\nweb_fetch ({\"note\":{see the docs\n下一句。"
+	visible, hold, suppress = HoldContentToolCallStream(nestedProse, false)
+	if suppress || hold != "" || !strings.Contains(visible, "see") || !strings.Contains(visible, "下一句") {
+		t.Fatalf("nested non-object was held: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, hold, suppress = HoldContentToolCallStream("先查。\nweb_fetch ({\"a\":{", true)
+	if !suppress || hold != "" || visible != "先查。\n" {
+		t.Fatalf("open nested object flush = visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	emptyJunk := "先查。\nweb_fetch ({}see"
+	visible, hold, suppress = HoldContentToolCallStream(emptyJunk, false)
+	if suppress || hold != "" || visible != emptyJunk {
+		t.Fatalf("junk after empty object was held: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, hold, suppress = HoldContentToolCallStream("先查。\nweb_fetch (\"n\":30", true)
+	if !suppress || hold != "" || visible != "先查。\n" || strings.Contains(visible, "30") {
+		t.Fatalf("number value flush = visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, hold, suppress = HoldContentToolCallStream("先查。\nweb_fetch ({}", true)
+	if !suppress || hold != "" || visible != "先查。\n" {
+		t.Fatalf("empty object flush = visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, _, suppress = HoldContentToolCallStream("先查。\nweb_fetch ({\"url\":\"https://wt\n下一句。", false)
+	if !suppress || strings.Contains(visible, "wt") || strings.Contains(visible, "下一句") || visible != "先查。\n" {
+		t.Fatalf("finished brace cut-off line stayed visible: visible=%q suppress=%v", visible, suppress)
+	}
+	visible, _, suppress = HoldContentToolCallStream("先查。\nweb_fetch (\"url\":\"https://wt\n下一句。", false)
+	if !suppress || strings.Contains(visible, "wt") || strings.Contains(visible, "下一句") || visible != "先查。\n" {
+		t.Fatalf("finished cut-off line stayed visible: visible=%q suppress=%v", visible, suppress)
+	}
+	visible, hold, suppress = HoldContentToolCallStream("先查。\nweb_fetch", false)
+	if suppress || strings.Contains(visible, "web_fetch") || !strings.HasSuffix(hold, "web_fetch") {
+		t.Fatalf("bare name was not held: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+
+	openTag := "先查。\nweb_fetch (\"url\":\"https://example.com\")</arg"
+	visible, hold, suppress = HoldContentToolCallStream(openTag, false)
+	if suppress || strings.Contains(visible, "example.com") || strings.Contains(visible, "web_fetch") || !strings.Contains(hold, "example.com") {
+		t.Fatalf("open hy3 tail leaked: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, hold, suppress = HoldContentToolCallStream(openTag, true)
+	if !suppress || hold != "" || visible != "先查。\n" || strings.Contains(visible, "example.com") {
+		t.Fatalf("open hy3 flush = visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, _, suppress = HoldContentToolCallStream(openTag+"\n下一句。", false)
+	if !suppress || visible != "先查。\n" || strings.Contains(visible, "example.com") || strings.Contains(visible, "下一句") {
+		t.Fatalf("finished open hy3 line stayed visible: visible=%q suppress=%v", visible, suppress)
+	}
+	valued := "先查。\nweb_fetch (\"url\":\"https://example.com\")<arg_key:ab>see <b"
+	visible, hold, suppress = HoldContentToolCallStream(valued, false)
+	if suppress || strings.Contains(visible, "example.com") || strings.Contains(visible, "see") || !strings.Contains(hold, "see <b") {
+		t.Fatalf("angle inside value leaked: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	diverged := "先查。\nweb_fetch (\"url\":\"https://example.com\")</x thanks"
+	visible, hold, suppress = HoldContentToolCallStream(diverged, false)
+	if suppress || hold != "" || visible != diverged {
+		t.Fatalf("diverged tail was held: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	notTag := "先查。\nweb_fetch (\"url\":\"https://example.com\")<3"
+	visible, hold, suppress = HoldContentToolCallStream(notTag, false)
+	if suppress || hold != "" || visible != notTag {
+		t.Fatalf("non-tag angle was held: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+}
+
+func TestContentToolCallDeltaFilter_ParenCompactNameSplit(t *testing.T) {
+	var out strings.Builder
+	filter := newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("先查天气。\nweb_fetch")
+	if strings.Contains(out.String(), "web_fetch") {
+		t.Fatalf("open tool name streamed: %q", out.String())
+	}
+	filter.Write(" (see the docs) when you need a page.")
+	filter.Flush()
+	if got := out.String(); got != "先查天气。\nweb_fetch (see the docs) when you need a page." {
+		t.Fatalf("paren prose = %q", got)
+	}
+
+	out.Reset()
+	filter = newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("先查天气。\nweb_fetch")
+	filter.Write(" (\"url\":\"https://wttr.in/Beijing?format=j1\")")
+	filter.Flush()
+	if got := out.String(); got != "先查天气。\n" {
+		t.Fatalf("split paren call streamed: %q", got)
+	}
+
+	out.Reset()
+	filter = newContentToolCallDeltaFilterWithCompactNames(func(delta string) { out.WriteString(delta) }, openCodeFreeCompactToolName)
+	filter.Write("先查天气。\nwebfetch")
+	if strings.Contains(out.String(), "webfetch") {
+		t.Fatalf("official name streamed early: %q", out.String())
+	}
+	filter.Write(" (\"url\":\"https://wttr.in/Beijing?format=j1\")")
+	filter.Flush()
+	if got := out.String(); got != "先查天气。\n" {
+		t.Fatalf("split official call streamed: %q", got)
+	}
+
+	out.Reset()
+	filter = newContentToolCallDeltaFilterWithCompactNames(func(delta string) { out.WriteString(delta) }, openCodeFreeCompactToolName)
+	filter.Write("先查天气。\nwebfetch")
+	filter.Write(" (see the docs).")
+	filter.Flush()
+	if got := out.String(); got != "先查天气。\nwebfetch (see the docs)." {
+		t.Fatalf("official paren prose = %q", got)
+	}
+
+	out.Reset()
+	filter = newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("先查天气。\nweb_fetch (\"note\":")
+	if strings.Contains(out.String(), "note") || strings.Contains(out.String(), "web_fetch") {
+		t.Fatalf("unfinished colon streamed: %q", out.String())
+	}
+	filter.Write(" not json)")
+	filter.Flush()
+	if got := out.String(); got != "先查天气。\nweb_fetch (\"note\": not json)" {
+		t.Fatalf("closed non-JSON paren = %q", got)
+	}
+
+	out.Reset()
+	filter = newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("先查天气。\nweb_fetch ({\"see")
+	if strings.Contains(out.String(), "see") {
+		t.Fatalf("unfinished brace streamed: %q", out.String())
+	}
+	filter.Write(" the docs\"})")
+	filter.Flush()
+	if got := out.String(); got != "先查天气。\nweb_fetch ({\"see the docs\"})" {
+		t.Fatalf("closed brace prose = %q", got)
+	}
+
+	out.Reset()
+	filter = newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("先查天气。\nweb_fetch ({\"hello\"")
+	if strings.Contains(out.String(), "hello") || strings.Contains(out.String(), "web_fetch") {
+		t.Fatalf("unresolved brace key streamed: %q", out.String())
+	}
+	filter.Write(" world")
+	filter.Flush()
+	if got := out.String(); got != "先查天气。\nweb_fetch ({\"hello\" world" {
+		t.Fatalf("brace quote prose = %q", got)
+	}
+
+	out.Reset()
+	filter = newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("先查天气。\nweb_fetch (\"note\":")
+	filter.Write(" not\n还要说。")
+	filter.Flush()
+	if got := out.String(); got != "先查天气。\nweb_fetch (\"note\": not\n还要说。" {
+		t.Fatalf("non-value colon continued = %q", got)
+	}
+
+	out.Reset()
+	filter = newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("先查天气。\nweb_fetch ({\"opts\":{\"a\":")
+	if strings.Contains(out.String(), "opts") || strings.Contains(out.String(), "web_fetch") {
+		t.Fatalf("nested object streamed: %q", out.String())
+	}
+	filter.Write("1}})")
+	filter.Flush()
+	if got := out.String(); got != "先查天气。\n" {
+		t.Fatalf("nested object call streamed: %q", got)
+	}
+
+	out.Reset()
+	filter = newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("先查天气。\nweb_fetch (\"url\":\"https://wttr.in/Beijing?format=j1\")</arg_value:ab")
+	if strings.Contains(out.String(), "wttr") || strings.Contains(out.String(), "web_fetch") {
+		t.Fatalf("unfinished closer streamed: %q", out.String())
+	}
+	filter.Write(">")
+	filter.Flush()
+	if got := out.String(); got != "先查天气。\n" || strings.Contains(got, "wttr") {
+		t.Fatalf("completed closer streamed: %q", got)
+	}
+
+	out.Reset()
+	filter = newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("先查天气。\nweb_fetch (\"url\":\"https://example.com\")</")
+	if strings.Contains(out.String(), "example.com") {
+		t.Fatalf("open closer streamed: %q", out.String())
+	}
+	filter.Write("x thanks")
+	filter.Flush()
+	if got := out.String(); got != "先查天气。\nweb_fetch (\"url\":\"https://example.com\")</x thanks" {
+		t.Fatalf("diverged closer = %q", got)
+	}
+
+	out.Reset()
+	filter = newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("先查天气。\nweb_fetch (\"url\":\"https://example.com\")<arg_key:ab>see <b")
+	if strings.Contains(out.String(), "example.com") || strings.Contains(out.String(), "see") {
+		t.Fatalf("value angle streamed: %q", out.String())
+	}
+	filter.Write(">x</arg_key:ab><arg_value:ab>1</arg_value:ab>")
+	filter.Flush()
+	if got := out.String(); got != "先查天气。\n" || strings.Contains(got, "example.com") {
+		t.Fatalf("closed value angle streamed: %q", got)
+	}
+}
+
 func TestHoldContentToolCallStream_CompactJSONCallDoesNotLeak(t *testing.T) {
 	prefix := "我先查询实时天气。\n"
 	visible, hold, suppress := HoldContentToolCallStream(prefix+"web_search {\"query\":\"北京", false)

@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState, type CSSProperties } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { ImagePreviewOverlay } from "./AttachmentImagePreviewOverlay";
+import { chatMediaImageSource, useChatMediaMenu } from "./chatMediaMenu";
 import { tailText } from "../../i18n/mnTail"
 
 export interface AttachmentImageThumbnailProps {
@@ -24,7 +25,7 @@ export interface AttachmentImageThumbnailProps {
 export function AttachmentImageThumbnail({ src, filePath, fileName, lang, theme: t, frameStyle, imageStyle, title, onImageError }: AttachmentImageThumbnailProps) {
     const [previewOpen, setPreviewOpen] = useState(false);
     const triggerRef = useRef<HTMLButtonElement | null>(null);
-    const isZh = lang.startsWith("zh");
+    const { onContextMenu, menu } = useChatMediaMenu(lang);
     const label = tailText(lang, `Preview image ${fileName}`, `预览图片 ${fileName}`);
     const close = useCallback(() => {
         setPreviewOpen(false);
@@ -37,6 +38,11 @@ export function AttachmentImageThumbnail({ src, filePath, fileName, lang, theme:
                 ref={triggerRef}
                 type="button"
                 onClick={() => setPreviewOpen(true)}
+                onContextMenu={(event) => onContextMenu(event, {
+                    kind: "image",
+                    source: chatMediaImageSource(filePath, src),
+                    fileName: fileName || "image.png",
+                })}
                 title={title || label}
                 aria-label={label}
                 data-testid="attachment-image-thumbnail"
@@ -62,6 +68,7 @@ export function AttachmentImageThumbnail({ src, filePath, fileName, lang, theme:
                     onClose={close}
                 />
             )}
+            {menu}
         </>
     );
 }

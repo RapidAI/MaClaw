@@ -74,6 +74,24 @@ const (
 	StatusRevoked   Status = "revoked"
 )
 
+// StatusMayApply reports whether a replicated notification may replace the
+// local row. A dispatch lease is still a draft; a delayed copy must not turn
+// a published, expired, or revoked notice back into a draft. A delayed
+// publish must not undo a revoke.
+func StatusMayApply(current, incoming Status) bool {
+	if current == "" || current == incoming {
+		return true
+	}
+	switch current {
+	case StatusDraft:
+		return true
+	case StatusPublished:
+		return incoming == StatusRevoked || incoming == StatusExpired
+	default:
+		return false
+	}
+}
+
 // CascadeStatus represents the push status for a specific Hub.
 type CascadeStatus string
 
@@ -111,6 +129,12 @@ type Notification struct {
 	ExpireAt      *time.Time            `json:"expire_at,omitempty"`
 	CreatedAt     time.Time             `json:"created_at"`
 	UpdatedAt     time.Time             `json:"updated_at"`
+	// DispatchNode and DispatchUntil fence a scheduled send across HubCenter
+	// nodes. The row stays a draft, so the admin status does not change.
+	// Another node leaves the draft alone until DispatchUntil. Empty means
+	// nobody is sending it.
+	DispatchNode  string     `json:"dispatch_node,omitempty"`
+	DispatchUntil *time.Time `json:"dispatch_until,omitempty"`
 }
 
 // DefaultPinnedButtonText is the Simplified Chinese label used when an admin
@@ -180,6 +204,15 @@ type Store interface {
 	GetByID(ctx context.Context, id string) (*Notification, error)
 	List(ctx context.Context, filter ListFilter) ([]*Notification, int, error)
 	UpdateStatus(ctx context.Context, id string, status Status, updatedAt time.Time) error
+	// ListDueDrafts returns drafts that carry a publish_at at or before now.
+	// A draft with no publish_at stays a draft until someone publishes it.
+	ListDueDrafts(ctx context.Context, now time.Time) ([]*Notification, error)
+	// ClaimDraft moves a draft to next. ok is false when the row is no longer a draft.
+	ClaimDraft(ctx context.Context, id string, next Status, updatedAt time.Time) (bool, error)
+	// ClaimDispatch records that node is sending this draft until the lease
+	// time. ok is false when the row is no longer a draft or another node
+	// still holds an unexpired lease. The same node may renew its own lease.
+	ClaimDispatch(ctx context.Context, id, node string, until, updatedAt time.Time) (bool, error)
 	Delete(ctx context.Context, id string) error
 	RecordCascadeResult(ctx context.Context, result *CascadeResult) error
 	GetCascadeResults(ctx context.Context, notificationID string) ([]*CascadeResult, error)

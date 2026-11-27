@@ -198,6 +198,7 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 	stopLocalStream := func() {}
 	stopHubStream := func() {}
 	var streamedAny int32
+	var reasoningShown int32
 	var streamedText strings.Builder
 	sendHubStreamEnd := func(content string) {
 		if hubSyncCh == nil || !atomic.CompareAndSwapInt32(&hubEndSent, 0, 1) {
@@ -213,6 +214,8 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 			if atomic.LoadInt32(&streamedAny) != 0 {
 				d.emitStreamToFrontend(sess.SessionID, "")
 				sendHubStreamEnd("")
+			} else if atomic.LoadInt32(&reasoningShown) != 0 {
+				d.emitStreamEndToFrontend(sess.SessionID, "")
 			}
 			finishHubSync()
 		}
@@ -275,7 +278,20 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 	var localPending *pendingStreamText
 	var localStreamDone chan struct{}
 	var stopLocalOnce sync.Once
+	var reasoningPending *pendingStreamText
+	var reasoningDone chan struct{}
+	var stopReasoningOnce sync.Once
+	stopReasoning := func() {
+		if reasoningPending == nil {
+			return
+		}
+		stopReasoningOnce.Do(func() {
+			reasoningPending.close()
+			<-reasoningDone
+		})
+	}
 	stopLocalStream = func() {
+		stopReasoning()
 		if localPending == nil {
 			return
 		}
@@ -306,7 +322,10 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 		localStreamDone = make(chan struct{})
 		hubPending = newPendingStreamText()
 		hubStreamDone = make(chan struct{})
+		reasoningPending = newPendingStreamText()
+		reasoningDone = make(chan struct{})
 		sessionID := sess.SessionID
+		senderID := d.getLocalMachineID()
 		go func() {
 			defer close(localStreamDone)
 			drainPendingStream(localPending, localStreamFlushInterval, localStreamMaxBytes, func(chunk string) {
@@ -319,15 +338,25 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 				hubSyncCh <- a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamChunk, Content: chunk}
 			})
 		}()
+		go func() {
+			defer close(reasoningDone)
+			drainPendingStream(reasoningPending, localStreamFlushInterval, localStreamMaxBytes, func(chunk string) {
+				emitVEReasoningToFrontend(d.app, sessionID, senderID, chunk)
+			})
+		}()
 		onToken = func(delta string) {
-			delta = visibleVEStreamDelta(delta)
-			if delta == "" {
+			visible, reasoning := splitVEStreamDelta(delta)
+			if reasoning != "" {
+				atomic.StoreInt32(&reasoningShown, 1)
+				reasoningPending.add(reasoning)
+			}
+			if visible == "" {
 				return
 			}
 			atomic.StoreInt32(&streamedAny, 1)
-			streamedText.WriteString(delta)
-			localPending.add(delta)
-			hubPending.add(delta)
+			streamedText.WriteString(visible)
+			localPending.add(visible)
+			hubPending.add(visible)
 		}
 	}
 
@@ -385,8 +414,11 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 	} else if localDispatch {
 		// No response — if streaming was in progress, close it so the frontend
 		// doesn't hang in streaming state with a blinking cursor.
+		stopLocalStream()
 		if atomic.LoadInt32(&streamedAny) != 0 {
 			d.emitStreamToFrontend(sess.SessionID, "")
+		} else if atomic.LoadInt32(&reasoningShown) != 0 {
+			d.emitStreamEndToFrontend(sess.SessionID, "")
 		}
 		stopHubStream()
 		if atomic.LoadInt32(&streamedAny) != 0 {

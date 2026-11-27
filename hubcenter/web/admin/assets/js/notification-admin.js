@@ -58,49 +58,197 @@ Object.assign(I18N_EN, {
   notifLangZhHant: 'Traditional Chinese',
   notifLangEn: 'English',
   notifLangMn: 'Cyrillic Mongolian',
-  notifBadgePinned: '置顶',
-  notifFormPublishNow: '立即发布',
-  notifFormSaveDraft: '保存草稿',
-  notifFormCancel: '取消',
-  notifFormTitlePlaceholder: '通知标题（最多 100 字符）',
-  notifFormContentPlaceholder: '通知内容，Markdown 格式（最多 2000 字符）',
-  notifFormSelectHubs: '选择 Hub 实例...',
-  notifFormSelectTenant: '选择 Hub 和租户...',
+  notifBadgePinned: 'Pinned',
+  notifFormPublishNow: 'Publish now',
+  notifFormSaveDraft: 'Save draft',
+  notifFormCancel: 'Cancel',
+  notifFormTitlePlaceholder: 'Notification title (max 100 characters)',
+  notifFormContentPlaceholder: 'Notification content, Markdown (max 2000 characters)',
+  notifFormSelectHubs: 'Select Hub instances...',
+  notifFormSelectTenant: 'Select a Hub and tenant...',
   notifFormHub: 'Hub',
-  notifFormTenant: '租户',
-  notifFormAddTenant: '添加目标',
-  notifFormSelectedTenants: '已选目标',
-  notifFormNoHubs: '暂无可选 Hub',
-  notifFormNoTenants: '暂无可选租户',
-  notifFormTenantAlreadyAdded: '该 Hub + 租户已选择。',
-  notifFormRemoveTenant: '移除',
-  notifFormImmediate: '立即',
-  notifFormScheduled: '定时',
-  notifRevoke: '撤回',
-  notifRevokeConfirm: '确认撤回此通知？撤回后将从所有客户端移除。',
-  notifRevoked: '通知已成功撤回。',
-  notifRevokeFailed: '撤回失败：{error}',
-  notifDelete: '删除',
-  notifDeleteConfirm: '确认永久删除此通知？已发布通知需要先撤回。',
-  notifDeleted: '通知已删除。',
-  notifDeleteFailed: '删除失败：{error}',
-  notifCreated: '通知创建成功。',
-  notifCreateFailed: '创建通知失败：{error}',
-  notifCascadeTitle: '级联推送状态',
-  notifCascadeHub: 'Hub 名称',
-  notifCascadeTime: '推送时间',
-  notifCascadeStatus: '状态',
-  notifCascadeSuccess: '成功',
-  notifCascadeFailed: '失败',
-  notifCascadePending: '待推送',
-  notifDetailBack: '← 返回列表',
-  notifDetailStats: '送达统计',
-  notifDetailTotal: '总推送数',
-  notifDetailRead: '已读数',
-  notifDetailReadRate: '已读率',
-  notifValidationTitle: '标题不能为空（最多 100 字符）',
-  notifValidationContent: '内容不能为空（最多 2000 字符）',
-  notifValidationAudience: '请选择受众范围',
+  notifFormTenant: 'Tenant',
+  notifFormAddTenant: 'Add target',
+  notifFormSelectedTenants: 'Selected targets',
+  notifFormNoHubs: 'No hubs available',
+  notifFormNoTenants: 'No tenants available',
+  notifFormTenantAlreadyAdded: 'That Hub and tenant is already selected.',
+  notifFormRemoveTenant: 'Remove',
+  notifFormImmediate: 'Now',
+  notifFormScheduled: 'Scheduled',
+  notifFormPublishScheduled: 'Scheduled publish',
+  notifRevoke: 'Revoke',
+  notifRevokeConfirm: 'Revoke this notification? It will be removed from every client.',
+  notifRevoked: 'Notification revoked.',
+  notifRevokeFailed: 'Revoke failed: {error}',
+  notifDelete: 'Delete',
+  notifDeleteConfirm: 'Permanently delete this notification? A published notification must be revoked first.',
+  notifDeleted: 'Notification deleted.',
+  notifDeleteFailed: 'Delete failed: {error}',
+  notifCreated: 'Notification created.',
+  notifScheduledSaved: 'Saved. It will be sent at the scheduled time.',
+  notifCreateFailed: 'Create failed: {error}',
+  notifCascadeTitle: 'Cascade delivery',
+  notifCascadeHub: 'Hub',
+  notifCascadeTime: 'Pushed at',
+  notifCascadeStatus: 'Status',
+  notifCascadeSuccess: 'Succeeded',
+  notifCascadeFailed: 'Failed',
+  notifCascadePending: 'Pending',
+  notifCascadeTimeout: 'Timed out',
+  notifCascadeAuthFailed: 'Sign-in failed',
+  notifDetailBack: 'Back to list',
+  notifDetailStats: 'Delivery statistics',
+  notifDetailTotal: 'Total pushed',
+  notifDetailRead: 'Read',
+  notifDetailReadRate: 'Read rate',
+  notifValidationTitle: 'Title is required (max 100 characters)',
+  notifValidationContent: 'Content is required (max 2000 characters)',
+  notifValidationAudience: 'Choose an audience',
+  notifValidationLink: 'Link must start with http:// or https://',
+  notifValidationPublishAt: 'Choose a publish time',
+  notifValidationPublishFuture: 'Publish time must be in the future',
+  notifValidationExpireAt: 'Expire time is not a valid date',
+  notifValidationExpireOrder: 'Expire time must be after the publish time',
+  notifHubCount: '{count} Hubs',
+  notifHubCountOne: '1 Hub'
+});
+
+Object.assign(I18N_ZH, {
+  navNotifications: '\u901a\u77e5\u7ba1\u7406',
+  navNotificationsDesc: '\u8de8 Hub \u63a8\u9001\u901a\u77e5',
+  notifTitle: '\u901a\u77e5\u7ba1\u7406',
+  notifDesc: '\u521b\u5efa\u3001\u76d1\u63a7\u5e76\u64a4\u56de\u9762\u5411\u7ec8\u7aef\u7528\u6237\u7684\u8de8 Hub \u63a8\u9001\u901a\u77e5\u3002',
+  notifRefresh: '\u5237\u65b0',
+  notifCreate: '\u521b\u5efa\u901a\u77e5',
+  notifFilterAll: '\u5168\u90e8',
+  notifFilterPublished: '\u5df2\u53d1\u5e03',
+  notifFilterExpired: '\u5df2\u8fc7\u671f',
+  notifFilterRevoked: '\u5df2\u64a4\u56de',
+  notifFilterDraft: '\u8349\u7a3f',
+  notifEmpty: '\u8fd8\u6ca1\u6709\u901a\u77e5\u3002',
+  notifLoading: '\u6b63\u5728\u52a0\u8f7d\u901a\u77e5\u2026',
+  notifLoadFailed: '\u52a0\u8f7d\u901a\u77e5\u5931\u8d25\uff1a{error}',
+  notifStatusPublished: '\u5df2\u53d1\u5e03',
+  notifStatusExpired: '\u5df2\u8fc7\u671f',
+  notifStatusRevoked: '\u5df2\u64a4\u56de',
+  notifStatusDraft: '\u8349\u7a3f',
+  notifCategorySystem: '\u7cfb\u7edf',
+  notifCategoryFeature: '\u529f\u80fd',
+  notifCategorySecurity: '\u5b89\u5168',
+  notifCategoryMaintenance: '\u7ef4\u62a4',
+  notifCategoryCustom: '\u81ea\u5b9a\u4e49',
+  notifPriorityNormal: '\u666e\u901a',
+  notifPriorityImportant: '\u91cd\u8981',
+  notifPriorityUrgent: '\u7d27\u6025',
+  notifAudienceAllHubs: '\u5168\u90e8 Hub\uff08\u5e7f\u64ad\uff09',
+  notifAudienceHubs: '\u6307\u5b9a Hub',
+  notifAudienceTenant: 'Hub + \u79df\u6237',
+  notifFormTitle: '\u6807\u9898',
+  notifFormContent: '\u5185\u5bb9\uff08Markdown\uff09',
+  notifFormCategory: '\u5206\u7c7b',
+  notifFormAudience: '\u53d7\u4f17',
+  notifFormPriority: '\u4f18\u5148\u7ea7',
+  notifFormPublishAt: '\u53d1\u5e03\u65f6\u95f4',
+  notifFormExpireAt: '\u8fc7\u671f\u65f6\u95f4',
+  notifFormImPush: '\u540c\u65f6\u63a8\u9001\u5230 IM',
+  notifFormPinned: '\u7f6e\u9876\u6d88\u606f\uff08\u60ac\u6d6e\u6761\uff09',
+  notifFormPinnedForever: '\u6c38\u4e45\u7f6e\u9876\uff08\u59cb\u7ec8\u5728\u6700\u5de6\uff09',
+  notifFormLink: '\u94fe\u63a5\uff08\u53ef\u9009\uff09',
+  notifFormLinkPlaceholder: 'https://... \u7531\u6a2a\u5e45\u6309\u94ae\u6253\u5f00',
+  notifFormButtonText: '\u6309\u94ae\u6587\u5b57',
+  notifFormButtonTextPlaceholder: '\u67e5\u770b\u8be6\u60c5',
+  notifFormSourceLang: '\u539f\u6587\u8bed\u8a00',
+  notifFormTranslateTargets: '\u540c\u65f6\u4fdd\u5b58\u4e3a',
+  notifFormTranslateHint: '\u52fe\u9009\u7684\u8bed\u8a00\u4f1a\u4ece\u539f\u6587\u7ffb\u8bd1\u3002\u94fe\u63a5\u4e0d\u7ffb\u8bd1\u3002',
+  notifLangZhHans: '\u7b80\u4f53\u4e2d\u6587',
+  notifLangZhHant: '\u7e41\u4f53\u4e2d\u6587',
+  notifLangEn: '\u82f1\u6587',
+  notifLangMn: '\u897f\u91cc\u5c14\u8499\u53e4\u6587',
+  notifBadgePinned: '\u7f6e\u9876',
+  notifFormPublishNow: '\u7acb\u5373\u53d1\u5e03',
+  notifFormSaveDraft: '\u4fdd\u5b58\u8349\u7a3f',
+  notifFormCancel: '\u53d6\u6d88',
+  notifFormTitlePlaceholder: '\u901a\u77e5\u6807\u9898\uff08\u6700\u591a 100 \u5b57\u7b26\uff09',
+  notifFormContentPlaceholder: '\u901a\u77e5\u5185\u5bb9\uff0cMarkdown \u683c\u5f0f\uff08\u6700\u591a 2000 \u5b57\u7b26\uff09',
+  notifFormSelectHubs: '\u9009\u62e9 Hub \u5b9e\u4f8b...',
+  notifFormSelectTenant: '\u9009\u62e9 Hub \u548c\u79df\u6237...',
+  notifFormHub: 'Hub',
+  notifFormTenant: '\u79df\u6237',
+  notifFormAddTenant: '\u6dfb\u52a0\u76ee\u6807',
+  notifFormSelectedTenants: '\u5df2\u9009\u76ee\u6807',
+  notifFormNoHubs: '\u6682\u65e0\u53ef\u9009 Hub',
+  notifFormNoTenants: '\u6682\u65e0\u53ef\u9009\u79df\u6237',
+  notifFormTenantAlreadyAdded: '\u8be5 Hub \u548c\u79df\u6237\u5df2\u9009\u62e9\u3002',
+  notifFormRemoveTenant: '\u79fb\u9664',
+  notifFormImmediate: '\u7acb\u5373',
+  notifFormScheduled: '\u5b9a\u65f6',
+  notifFormPublishScheduled: '\u5b9a\u65f6\u53d1\u5e03',
+  notifRevoke: '\u64a4\u56de',
+  notifRevokeConfirm: '\u786e\u8ba4\u64a4\u56de\u6b64\u901a\u77e5\uff1f\u5b83\u4f1a\u4ece\u6240\u6709\u5ba2\u6237\u7aef\u79fb\u9664\u3002',
+  notifRevoked: '\u901a\u77e5\u5df2\u64a4\u56de\u3002',
+  notifRevokeFailed: '\u64a4\u56de\u5931\u8d25\uff1a{error}',
+  notifDelete: '\u5220\u9664',
+  notifDeleteConfirm: '\u786e\u8ba4\u6c38\u4e45\u5220\u9664\u6b64\u901a\u77e5\uff1f\u5df2\u53d1\u5e03\u7684\u901a\u77e5\u987b\u5148\u64a4\u56de\u3002',
+  notifDeleted: '\u901a\u77e5\u5df2\u5220\u9664\u3002',
+  notifDeleteFailed: '\u5220\u9664\u5931\u8d25\uff1a{error}',
+  notifCreated: '\u901a\u77e5\u5df2\u521b\u5efa\u3002',
+  notifScheduledSaved: '\u5df2\u4fdd\u5b58\uff0c\u5230\u53d1\u5e03\u65f6\u95f4\u540e\u53d1\u51fa\u3002',
+  notifCreateFailed: '\u521b\u5efa\u901a\u77e5\u5931\u8d25\uff1a{error}',
+  notifCascadeTitle: '\u7ea7\u8054\u63a8\u9001',
+  notifCascadeHub: 'Hub',
+  notifCascadeTime: '\u63a8\u9001\u65f6\u95f4',
+  notifCascadeStatus: '\u72b6\u6001',
+  notifCascadeSuccess: '\u6210\u529f',
+  notifCascadeFailed: '\u5931\u8d25',
+  notifCascadePending: '\u5f85\u63a8\u9001',
+  notifCascadeTimeout: '\u8d85\u65f6',
+  notifCascadeAuthFailed: '\u8ba4\u8bc1\u5931\u8d25',
+  notifDetailBack: '\u8fd4\u56de\u5217\u8868',
+  notifDetailStats: '\u9001\u8fbe\u7edf\u8ba1',
+  notifDetailTotal: '\u603b\u63a8\u9001\u6570',
+  notifDetailRead: '\u5df2\u8bfb',
+  notifDetailReadRate: '\u5df2\u8bfb\u7387',
+  notifValidationTitle: '\u6807\u9898\u4e0d\u80fd\u4e3a\u7a7a\uff08\u6700\u591a 100 \u5b57\u7b26\uff09',
+  notifValidationContent: '\u5185\u5bb9\u4e0d\u80fd\u4e3a\u7a7a\uff08\u6700\u591a 2000 \u5b57\u7b26\uff09',
+  notifValidationAudience: '\u8bf7\u9009\u62e9\u53d7\u4f17',
+  notifValidationLink: '\u94fe\u63a5\u987b\u4ee5 http:// \u6216 https:// \u5f00\u5934',
+  notifValidationPublishAt: '\u8bf7\u9009\u62e9\u53d1\u5e03\u65f6\u95f4',
+  notifValidationPublishFuture: '\u53d1\u5e03\u65f6\u95f4\u987b\u665a\u4e8e\u73b0\u5728',
+  notifValidationExpireAt: '\u8fc7\u671f\u65f6\u95f4\u4e0d\u662f\u6709\u6548\u65e5\u671f',
+  notifValidationExpireOrder: '\u8fc7\u671f\u65f6\u95f4\u987b\u665a\u4e8e\u53d1\u5e03\u65f6\u95f4',
+  notifHubCount: '{count} \u4e2a Hub',
+  notifHubCountOne: '1 \u4e2a Hub'
+});
+
+Object.assign(I18N_MN, {
+  notifFormPinned: '\u0411\u044d\u0445\u044d\u043b\u0441\u044d\u043d \u043c\u044d\u0434\u044d\u0433\u0434\u044d\u043b (\u0445\u04e9\u0432\u04e9\u0433\u0447 \u0442\u0443\u0443\u0437)',
+  notifFormPinnedForever: '\u0411\u0430\u0439\u043d\u0433\u0430 \u0431\u044d\u0445\u043b\u044d\u0445 (\u04af\u0440\u0433\u044d\u043b\u0436 \u0437\u04af\u04af\u043d \u0442\u0430\u043b\u0434)',
+  notifFormLink: '\u0425\u043e\u043b\u0431\u043e\u043e\u0441 (\u0437\u0430\u0430\u0432\u0430\u043b \u0431\u0438\u0448)',
+  notifFormLinkPlaceholder: 'https://... \u0442\u0443\u0443\u0437\u043d\u044b \u0442\u043e\u0432\u0447\u043e\u043e\u0440 \u043d\u044d\u044d\u0433\u0434\u044d\u043d\u044d',
+  notifFormButtonText: '\u0422\u043e\u0432\u0447\u043d\u044b \u043d\u044d\u0440',
+  notifFormButtonTextPlaceholder: '\u0414\u044d\u043b\u0433\u044d\u0440\u044d\u043d\u0433\u04af\u0439 \u0445\u0430\u0440\u0430\u0445',
+  notifFormSourceLang: '\u042d\u0445 \u0445\u044d\u043b',
+  notifFormTranslateTargets: '\u041c\u04e9\u043d \u0445\u0430\u0434\u0433\u0430\u043b\u0430\u0445',
+  notifFormTranslateHint: '\u0421\u043e\u043d\u0433\u043e\u0441\u043e\u043d \u0445\u044d\u043b\u0438\u0439\u0433 \u044d\u0445\u044d\u044d\u0441 \u043e\u0440\u0447\u0443\u0443\u043b\u043d\u0430. \u0425\u043e\u043b\u0431\u043e\u043e\u0441 \u043e\u0440\u0447\u0443\u0443\u043b\u0430\u0433\u0434\u0430\u0445\u0433\u04af\u0439.',
+  notifLangZhHans: '\u0425\u044f\u043b\u0431\u0430\u0440\u0448\u0443\u0443\u043b\u0441\u0430\u043d \u0445\u044f\u0442\u0430\u0434',
+  notifLangZhHant: '\u0423\u043b\u0430\u043c\u0436\u043b\u0430\u043b\u0442 \u0445\u044f\u0442\u0430\u0434',
+  notifLangEn: '\u0410\u043d\u0433\u043b\u0438',
+  notifLangMn: '\u041a\u0438\u0440\u0438\u043b\u043b \u043c\u043e\u043d\u0433\u043e\u043b',
+  notifBadgePinned: '\u0411\u044d\u0445\u044d\u043b\u0441\u044d\u043d',
+  notifHubCount: '{count} Hub',
+  notifHubCountOne: '1 Hub',
+  notifValidationLink: '\u0425\u043e\u043b\u0431\u043e\u043e\u0441 http:// \u044d\u0441\u0432\u044d\u043b https://-\u044d\u044d\u0440 \u044d\u0445\u043b\u044d\u0445 \u0451\u0441\u0442\u043e\u0439',
+  notifValidationPublishAt: '\u041d\u0438\u0439\u0442\u043b\u044d\u0445 \u0446\u0430\u0433\u0430\u0430 \u0441\u043e\u043d\u0433\u043e\u043d\u043e \u0443\u0443',
+  notifValidationPublishFuture: '\u041d\u0438\u0439\u0442\u043b\u044d\u0445 \u0446\u0430\u0433 \u043e\u0434\u043e\u043e\u0433\u043e\u043e\u0441 \u0445\u043e\u0439\u0448 \u0431\u0430\u0439\u0445 \u0451\u0441\u0442\u043e\u0439',
+  notifValidationExpireAt: '\u0414\u0443\u0443\u0441\u0430\u0445 \u0446\u0430\u0433 \u0431\u0443\u0440\u0443\u0443 \u0431\u0430\u0439\u043d\u0430',
+  notifValidationExpireOrder: '\u0414\u0443\u0443\u0441\u0430\u0445 \u0446\u0430\u0433 \u043d\u0438\u0439\u0442\u043b\u044d\u0445 \u0446\u0430\u0433\u0430\u0430\u0441 \u0445\u043e\u0439\u0448 \u0431\u0430\u0439\u0445 \u0451\u0441\u0442\u043e\u0439',
+  notifScheduledSaved: '\u0425\u0430\u0434\u0433\u0430\u043b\u0441\u0430\u043d. \u0422\u043e\u0432\u043b\u043e\u0441\u043e\u043d \u0446\u0430\u0433\u0442 \u0438\u043b\u0433\u044d\u044d\u043d\u044d.',
+  notifFormPublishScheduled: '\u0422\u043e\u0432\u043b\u043e\u0436 \u043d\u0438\u0439\u0442\u043b\u044d\u0445',
+  notifCascadeTimeout: '\u0425\u0443\u0433\u0430\u0446\u0430\u0430 \u0445\u044d\u0442\u044d\u0440\u0441\u044d\u043d',
+  notifCascadeAuthFailed: '\u041d\u044d\u0432\u0442\u0440\u044d\u043b\u0442 \u0430\u043c\u0436\u0438\u043b\u0442\u0433\u04af\u0439',
+  notifDetailRead: '\u0423\u043d\u0448\u0441\u0430\u043d',
+  notifDetailReadRate: '\u0423\u043d\u0448\u0441\u0430\u043d \u0445\u0443\u0432\u044c'
 });
 
 // --- Tab metadata ---
@@ -109,6 +257,14 @@ TAB_ICONS.notifications = '<svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7
 
 // --- State ---
 var notifPage = 1;
+var notifPageSize = 20;
+var notifPaintLang = '';
+var notifListEpoch = 0;
+var notifDetailEpoch = 0;
+var notifCreateEpoch = 0;
+var notifLastList = null;
+var notifLastDetail = null;
+var notifDeferListReload = false;
 var notifStatusFilter = '';
 var notifViewMode = 'list'; // 'list' | 'create' | 'detail'
 var notifSubmitting = false;
@@ -165,12 +321,20 @@ function notifUnwrapDetail(data) {
 }
 
 // --- Load hub list for audience selector ---
+var notifHubListInflight = null;
 function notifLoadHubList() {
   if (notifHubListCache) return Promise.resolve(notifHubListCache);
-  return notifApiGet('/api/admin/hubs').then(function(data) {
+  if (notifHubListInflight) return notifHubListInflight;
+  notifHubListInflight = notifApiGet('/api/admin/hubs').then(function(data) {
     notifHubListCache = Array.isArray(data) ? data : (data.hubs || []);
     return notifHubListCache;
-  }).catch(function() { return []; });
+  }, function() {
+    return [];
+  }).then(function(list) {
+    notifHubListInflight = null;
+    return list;
+  });
+  return notifHubListInflight;
 }
 
 function notifHubID(hub) {
@@ -212,6 +376,7 @@ function initNotificationTab() {
   var before = document.getElementById('tab-news') || document.getElementById('tab-system');
   main.insertBefore(section, before || null);
   renderNotifList();
+  notifDeferListReload = true;
 }
 
 // --- Navigation button injection ---
@@ -238,52 +403,74 @@ function initNotificationNav() {
 }
 
 // --- List view ---
-function renderNotifList() {
+function renderNotifList(opts) {
+  notifPaintLang = window.currentLang || '';
   notifViewMode = 'list';
   var root = document.getElementById('notifContent');
   if (!root) return;
+  var relabel = !!(opts && opts.relabel && notifLastList
+    && notifLastList.filter === notifStatusFilter
+    && notifLastList.page === notifPage);
   var filterHtml = '<div class="notif-filters">'
-    + '<button class="btn-ghost' + (notifStatusFilter === '' ? ' active' : '') + '" onclick="notifSetFilter(\'\')">' + tr('notifFilterAll') + '</button>'
-    + '<button class="btn-ghost' + (notifStatusFilter === 'published' ? ' active' : '') + '" onclick="notifSetFilter(\'published\')">' + tr('notifFilterPublished') + '</button>'
-    + '<button class="btn-ghost' + (notifStatusFilter === 'expired' ? ' active' : '') + '" onclick="notifSetFilter(\'expired\')">' + tr('notifFilterExpired') + '</button>'
-    + '<button class="btn-ghost' + (notifStatusFilter === 'revoked' ? ' active' : '') + '" onclick="notifSetFilter(\'revoked\')">' + tr('notifFilterRevoked') + '</button>'
-    + '<button class="btn-ghost' + (notifStatusFilter === 'draft' ? ' active' : '') + '" onclick="notifSetFilter(\'draft\')">' + tr('notifFilterDraft') + '</button>'
+    + '<button type="button" class="btn-ghost' + (notifStatusFilter === '' ? ' active' : '') + '" onclick="notifSetFilter(\'\')">' + tr('notifFilterAll') + '</button>'
+    + '<button type="button" class="btn-ghost' + (notifStatusFilter === 'published' ? ' active' : '') + '" onclick="notifSetFilter(\'published\')">' + tr('notifFilterPublished') + '</button>'
+    + '<button type="button" class="btn-ghost' + (notifStatusFilter === 'expired' ? ' active' : '') + '" onclick="notifSetFilter(\'expired\')">' + tr('notifFilterExpired') + '</button>'
+    + '<button type="button" class="btn-ghost' + (notifStatusFilter === 'revoked' ? ' active' : '') + '" onclick="notifSetFilter(\'revoked\')">' + tr('notifFilterRevoked') + '</button>'
+    + '<button type="button" class="btn-ghost' + (notifStatusFilter === 'draft' ? ' active' : '') + '" onclick="notifSetFilter(\'draft\')">' + tr('notifFilterDraft') + '</button>'
     + '</div>';
   root.innerHTML = '<div class="head"><div><h3>' + tr('notifTitle') + '</h3><div class="desc">' + tr('notifDesc') + '</div></div>'
-    + '<div class="actions"><button class="btn-primary" onclick="renderNotifCreate()">' + tr('notifCreate') + '</button>'
-    + '<button class="btn-ghost" onclick="loadNotifList()">' + tr('notifRefresh') + '</button></div></div>'
+    + '<div class="actions"><button type="button" class="btn-primary" onclick="renderNotifCreate()">' + tr('notifCreate') + '</button>'
+    + '<button type="button" class="btn-ghost" onclick="loadNotifList()">' + tr('notifRefresh') + '</button></div></div>'
     + filterHtml
-    + '<div id="notifList" class="list" role="status" aria-live="polite"><div class="hint">' + tr('notifLoading') + '</div></div>';
-  loadNotifList();
+    + '<div id="notifList" class="list" role="status" aria-live="polite">' + (relabel ? '' : '<div class="hint">' + tr('notifLoading') + '</div>') + '</div>';
+  if (relabel) notifPaintListBody(notifLastList.items, notifLastList.total);
+  else loadNotifList();
 }
 
 function notifSetFilter(s) { notifStatusFilter = s; notifPage = 1; renderNotifList(); }
 
+function notifPaintListBody(items, total, listEl) {
+  if (!listEl) listEl = document.getElementById('notifList');
+  if (!listEl) return;
+  var limit = notifPageSize;
+  if (!items || !items.length) {
+    listEl.innerHTML = '<div class="hint">' + tr('notifEmpty') + '</div>';
+    notifRenderPager(0, 0, limit);
+    return;
+  }
+  listEl.innerHTML = items.map(notifCardHtml).join('');
+  notifRenderPager(total, items.length, limit);
+}
+
 function loadNotifList() {
+  var epoch = ++notifListEpoch;
   var listEl = document.getElementById('notifList');
   if (!listEl) return;
   listEl.innerHTML = '<div class="hint">' + tr('notifLoading') + '</div>';
-  var limit = 20;
-  var offset = Math.max(0, (notifPage - 1) * limit);
+  var limit = notifPageSize;
+  var page = notifPage;
+  var filter = notifStatusFilter;
+  var offset = Math.max(0, (page - 1) * limit);
   var url = '/api/v1/admin/notifications?limit=' + limit + '&offset=' + offset;
-  if (notifStatusFilter) url += '&status=' + encodeURIComponent(notifStatusFilter);
+  if (filter) url += '&status=' + encodeURIComponent(filter);
   notifApiGet(url).then(function(data) {
+    if (epoch !== notifListEpoch) return;
+    var live = document.getElementById('notifList');
+    if (!live || notifViewMode !== 'list') return;
     var items = notifUnwrapList(data);
     var total = Number(data && data.total || items.length || 0);
-    if (items.length === 0 && total > 0 && notifPage > 1) {
+    if (items.length === 0 && total > 0 && page > 1 && notifPage === page) {
       notifPage -= 1;
       loadNotifList();
       return;
     }
-    if (items.length === 0) {
-      listEl.innerHTML = '<div class="hint">' + tr('notifEmpty') + '</div>';
-      notifRenderPager(0, 0, limit);
-      return;
-    }
-    listEl.innerHTML = items.map(notifCardHtml).join('');
-    notifRenderPager(total, items.length, limit);
+    notifLastList = { items: items, total: total, filter: filter, page: page };
+    notifPaintListBody(items, total, live);
   }).catch(function(err) {
-    listEl.innerHTML = '<div class="hint danger">' + tr('notifLoadFailed', { error: escapeHtml(err.message) }) + '</div>';
+    if (epoch !== notifListEpoch) return;
+    var live = document.getElementById('notifList');
+    if (!live || notifViewMode !== 'list') return;
+    live.innerHTML = '<div class="hint danger">' + tr('notifLoadFailed', { error: escapeHtml(err.message) }) + '</div>';
     notifRenderPager(0, 0, limit);
   });
 }
@@ -312,15 +499,42 @@ function notifChangePage(delta) {
   loadNotifList();
 }
 
+function notifFormatTime(value) {
+  if (!value) return '';
+  var parsed = new Date(value);
+  if (isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleString();
+}
+
+function notifAudienceText(n) {
+  var type = n && n.audience_type || '';
+  var key = type === 'hub' ? 'notifAudienceHubs' : type === 'hub_tenant' ? 'notifAudienceTenant' : (type === 'all' ? 'notifAudienceAllHubs' : '');
+  if (!key) return '';
+  var label = tr(key);
+  var ids = ((n && n.audience_ids) || []).filter(Boolean);
+  if (type !== 'all' && ids.length) label += ': ' + ids.join(', ');
+  return label;
+}
+
+function notifScheduleMeta(n) {
+  var parts = [];
+  if (n && n.publish_at) parts.push(tr('notifFormPublishAt') + ': ' + notifFormatTime(n.publish_at));
+  if (n && n.expire_at) parts.push(tr('notifFormExpireAt') + ': ' + notifFormatTime(n.expire_at));
+  var audience = notifAudienceText(n);
+  if (audience) parts.push(audience);
+  return parts.join(' · ');
+}
+
 function notifCardHtml(n) {
   var statusBadge = notifStatusBadge(n.status);
   var catLabel = notifCategoryLabel(n.category);
   var prioLabel = n.priority === 'urgent' ? '<span class="badge danger">' + tr('notifPriorityUrgent') + '</span>' :
     n.priority === 'important' ? '<span class="badge warn">' + tr('notifPriorityImportant') + '</span>' : '';
   var pinnedLabel = n.pinned ? '<span class="badge warn">' + tr('notifBadgePinned') + '</span>' : '';
-  var time = n.created_at ? new Date(n.created_at).toLocaleString() : '';
+  var time = n.created_at ? notifFormatTime(n.created_at) : '';
+  if (n.publish_at) time += (time ? ' · ' : '') + tr('notifFormPublishAt') + ' ' + notifFormatTime(n.publish_at);
   var cascadeCount = (n.cascade_results || []).length;
-  var cascadeHint = cascadeCount > 0 ? ' <span class="item-meta">(' + cascadeCount + ' Hubs)</span>' : '';
+  var cascadeHint = cascadeCount > 0 ? ' <span class="item-meta">(' + notifHubCountText(cascadeCount) + ')</span>' : '';
   var deleteBtn = notifCanDelete(n)
     ? '<button class="btn-danger" type="button" onclick="event.stopPropagation();notifDelete(' + notifJsArg(n.id) + ')">' + escapeHtml(tr('notifDelete')) + '</button>'
     : '';
@@ -332,6 +546,12 @@ function notifCardHtml(n) {
     + (deleteBtn ? '<div class="actions notif-card-actions">' + deleteBtn + '</div>' : '')
     + '</div>'
     + '</div>';
+}
+
+function notifHubCountText(count) {
+  var n = Number(count) || 0;
+  if (n === 1) return tr('notifHubCountOne');
+  return tr('notifHubCount', { count: String(n) });
 }
 
 function notifStatusBadge(status) {
@@ -348,45 +568,128 @@ function notifCategoryLabel(cat) {
 }
 
 // --- Detail view ---
-function renderNotifDetail(id) {
+function notifCascadeCounts(results) {
+  var total = 0;
+  var success = 0;
+  var failed = 0;
+  var pending = 0;
+  (results || []).forEach(function(r) {
+    if (!r) return;
+    total += 1;
+    var status = r.status || '';
+    if (status === 'success') success += 1;
+    else if (status === 'failed' || status === 'timeout' || status === 'auth_failed') failed += 1;
+    else if (status === 'pending' || status === '') pending += 1;
+  });
+  return { total: total, success: success, failed: failed, pending: pending };
+}
+
+function notifKnownHubName(id) {
+  var wanted = String(id || '');
+  if (!wanted || !notifHubListCache) return '';
+  var hub = notifHubListCache.find(function(item) { return notifHubID(item) === wanted; });
+  return hub ? notifHubName(hub) : '';
+}
+
+function notifCascadeNeedsHubNames(results) {
+  return (results || []).some(function(r) {
+    return !!(r && r.hub_id && !r.hub_name && !notifKnownHubName(r.hub_id));
+  });
+}
+
+// Names arrive with the hub list, which the detail request does not include.
+// One shared load fills them in; a failed load leaves the hub id on screen.
+function notifResolveCascadeHubNames() {
+  if (notifHubListCache) return;
+  var epoch = notifDetailEpoch;
+  notifLoadHubList().then(function(list) {
+    if (!list || !list.length) return;
+    if (epoch !== notifDetailEpoch || notifViewMode !== 'detail') return;
+    var live = document.getElementById('notifContent');
+    if (!live || !notifLastDetail) return;
+    notifPaintDetail(live, notifLastDetail.notification);
+  });
+}
+
+function notifPaintDetail(root, n) {
+  var statusBadge = notifStatusBadge(n.status);
+  var catLabel = notifCategoryLabel(n.category);
+  var canRevoke = n.status === 'published';
+  var revokeBtn = canRevoke ? '<button type="button" class="btn-danger" onclick="notifRevoke(' + notifJsArg(n.id) + ')">' + tr('notifRevoke') + '</button>' : '';
+  var deleteBtn = notifCanDelete(n) ? '<button type="button" class="btn-danger" onclick="notifDelete(' + notifJsArg(n.id) + ')">' + tr('notifDelete') + '</button>' : '';
+  var counts = notifCascadeCounts(n.cascade_results);
+  var pendingNote = counts.pending > 0
+    ? '<div class="item-meta">' + escapeHtml(tr('notifCascadePending')) + ' ' + counts.pending + '</div>'
+    : '';
+  var statsHtml = '<div class="grid3 section-gap"><div class="item"><div class="item-title">' + tr('notifDetailTotal') + '</div><strong>' + counts.total + '</strong></div>'
+    + '<div class="item"><div class="item-title">' + tr('notifCascadeSuccess') + '</div><strong>' + counts.success + '</strong></div>'
+    + '<div class="item"><div class="item-title">' + tr('notifCascadeFailed') + '</div><strong>' + counts.failed + '</strong></div></div>'
+    + pendingNote;
+  var cascadeHtml = notifCascadeTableHtml(n.cascade_results || []);
+  var scheduleMeta = notifScheduleMeta(n);
+  var contentHtml = '<div class="item section-gap"><div class="item-title" data-icon="file">' + tr('notifFormContent') + '</div><div class="notif-content-preview">' + escapeHtml(n.content || '') + '</div>'
+    + (n.link_url ? '<div class="item-meta section-gap-sm">' + escapeHtml(tr('notifFormLink')) + ': <a href="' + escapeHtml(n.link_url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(n.link_url) + '</a>'
+      + (n.button_text ? ' &nbsp;|&nbsp; ' + escapeHtml(tr('notifFormButtonText')) + ': ' + escapeHtml(n.button_text) : '') + '</div>' : '')
+    + '</div>';
+  root.innerHTML = '<div class="head"><div><h3>' + escapeHtml(n.title || '') + '</h3><div class="desc">' + catLabel + ' ' + statusBadge + (n.pinned ? ' <span class="badge warn">' + tr('notifBadgePinned') + '</span>' : '') + '</div></div>'
+    + '<div class="actions"><button type="button" class="btn-ghost" onclick="renderNotifList()">' + tr('notifDetailBack') + '</button>' + revokeBtn + deleteBtn + '</div></div>'
+    + (scheduleMeta ? '<div class="item-meta section-gap-sm">' + escapeHtml(scheduleMeta) + '</div>' : '')
+    + contentHtml
+    + '<div class="item section-gap"><div class="item-title" data-icon="chart">' + tr('notifDetailStats') + '</div>' + statsHtml + '</div>'
+    + cascadeHtml;
+  if (notifCascadeNeedsHubNames(n.cascade_results)) notifResolveCascadeHubNames();
+}
+
+function renderNotifDetail(id, opts) {
+  var epoch = ++notifDetailEpoch;
   notifViewMode = 'detail';
   notifCurrentId = id;
+  notifPaintLang = window.currentLang || '';
   var root = document.getElementById('notifContent');
   if (!root) return;
+  if (opts && opts.relabel && notifLastDetail && String(notifLastDetail.id) === String(id)) {
+    notifPaintDetail(root, notifLastDetail.notification);
+    return;
+  }
   root.innerHTML = '<div class="hint">' + tr('notifLoading') + '</div>';
   notifApiGet('/api/v1/admin/notifications/' + encodeURIComponent(id)).then(function(data) {
+    if (epoch !== notifDetailEpoch) return;
+    var live = document.getElementById('notifContent');
+    if (!live || notifViewMode !== 'detail') return;
     var n = notifUnwrapDetail(data);
-    var statusBadge = notifStatusBadge(n.status);
-    var catLabel = notifCategoryLabel(n.category);
-    var canRevoke = n.status === 'published';
-    var revokeBtn = canRevoke ? '<button class="btn-danger" onclick="notifRevoke(' + notifJsArg(n.id) + ')">' + tr('notifRevoke') + '</button>' : '';
-    var deleteBtn = notifCanDelete(n) ? '<button class="btn-danger" onclick="notifDelete(' + notifJsArg(n.id) + ')">' + tr('notifDelete') + '</button>' : '';
-    var statsHtml = '<div class="grid3 section-gap"><div class="item"><div class="item-title">' + tr('notifDetailTotal') + '</div><strong>' + (n.total_pushed || 0) + '</strong></div>'
-      + '<div class="item"><div class="item-title">' + tr('notifDetailRead') + '</div><strong>' + (n.read_count || 0) + '</strong></div>'
-      + '<div class="item"><div class="item-title">' + tr('notifDetailReadRate') + '</div><strong>' + (n.read_rate || '0%') + '</strong></div></div>';
-    var cascadeHtml = notifCascadeTableHtml(n.cascade_results || []);
-    var contentHtml = '<div class="item section-gap"><div class="item-title" data-icon="file">' + tr('notifFormContent') + '</div><div class="notif-content-preview">' + escapeHtml(n.content || '') + '</div>'
-      + (n.link_url ? '<div class="item-meta section-gap-sm">' + tr('notifFormLink') + ': <a href="' + escapeHtml(n.link_url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(n.link_url) + '</a>'
-        + (n.button_text ? ' &nbsp;|&nbsp; ' + tr('notifFormButtonText') + ': ' + escapeHtml(n.button_text) : '') + '</div>' : '')
-      + '</div>';
-    root.innerHTML = '<div class="head"><div><h3>' + escapeHtml(n.title || '') + '</h3><div class="desc">' + catLabel + ' ' + statusBadge + (n.pinned ? ' <span class="badge warn">' + tr('notifBadgePinned') + '</span>' : '') + '</div></div>'
-      + '<div class="actions"><button class="btn-ghost" onclick="renderNotifList()">' + tr('notifDetailBack') + '</button>' + revokeBtn + deleteBtn + '</div></div>'
-      + contentHtml
-      + '<div class="item section-gap"><div class="item-title" data-icon="chart">' + tr('notifDetailStats') + '</div>' + statsHtml + '</div>'
-      + cascadeHtml;
+    notifLastDetail = { id: id, notification: n };
+    notifPaintDetail(live, n);
   }).catch(function(err) {
-    root.innerHTML = '<div class="hint danger">' + tr('notifLoadFailed', { error: escapeHtml(err.message) }) + '</div>'
-      + '<button class="btn-ghost" onclick="renderNotifList()">' + tr('notifDetailBack') + '</button>';
+    if (epoch !== notifDetailEpoch) return;
+    var live = document.getElementById('notifContent');
+    if (!live || notifViewMode !== 'detail') return;
+    live.innerHTML = '<div class="hint danger">' + tr('notifLoadFailed', { error: escapeHtml(err.message) }) + '</div>'
+      + '<button type="button" class="btn-ghost" onclick="renderNotifList()">' + tr('notifDetailBack') + '</button>';
   });
+}
+
+function notifCascadeStatusLabel(status) {
+  var map = {
+    success: 'notifCascadeSuccess',
+    failed: 'notifCascadeFailed',
+    pending: 'notifCascadePending',
+    timeout: 'notifCascadeTimeout',
+    auth_failed: 'notifCascadeAuthFailed'
+  };
+  if (map[status]) return tr(map[status]);
+  return status ? String(status) : tr('notifCascadePending');
 }
 
 function notifCascadeTableHtml(results) {
   if (!results || results.length === 0) return '';
   var rows = results.map(function(r) {
-    var statusCls = r.status === 'success' ? 'ok' : r.status === 'failed' ? 'danger' : 'warn';
-    var statusKey = 'notifCascade' + r.status.charAt(0).toUpperCase() + r.status.slice(1);
+    if (!r) return '';
+    var status = r.status || '';
+    var statusCls = status === 'success' ? 'ok' : (status === 'failed' || status === 'timeout' || status === 'auth_failed') ? 'danger' : 'warn';
     var time = r.pushed_at ? new Date(r.pushed_at).toLocaleString() : '-';
-    return '<tr><td>' + escapeHtml(r.hub_name || r.hub_id || '-') + '</td><td>' + escapeHtml(time) + '</td><td><span class="badge ' + statusCls + '">' + tr(statusKey) + '</span></td></tr>';
+    var hubLabel = r.hub_name || notifKnownHubName(r.hub_id) || r.hub_id || '-';
+    var errHtml = r.error_message ? '<div class="item-meta">' + escapeHtml(r.error_message) + '</div>' : '';
+    return '<tr><td>' + escapeHtml(hubLabel) + '</td><td>' + escapeHtml(time) + '</td><td><span class="badge ' + statusCls + '">' + escapeHtml(notifCascadeStatusLabel(status)) + '</span>' + errHtml + '</td></tr>';
   }).join('');
   return '<div class="item section-gap"><div class="item-title" data-icon="tree">' + tr('notifCascadeTitle') + '</div>'
     + '<table class="notif-cascade-table"><thead><tr><th>' + tr('notifCascadeHub') + '</th><th>' + tr('notifCascadeTime') + '</th><th>' + tr('notifCascadeStatus') + '</th></tr></thead>'
@@ -452,18 +755,99 @@ function notifSelectedTargetLangs() {
   return langs;
 }
 
+function notifReadCreateDraft() {
+  if (!document.getElementById('notifTitleInput')) return null;
+  function val(id) {
+    var el = document.getElementById(id);
+    return el ? el.value : '';
+  }
+  function on(id) {
+    var el = document.getElementById(id);
+    return !!(el && el.checked);
+  }
+  var hubs = [];
+  document.querySelectorAll('#notifHubCheckboxes input[type="checkbox"]:checked').forEach(function(box) {
+    hubs.push(box.value);
+  });
+  var langs = [];
+  document.querySelectorAll('.notif-target-lang').forEach(function(el) {
+    langs.push({ value: el.value, checked: !!el.checked });
+  });
+  return {
+    title: val('notifTitleInput'),
+    content: val('notifContentInput'),
+    sourceLang: val('notifSourceLang'),
+    category: val('notifCategorySelect'),
+    priority: val('notifPrioritySelect'),
+    publish: val('notifPublishSelect'),
+    publishAt: val('notifPublishAtInput'),
+    expireAt: val('notifExpireAtInput'),
+    audience: val('notifAudienceSelect'),
+    tenantHub: val('notifTenantHubSelect'),
+    tenant: val('notifTenantSelect'),
+    imPush: on('notifImPush'),
+    pinned: on('notifPinned'),
+    pinnedForever: on('notifPinnedForever'),
+    link: val('notifLinkUrlInput'),
+    button: val('notifButtonTextInput'),
+    hubs: hubs,
+    langs: langs,
+    targets: notifTenantTargets.slice()
+  };
+}
+
+function notifSetField(id, value) {
+  var el = document.getElementById(id);
+  if (el && value != null) el.value = value;
+}
+
+function notifApplyCreateDraft(draft) {
+  if (!draft) return;
+  notifSetField('notifTitleInput', draft.title);
+  notifSetField('notifContentInput', draft.content);
+  notifSetField('notifSourceLang', draft.sourceLang);
+  notifSetField('notifCategorySelect', draft.category);
+  notifSetField('notifPrioritySelect', draft.priority);
+  notifSetField('notifPublishSelect', draft.publish);
+  notifSetField('notifPublishAtInput', draft.publishAt);
+  notifSetField('notifExpireAtInput', draft.expireAt);
+  notifSetField('notifAudienceSelect', draft.audience);
+  notifSetField('notifLinkUrlInput', draft.link);
+  notifSetField('notifButtonTextInput', draft.button);
+  var im = document.getElementById('notifImPush');
+  if (im) im.checked = !!draft.imPush;
+  var pinned = document.getElementById('notifPinned');
+  if (pinned) pinned.checked = !!draft.pinned;
+  var forever = document.getElementById('notifPinnedForever');
+  if (forever) forever.checked = !!draft.pinnedForever;
+  if (draft.langs) {
+    var wanted = {};
+    draft.langs.forEach(function(item) { wanted[item.value] = !!item.checked; });
+    document.querySelectorAll('.notif-target-lang').forEach(function(el) {
+      if (Object.prototype.hasOwnProperty.call(wanted, el.value)) el.checked = wanted[el.value];
+    });
+  }
+  notifToggleSchedule();
+  notifToggleAudience();
+  notifTogglePinned();
+  notifTogglePriorityIM();
+  notifSyncButtonPlaceholder();
+}
+
 // --- Create view ---
-function renderNotifCreate() {
+function renderNotifCreate(draft) {
+  var epoch = ++notifCreateEpoch;
   notifViewMode = 'create';
+  notifPaintLang = window.currentLang || '';
   var root = document.getElementById('notifContent');
   if (!root) return;
   root.innerHTML = '<div class="head"><div><h3>' + tr('notifCreate') + '</h3></div>'
-    + '<div class="actions"><button class="btn-ghost" onclick="renderNotifList()">' + tr('notifFormCancel') + '</button></div></div>'
+    + '<div class="actions"><button type="button" class="btn-ghost" onclick="renderNotifList()">' + tr('notifFormCancel') + '</button></div></div>'
     + '<div class="notif-form">'
     + '<div><label for="notifTitleInput">' + tr('notifFormTitle') + '</label>'
-    + '<input id="notifTitleInput" maxlength="100" placeholder="' + tr('notifFormTitlePlaceholder') + '"></div>'
+    + '<input id="notifTitleInput" maxlength="100" placeholder="' + escapeHtml(tr('notifFormTitlePlaceholder')) + '"></div>'
     + '<div><label for="notifContentInput">' + tr('notifFormContent') + '</label>'
-    + '<textarea id="notifContentInput" maxlength="2000" rows="6" placeholder="' + tr('notifFormContentPlaceholder') + '"></textarea></div>'
+    + '<textarea id="notifContentInput" maxlength="2000" rows="6" placeholder="' + escapeHtml(tr('notifFormContentPlaceholder')) + '"></textarea></div>'
     + '<div><label for="notifSourceLang">' + tr('notifFormSourceLang') + '</label>'
     + '<select id="notifSourceLang" onchange="notifSyncButtonPlaceholder()">' + notifSourceLangOptions() + '</select>'
     + '<div class="item-meta section-gap-sm">' + tr('notifFormTranslateTargets') + '</div>'
@@ -514,7 +898,7 @@ function renderNotifCreate() {
     + '<div id="notifPinnedExtras" class="hidden notif-form">'
     + '<div><label class="inline-label"><input type="checkbox" id="notifPinnedForever" class="auto-check"> ' + tr('notifFormPinnedForever') + '</label></div>'
     + '<div><label for="notifLinkUrlInput">' + tr('notifFormLink') + '</label>'
-    + '<input id="notifLinkUrlInput" maxlength="500" placeholder="' + tr('notifFormLinkPlaceholder') + '"></div>'
+    + '<input id="notifLinkUrlInput" maxlength="500" placeholder="' + escapeHtml(tr('notifFormLinkPlaceholder')) + '"></div>'
     + '<div><label for="notifButtonTextInput">' + tr('notifFormButtonText') + '</label>'
     + '<input id="notifButtonTextInput" maxlength="20" placeholder="' + escapeHtml(notifDefaultButtonText(notifDefaultSourceLang())) + '"></div>'
     + '</div>'
@@ -522,17 +906,21 @@ function renderNotifCreate() {
     + '<button id="notifSubmitPublish" class="btn-primary" type="button" onclick="notifSubmit(\'published\')">' + tr('notifFormPublishNow') + '</button>'
     + '<button id="notifSubmitDraft" class="btn-secondary" type="button" onclick="notifSubmit(\'draft\')">' + tr('notifFormSaveDraft') + '</button>'
     + '</div></div>';
-  notifTenantTargets = [];
-  notifLoadHubCheckboxes();
-  notifLoadTenantSelector();
-  notifTogglePriorityIM();
-  document.getElementById('notifPrioritySelect').addEventListener('change', notifTogglePriorityIM);
+  notifTenantTargets = draft && draft.targets ? draft.targets.slice() : [];
+  notifApplyCreateDraft(draft);
+  notifLoadHubCheckboxes(draft && draft.hubs, epoch);
+  notifLoadTenantSelector(draft, epoch);
+  var prioritySelect = document.getElementById('notifPrioritySelect');
+  if (prioritySelect) prioritySelect.addEventListener('change', notifTogglePriorityIM);
 }
 
 function notifToggleSchedule() {
   var sel = document.getElementById('notifPublishSelect');
   var row = document.getElementById('notifScheduleRow');
-  if (sel && row) row.classList.toggle('hidden', sel.value !== 'scheduled');
+  var scheduled = !!(sel && sel.value === 'scheduled');
+  if (row) row.classList.toggle('hidden', !scheduled);
+  var btn = document.getElementById('notifSubmitPublish');
+  if (btn) btn.textContent = tr(scheduled ? 'notifFormPublishScheduled' : 'notifFormPublishNow');
 }
 
 function notifToggleAudience() {
@@ -555,21 +943,28 @@ function notifTogglePinned() {
   if (pinned && extras) extras.classList.toggle('hidden', !pinned.checked);
 }
 
-function notifLoadHubCheckboxes() {
-  var container = document.getElementById('notifHubCheckboxes');
-  if (!container) return;
+function notifLoadHubCheckboxes(selected, epoch) {
   notifLoadHubList().then(function(hubs) {
+    if (epoch != null && epoch !== notifCreateEpoch) return;
+    var container = document.getElementById('notifHubCheckboxes');
+    if (!container) return;
     if (hubs.length === 0) { container.innerHTML = '<div class="hint">' + tr('notifFormNoHubs') + '</div>'; return; }
     container.innerHTML = hubs.map(function(h) {
       var name = h.name || h.hub_name || h.id || h.hub_id || 'Hub';
       var id = h.id || h.hub_id || '';
       return '<label class="notif-hub-check"><input type="checkbox" value="' + escapeHtml(id) + '"> ' + escapeHtml(name) + '</label>';
     }).join('');
+    if (selected && selected.length) {
+      container.querySelectorAll('input[type="checkbox"]').forEach(function(box) {
+        box.checked = selected.indexOf(box.value) >= 0;
+      });
+    }
   });
 }
 
-function notifLoadTenantSelector() {
+function notifLoadTenantSelector(draft, epoch) {
   notifLoadHubList().then(function(hubs) {
+    if (epoch != null && epoch !== notifCreateEpoch) return;
     var hubSelect = document.getElementById('notifTenantHubSelect');
     if (!hubSelect) return;
     if (!hubs.length) {
@@ -584,7 +979,9 @@ function notifLoadTenantSelector() {
       var id = notifHubID(h);
       return '<option value="' + escapeHtml(id) + '">' + escapeHtml(notifHubName(h) + ' (' + id + ')') + '</option>';
     }).join('');
+    if (draft && draft.tenantHub) hubSelect.value = draft.tenantHub;
     notifSyncTenantSelect();
+    if (draft && draft.tenant) notifSetField('notifTenantSelect', draft.tenant);
     notifRenderTenantTargets();
   });
 }
@@ -640,10 +1037,18 @@ function notifRenderTenantTargets() {
   }).join('');
 }
 
+function notifParseLocalDate(value) {
+  var raw = String(value || '').trim();
+  if (!raw) return null;
+  var parsed = new Date(raw);
+  if (isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
 // --- Submit notification ---
 function notifSubmit(status) {
-  var title = (document.getElementById('notifTitleInput') || {}).value || '';
-  var content = (document.getElementById('notifContentInput') || {}).value || '';
+  var title = ((document.getElementById('notifTitleInput') || {}).value || '').trim();
+  var content = ((document.getElementById('notifContentInput') || {}).value || '').trim();
   var category = (document.getElementById('notifCategorySelect') || {}).value || 'system_announcement';
   var priority = (document.getElementById('notifPrioritySelect') || {}).value || 'normal';
   var audienceType = (document.getElementById('notifAudienceSelect') || {}).value || 'all';
@@ -651,17 +1056,38 @@ function notifSubmit(status) {
   var publishAt = publishSelect === 'scheduled' ? (document.getElementById('notifPublishAtInput') || {}).value || '' : '';
   var expireAt = (document.getElementById('notifExpireAtInput') || {}).value || '';
   var imPush = priority === 'urgent' && (document.getElementById('notifImPush') || {}).checked;
-  var pinnedForever = !!(document.getElementById('notifPinnedForever') || {}).checked;
-  var pinned = pinnedForever || !!(document.getElementById('notifPinned') || {}).checked;
+  var pinned = !!(document.getElementById('notifPinned') || {}).checked;
+  var pinnedForever = pinned && !!(document.getElementById('notifPinnedForever') || {}).checked;
   var linkUrl = ((document.getElementById('notifLinkUrlInput') || {}).value || '').trim();
   var buttonText = ((document.getElementById('notifButtonTextInput') || {}).value || '').trim();
 
-  // Validation
+  // Validation runs before the submit lock. A bad date used to throw inside
+  // toISOString after the lock was taken, and the form stayed disabled.
   if (!title || title.length > 100) { notifToast(tr('notifValidationTitle'), 'warn'); return; }
   if (!content || content.length > 2000) { notifToast(tr('notifValidationContent'), 'warn'); return; }
   if (linkUrl && !/^https?:\/\//i.test(linkUrl)) {
-    notifToast(tr('notifFormLink') + ': http(s)://', 'warn');
+    notifToast(tr('notifValidationLink'), 'warn');
     return;
+  }
+  var publishDate = null;
+  if (publishSelect === 'scheduled' && publishAt) {
+    publishDate = notifParseLocalDate(publishAt);
+    if (!publishDate) { notifToast(tr('notifValidationPublishAt'), 'warn'); return; }
+  }
+  if (status === 'published' && publishSelect === 'scheduled' && !publishDate) {
+    notifToast(tr('notifValidationPublishAt'), 'warn');
+    return;
+  }
+  if (status === 'published' && publishDate && publishDate.getTime() <= Date.now()) {
+    notifToast(tr('notifValidationPublishFuture'), 'warn');
+    return;
+  }
+  var expireDate = null;
+  if (String(expireAt || '').trim()) {
+    expireDate = notifParseLocalDate(expireAt);
+    if (!expireDate) { notifToast(tr('notifValidationExpireAt'), 'warn'); return; }
+    var earliest = publishDate ? publishDate.getTime() : Date.now();
+    if (expireDate.getTime() <= earliest) { notifToast(tr('notifValidationExpireOrder'), 'warn'); return; }
   }
 
   // Build audience_ids based on audience type
@@ -694,11 +1120,15 @@ function notifSubmit(status) {
     source_lang: (document.getElementById('notifSourceLang') || {}).value || notifDefaultSourceLang(),
     target_langs: notifSelectedTargetLangs()
   };
-  if (publishAt) body.publish_at = new Date(publishAt).toISOString();
-  if (expireAt) body.expire_at = new Date(expireAt).toISOString();
+  if (status === 'published' && publishDate) body.publish_at = publishDate.toISOString();
+  if (expireDate) body.expire_at = expireDate.toISOString();
 
-  notifApiPost('/api/v1/admin/notifications', body).then(function() {
-    notifToast(tr('notifCreated'), 'ok');
+  notifApiPost('/api/v1/admin/notifications', body).then(function(data) {
+    var saved = data && data.notification;
+    var scheduled = !!(saved && saved.status === 'draft' && saved.publish_at);
+    notifToast(tr(scheduled ? 'notifScheduledSaved' : 'notifCreated'), 'ok');
+    notifPage = 1;
+    notifStatusFilter = '';
     renderNotifList();
   }).catch(function(err) {
     notifToast(tr('notifCreateFailed', { error: err.message }), 'danger');
@@ -744,6 +1174,8 @@ Object.assign(window, {
   notifRemoveTenantTarget: notifRemoveTenantTarget,
   notifChangePage: notifChangePage,
   notifSubmit: notifSubmit,
+  notifPaintDetail: notifPaintDetail,
+  notifCardHtml: notifCardHtml,
   notifSyncButtonPlaceholder: notifSyncButtonPlaceholder,
   notifRevoke: notifRevoke,
   notifDelete: notifDelete
@@ -760,28 +1192,38 @@ Object.assign(window, {
     }
   }
 
+  function bootNotificationTab() {
+    initNotificationNav();
+    initNotificationTab();
+    activateSavedNotificationTab();
+    // The defer flag only skips the reload that boot itself just triggered.
+    // A later visit to the tab still refreshes.
+    notifDeferListReload = false;
+  }
+
   // Patch openTab to lazy-init notification content
   var patchedOpenTab = function(tab) {
     if (typeof origOpenTab === 'function') origOpenTab(tab);
     if (tab === 'notifications') {
       if (!document.getElementById('tab-notifications')) initNotificationTab();
-      if (notifViewMode === 'list') loadNotifList();
+      else if (notifPaintLang !== (window.currentLang || '')) {
+        var draft = notifViewMode === 'create' ? notifReadCreateDraft() : null;
+        notifPaintLang = window.currentLang || '';
+        if (notifViewMode === 'create') renderNotifCreate(draft);
+        else if (notifViewMode === 'detail' && notifCurrentId) renderNotifDetail(notifCurrentId, { relabel: true });
+        else renderNotifList({ relabel: true });
+      } else if (notifViewMode === 'list') {
+        if (notifDeferListReload) notifDeferListReload = false;
+        else loadNotifList();
+      }
     }
   };
   window.openTab = patchedOpenTab;
 
   // Wait for DOM and inject nav + tab section
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function() {
-      initNotificationNav();
-      initNotificationTab();
-      activateSavedNotificationTab();
-    });
+    document.addEventListener('DOMContentLoaded', bootNotificationTab);
   } else {
-    setTimeout(function() {
-      initNotificationNav();
-      initNotificationTab();
-      activateSavedNotificationTab();
-    }, 0);
+    setTimeout(bootNotificationTab, 0);
   }
 })();

@@ -116,3 +116,15 @@ func TestLoopExecutorMapsLoopCancellationToInterrupted(t *testing.T) {
 		t.Fatalf("result=%#v", result)
 	}
 }
+
+func TestReadOnlyToolPolicyRejectsOCROutputPath(t *testing.T) {
+	policy := ToolPolicy{Role: RoleExplorer, Allowed: map[string]bool{"ocr_recognize": true}}
+	for _, key := range []string{"output_path", "output", "result_path"} {
+		if ok, reason := policy.IsToolCallAllowed("ocr_recognize", map[string]interface{}{key: "ocr.txt"}); ok || !strings.Contains(reason, key) {
+			t.Fatalf("ocr %s must be rejected: ok=%t reason=%q", key, ok, reason)
+		}
+	}
+	if ok, reason := policy.IsToolCallAllowed("ocr_recognize", map[string]interface{}{"image_path": "docs/screenshot.png"}); !ok || reason != "" {
+		t.Fatalf("observational OCR must remain allowed: ok=%t reason=%q", ok, reason)
+	}
+}

@@ -3067,6 +3067,9 @@ func TestPlatformSSEWriterStreamsActivityBeforeText(t *testing.T) {
 	writer.WriteActivity("accepted", "")
 	writer.WriteActivity("tool_start", "knowledge_search")
 	writer.WriteActivity("nope", "ignored")
+	writer.WriteReasoning("\x01plan")
+	writer.WriteReasoning("\x01")
+	writer.WriteChunk("\x01hidden")
 	writer.WriteChunk("hello")
 	if got := rec.Header().Get("X-Accel-Buffering"); got != "no" {
 		t.Fatalf("X-Accel-Buffering=%q", got)
@@ -3077,12 +3080,13 @@ func TestPlatformSSEWriterStreamsActivityBeforeText(t *testing.T) {
 	body := rec.Body.String()
 	accepted := strings.Index(body, `"status":"accepted"`)
 	tool := strings.Index(body, `"status":"tool_start"`)
+	reasoning := strings.Index(body, `"reasoning":"plan"`)
 	chunk := strings.Index(body, `"chunk":"hello"`)
-	if accepted < 0 || tool < accepted || chunk < tool {
+	if accepted < 0 || tool < accepted || reasoning < tool || chunk < reasoning {
 		t.Fatalf("body=%s", body)
 	}
-	if strings.Contains(body, "nope") || strings.Contains(body, "ignored") {
-		t.Fatalf("unknown activity leaked: %s", body)
+	if strings.Contains(body, "nope") || strings.Contains(body, "ignored") || strings.Contains(body, "hidden") {
+		t.Fatalf("unknown activity or reasoning leaked into the answer: %s", body)
 	}
 }
 

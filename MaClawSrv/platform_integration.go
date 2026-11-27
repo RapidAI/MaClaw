@@ -415,6 +415,7 @@ func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http
 	// Wire streaming token callback into the per-request SendMessageInput.
 	var sseWriter *platformSSEWriter
 	var onToken func(string)
+	var onReasoning func(string)
 	if wantsSSE {
 		sseWriter = newPlatformSSEWriter(w)
 		sseWriter.WriteHeader()
@@ -428,6 +429,9 @@ func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http
 			}
 			sseWriter.WriteChunk(delta)
 		}
+		onReasoning = func(delta string) {
+			sseWriter.WriteReasoning(delta)
+		}
 		// Done carries the raw settled answer. The viewer already painted the
 		// opening from chunks and folds this ending once. Folding here as well
 		// makes Hub fold the same answer a second time.
@@ -435,7 +439,7 @@ func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http
 		log.Printf("[VE-STREAMING] ===== NOT STREAMING: Hub did not send Accept: text/event-stream =====")
 	}
 
-	sendInput := agentservice.SendMessageInput{Title: strings.TrimSpace(title), Content: content, Attachments: hostAttachments, ClientSessionKey: strings.TrimSpace(in.HubDiscussionID), ClientMessageID: firstPlatformNonEmpty(in.HubMessageID, in.RequestID), Metadata: metadata, OnToken: onToken}
+	sendInput := agentservice.SendMessageInput{Title: strings.TrimSpace(title), Content: content, Attachments: hostAttachments, ClientSessionKey: strings.TrimSpace(in.HubDiscussionID), ClientMessageID: firstPlatformNonEmpty(in.HubMessageID, in.RequestID), Metadata: metadata, OnToken: onToken, OnReasoning: onReasoning}
 	if sseWriter != nil {
 		sendInput.OnToolCall = func(name string) {
 			sseWriter.WriteActivity("tool_start", name)
@@ -2792,6 +2796,21 @@ func (s *platformSSEWriter) WriteChunk(chunk string) {
 		return
 	}
 	data, err := json.Marshal(map[string]string{"chunk": chunk})
+	if err != nil {
+		return
+	}
+	s.writeFrame(data)
+}
+
+// WriteReasoning emits one private thought on its own SSE field. The answer
+// lane stays on WriteChunk, so a thinking prefix cannot look like silence and
+// cannot land in the persisted reply.
+func (s *platformSSEWriter) WriteReasoning(text string) {
+	text = textutil.SanitizeVisibleChatText(text)
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	data, err := json.Marshal(map[string]string{"reasoning": text})
 	if err != nil {
 		return
 	}

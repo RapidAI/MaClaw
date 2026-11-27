@@ -615,6 +615,49 @@ describe("useConversationViewArchive", () => {
         expect(rowNode.closest("[data-locator-turn]")?.getAttribute("data-locator-turn")).toBe("old-user");
     });
 
+    it("scrolls a scaled archive row in CSS pixels", async () => {
+        vi.mocked(ConversationViewArchiveCount).mockResolvedValue(1);
+        vi.mocked(LoadAIAssistantUIArchive).mockResolvedValue([
+            { id: "old-user", role: "user", content: "更早的问题", sessionKey: "desktop-user" },
+        ] as never);
+        const rect = (top: number, height: number): DOMRect => ({
+            top, bottom: top + height, left: 0, right: 10, width: 10, height, x: 0, y: top, toJSON() { return {}; },
+        });
+        const originalRect = HTMLElement.prototype.getBoundingClientRect;
+        const clientHeight = Object.getOwnPropertyDescriptor(Element.prototype, "clientHeight");
+        HTMLElement.prototype.getBoundingClientRect = function () {
+            if (this.getAttribute("data-testid") === "conversation-archive-scroller") return rect(0, 200);
+            if (this.hasAttribute("data-locator-turn")) return rect(400, 40);
+            return originalRect.call(this);
+        };
+        Object.defineProperty(Element.prototype, "clientHeight", {
+            configurable: true,
+            get() {
+                if (this instanceof Element && this.getAttribute("data-testid") === "conversation-archive-scroller") return 100;
+                return clientHeight?.get?.call(this) ?? 0;
+            },
+        });
+        try {
+            function RevealProbe() {
+                const view = useConversationViewArchive({ messages: [row("hot")], scope: "desktop", enabled: true, lang: "zh-Hans", theme });
+                return (
+                    <div>
+                        <button type="button" data-testid="reveal" onClick={() => view.revealArchiveMessage("old-user")}>reveal</button>
+                        {view.dialog}
+                    </div>
+                );
+            }
+            render(<RevealProbe />);
+            fireEvent.click(screen.getByTestId("reveal"));
+            await screen.findByText("更早的问题");
+            // 400 visual px is 200 CSS px at scale 2, then the 12px gap.
+            expect(screen.getByTestId("conversation-archive-scroller").scrollTop).toBe(188);
+        } finally {
+            HTMLElement.prototype.getBoundingClientRect = originalRect;
+            if (clientHeight) Object.defineProperty(Element.prototype, "clientHeight", clientHeight);
+        }
+    });
+
     it("mounts the archive page that contains the jumped user row", async () => {
         const total = CONVERSATION_ARCHIVE_RENDER_PAGE + 2;
         vi.mocked(ConversationViewArchiveCount).mockResolvedValue(total);

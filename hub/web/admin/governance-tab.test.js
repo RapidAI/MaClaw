@@ -205,6 +205,13 @@ function testRegisteredDateOnCard() {
   assertIncludes(chinese, '>\u4eca\u5929<', 'Chinese preset says today');
   var missing = renderGovernance('zh', [boundUser({})]);
   assertIncludes(missing, '\u6ce8\u518c\u65e5\u671f: \u6682\u65e0\u6ce8\u518c\u65e5\u671f', 'a card without a registration time says so');
+  var camel = renderGovernance('zh', [boundUser({ createdAt: iso })]);
+  assertIncludes(camel, '\u6ce8\u518c\u65e5\u671f: ' + stamp, 'camelCase createdAt still shows the registration time');
+  var stored = renderGovernance('zh', [boundUser({ created_at: 'stored-clock' })]);
+  assertIncludes(stored, 'stored-clock', 'a stored clock the browser cannot parse stays on the card');
+  assertNotIncludes(stored, '\u6682\u65e0\u6ce8\u518c\u65e5\u671f', 'a stored clock is not reported as missing');
+  var source = fs.readFileSync(path.join(__dirname, 'governance-tab.js'), 'utf8');
+  assertIncludes(source, "api('/api/admin/users', { cache: 'no-store' })", 'the user list is not reused from the browser cache');
 }
 
 function testRegisteredRangeFilter() {

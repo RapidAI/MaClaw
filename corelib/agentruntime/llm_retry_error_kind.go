@@ -32,6 +32,13 @@ func ClassifyLLMRetryError(err error) LLMRetryErrorKind {
 		return LLMRetryErrorPeriodLimit
 	case IsContextWindowExceeded(err):
 		return LLMRetryErrorContextWindow
+	case llm.IsResponsesStreamFailure(err):
+		// Permanent frames stay unknown. Continuing into the network check
+		// would retry a content-filter frame that also says "connection reset".
+		if llm.IsTransientResponsesStreamError(err) {
+			return LLMRetryErrorTransientServer
+		}
+		return LLMRetryErrorUnknown
 	case IsTransientServerError(err):
 		return LLMRetryErrorTransientServer
 	case IsNetworkLLMRetryError(err):
@@ -238,6 +245,18 @@ func IsTransientServerError(err error) bool {
 	// Client/parent canceled while Hub was pacing — do not auto-retry as if the server is busy.
 	if IsHubRateLimitWaitCanceledError(err) {
 		return false
+	}
+	// A Responses error frame is classified only by its own predicate.
+	// Falling through would treat a content-filter frame that also says
+	// "overloaded" as a transient server error.
+	if llm.IsResponsesStreamFailure(err) {
+		return llm.IsTransientResponsesStreamError(err)
+	}
+	// A Responses socket closed by the server (1011 internal error, 1012
+	// restart, 1013 try again). This is the same outage as an in-stream
+	// server_error. A policy close does not use these codes.
+	if llm.IsTransientWebSocketClose(err) {
+		return true
 	}
 	if llm.IsTransientTokenValidationError(err) {
 		return true

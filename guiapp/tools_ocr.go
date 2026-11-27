@@ -9,6 +9,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -103,6 +104,302 @@ func runOCRRecognizeTool(app *App, args map[string]interface{}) string {
 	return text
 }
 
+// executeCodingOCRRecognize exposes the host OCR engine to the local coding
+// workbench without widening its filesystem authority. Relative input/output
+// paths are resolved inside the project (including a parallel worktree), and
+// read-only postures may use recognition but may not write a transcript file.
+func (c *codingSubAgentCallbacks) executeCodingOCRRecognize(args map[string]interface{}) codingToolExecutionResult {
+	return c.executeCodingOCRRecognizeWithRunner(args, runOCRRecognizeTool)
+}
+
+func (c *codingSubAgentCallbacks) executeCodingOCRRecognizeWithRunner(args map[string]interface{}, runner func(*App, map[string]interface{}) string) codingToolExecutionResult {
+	if c == nil || c.subagent == nil {
+		return codingToolExecutionResult{Text: "ocr_recognize unavailable: coding subagent is unavailable", Outcome: codingToolOutcomeFailed}
+	}
+	h := c.subagent.handler
+	ocrArgs := c.bindCodingOCRProjectPaths(args)
+	imagePath := strings.TrimSpace(stringVal(ocrArgs, "image_path"))
+	outputPath := strings.TrimSpace(stringVal(ocrArgs, "output_path"))
+	ownerID := c.subagent.taskPermissionOwnerID()
+	if imagePath != "" {
+		if err := repoMaintRejectOutside(h, ownerID, imagePath); err != nil {
+			return codingToolExecutionResult{Text: c.rejectToolCall("ocr_recognize", codingOCRArgsWithFocus(ocrArgs, imagePath), err.Error()), Outcome: codingToolOutcomeBlocked}
+		}
+		if reply := c.requireProjectReadScope(imagePath, "ocr_recognize"); reply.rejected() {
+			return c.rejectProjectScope("ocr_recognize", codingOCRArgsWithFocus(ocrArgs, imagePath), reply)
+		}
+	}
+	readOnlyWriteRejection := c.codingOCROutputPathRejection()
+	if outputPath == "" && readOnlyWriteRejection != "" && strings.EqualFold(filepath.Ext(imagePath), ".pdf") {
+		return codingToolExecutionResult{
+			Text:    "ocr_recognize: 扫描版 PDF 必须写入 output_path；当前只读回合不能写文件，因此无法处理该 PDF。请在可写编码回合重试；单页 PNG/JPEG 截图可直接识别。",
+			Outcome: codingToolOutcomeFailed,
+		}
+	}
+	pdfInput := strings.EqualFold(filepath.Ext(imagePath), ".pdf")
+	outputExisted := true
+	var outputBefore codingFileSnapshot
+	outputBeforeOK := false
+	var outputWriteBefore codingFileWriteState
+	outputWriteBeforeOK := false
+	if outputPath != "" {
+		if readOnlyWriteRejection != "" {
+			return codingToolExecutionResult{Text: c.rejectToolCall("ocr_recognize", codingOCRArgsWithFocus(ocrArgs, outputPath), readOnlyWriteRejection), Outcome: codingToolOutcomeBlocked}
+		}
+		if err := repoMaintRejectOutside(h, ownerID, outputPath); err != nil {
+			return codingToolExecutionResult{Text: c.rejectToolCall("ocr_recognize", codingOCRArgsWithFocus(ocrArgs, outputPath), err.Error()), Outcome: codingToolOutcomeBlocked}
+		}
+		if reply := c.decideProjectScope(outputPath, "ocr_recognize", func(err error) string {
+			return fmt.Sprintf("无法确认 ocr_recognize 输出路径是否位于项目目录内：%s", err.Error())
+		}); reply.rejected() {
+			return c.rejectProjectScope("ocr_recognize", codingOCRArgsWithFocus(ocrArgs, outputPath), reply)
+		}
+		if _, err := os.Stat(outputPath); os.IsNotExist(err) {
+			outputExisted = false
+		}
+		if rejection := c.codingOCROutputOverwriteRejection(imagePath, outputPath); rejection != "" {
+			return codingToolExecutionResult{Text: c.rejectToolCall("ocr_recognize", codingOCRArgsWithFocus(ocrArgs, outputPath), rejection), Outcome: codingToolOutcomeBlocked}
+		}
+		if pdfInput {
+			if state, err := snapshotCodingFileWriteState(outputPath); err == nil {
+				outputWriteBefore = state
+				outputWriteBeforeOK = true
+			}
+		} else if snap, err := snapshotCodingFile(outputPath); err == nil {
+			outputBefore = snap
+			outputBeforeOK = true
+		}
+	}
+	var app *App
+	if h != nil {
+		app = h.app
+	}
+	text := runner(app, ocrArgs)
+	succeeded := !codingOCRRecognizeResultLooksFailed(text)
+	if outputPath == "" {
+		c.trackSearchResult("ocr_recognize", map[string]interface{}{"image_path": imagePath}, text, succeeded)
+	}
+	if succeeded && outputPath != "" {
+		changed := false
+		if pdfInput {
+			after, afterErr := snapshotCodingFileWriteState(outputPath)
+			if !outputExisted && os.IsNotExist(afterErr) {
+				changed = false
+			} else {
+				changed = codingFileWriteStateChanged(outputWriteBefore, outputWriteBeforeOK, after, afterErr)
+			}
+		} else {
+			after, afterErr := snapshotCodingFile(outputPath)
+			changed = codingOCROutputChanged(outputBefore, outputBeforeOK, after, afterErr)
+		}
+		if changed {
+			c.trackFile(outputPath)
+			if !outputExisted {
+				c.trackCreatedFile(outputPath)
+			}
+			emitCodeFilePreviewForPath(app, c.codeSessionID(), c.projectPath(), c.previewRouteProjectPath(), outputPath, !outputExisted, true)
+		}
+	}
+	return codingToolExecutionResult{Text: text, Outcome: codingOutcomeFromSuccess(succeeded)}
+}
+
+type codingFileWriteState struct {
+	size            int64
+	modTimeUnixNano int64
+}
+
+func snapshotCodingFileWriteState(path string) (codingFileWriteState, error) {
+	abs, err := resolveFileToolPath(path)
+	if err != nil {
+		return codingFileWriteState{}, err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return codingFileWriteState{}, err
+	}
+	if info.IsDir() {
+		return codingFileWriteState{}, fmt.Errorf("%s is a directory", abs)
+	}
+	return codingFileWriteState{size: info.Size(), modTimeUnixNano: info.ModTime().UnixNano()}, nil
+}
+
+func codingFileWriteStateChanged(before codingFileWriteState, beforeOK bool, after codingFileWriteState, afterErr error) bool {
+	if afterErr != nil {
+		return true
+	}
+	return !beforeOK || after.size != before.size || after.modTimeUnixNano != before.modTimeUnixNano
+}
+
+func codingOCROutputChanged(before codingFileSnapshot, beforeOK bool, after codingFileSnapshot, afterErr error) bool {
+	if afterErr != nil {
+		return true
+	}
+	return !beforeOK || after != before
+}
+
+func codingOCRArgsWithFocus(args map[string]interface{}, focus string) map[string]interface{} {
+	if strings.TrimSpace(focus) == "" {
+		return args
+	}
+	copied := make(map[string]interface{}, len(args)+1)
+	for key, value := range args {
+		copied[key] = value
+	}
+	copied["path"] = focus
+	return copied
+}
+
+func narrowCodingOCROutputPathForReadOnly(tools []map[string]interface{}) []map[string]interface{} {
+	if len(tools) == 0 {
+		return tools
+	}
+	out := make([]map[string]interface{}, 0, len(tools))
+	for _, definition := range tools {
+		if extractToolName(definition) != "ocr_recognize" {
+			out = append(out, definition)
+			continue
+		}
+		cloned := agent.CloneToolDefinitionMap(definition)
+		fn, _ := cloned["function"].(map[string]interface{})
+		if fn == nil {
+			out = append(out, cloned)
+			continue
+		}
+		params, _ := fn["parameters"].(map[string]interface{})
+		if params == nil {
+			out = append(out, cloned)
+			continue
+		}
+		properties, _ := params["properties"].(map[string]interface{})
+		if properties == nil {
+			out = append(out, cloned)
+			continue
+		}
+		delete(properties, "output_path")
+		switch required := params["required"].(type) {
+		case []string:
+			kept := make([]string, 0, len(required))
+			for _, name := range required {
+				if name != "output_path" {
+					kept = append(kept, name)
+				}
+			}
+			if len(kept) == 0 {
+				delete(params, "required")
+			} else {
+				params["required"] = kept
+			}
+		case []interface{}:
+			kept := make([]interface{}, 0, len(required))
+			for _, name := range required {
+				if text, _ := name.(string); text != "output_path" {
+					kept = append(kept, name)
+				}
+			}
+			if len(kept) == 0 {
+				delete(params, "required")
+			} else {
+				params["required"] = kept
+			}
+		}
+		fn["description"] = "Recognize text in an image with the built-in local PP-OCRv6 engine (fully offline). Use this for screenshots, diagnostic images, scanned image pages, or mode=formula for one printed formula image. Do not install or invoke Python OCR packages. On this read-only surface output_path is unavailable; use the returned text directly. Scanned PDFs require a writable coding turn."
+		out = append(out, cloned)
+	}
+	return out
+}
+
+func (c *codingSubAgentCallbacks) bindCodingOCRProjectPaths(args map[string]interface{}) map[string]interface{} {
+	copied := make(map[string]interface{}, len(args))
+	for key, value := range args {
+		copied[key] = value
+	}
+	projectPath := c.projectPath()
+	for _, key := range []string{"image_path", "output_path"} {
+		raw := strings.TrimSpace(stringVal(copied, key))
+		if raw == "" {
+			continue
+		}
+		if projectPath != "" && !filepath.IsAbs(raw) {
+			raw = filepath.Join(projectPath, raw)
+		}
+		copied[key] = c.mapParallelWorktreePath(raw)
+	}
+	return copied
+}
+
+func (c *codingSubAgentCallbacks) codingOCROutputPathRejection() string {
+	if c == nil {
+		return "ocr_recognize unavailable"
+	}
+	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
+		return "ocr_recognize 的 output_path 会写入文件；临时只读兼容面不能写文件。图片识别请省略 output_path，直接使用返回文本；扫描版 PDF 需要可写回合。"
+	}
+	if c.task != nil && (taskIsGoalPlanPhase(c.task, c.reqCtx) || codingTaskLooksInquiry(c.task) || codingTaskLooksOperational(c.task)) {
+		return "ocr_recognize 的 output_path 会写入文件；当前只读/运行回合不能写文件。图片识别请省略 output_path，直接使用返回文本；扫描版 PDF 需要可写回合。"
+	}
+	if c.subagent != nil && (c.subagent.role == codingRoleExplorer || c.subagent.role == codingRoleReviewer) {
+		return "ocr_recognize 的 output_path 会写入文件；只读子代理不能写文件。图片识别请省略 output_path，直接使用返回文本；扫描版 PDF 需要可写回合。"
+	}
+	return ""
+}
+
+// codingOCROutputOverwriteRejection keeps the optional transcript write on the
+// same evidence boundary as the other coding file writes. A structured scanned-
+// PDF transcript is exempt because runOCRRecognizePDF reads and merges its page
+// bodies itself; an arbitrary existing file is not, and image/formula output
+// would otherwise overwrite any project file the model named without ever
+// reading it.
+func (c *codingSubAgentCallbacks) codingOCROutputOverwriteRejection(imagePath, outputPath string) string {
+	if imagePath != "" && ocrSamePath(imagePath, outputPath) {
+		return "ocr_recognize: output_path 不能是源文件。请改用旁边的 .txt 文件。"
+	}
+	info, err := os.Stat(outputPath)
+	if err != nil || info.IsDir() {
+		return ""
+	}
+	if strings.EqualFold(filepath.Ext(imagePath), ".pdf") && ocrExistingPDFTranscript(outputPath) {
+		return ""
+	}
+	return c.requireReadBeforeModify(outputPath, "ocr_recognize")
+}
+
+func ocrExistingPDFTranscript(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	buf := make([]byte, 64*1024)
+	n, readErr := io.ReadAtLeast(file, buf, 1)
+	if n == 0 || (readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF)) {
+		return false
+	}
+	firstLine, _, _ := strings.Cut(string(buf[:n]), "\n")
+	firstLine = strings.TrimSuffix(firstLine, "\r")
+	return agent.OCRTranscriptMaxPage(firstLine) > 0
+}
+
+func codingOCRRecognizeResultLooksFailed(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	for _, prefix := range []string{
+		"ocr_recognize:",
+		"ocr_recognize failed:",
+		"ocr is disabled",
+		"ocr model files",
+		"formula recognition is disabled",
+		"formula model files",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func ocrRecognizeMode(args map[string]interface{}) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(stringVal(args, "mode"))) {
 	case "", "text", "ocr":
@@ -148,7 +445,7 @@ func runOCRFormula(app *App, args map[string]interface{}) string {
 		return fmt.Sprintf("ocr_recognize failed: %v", err)
 	}
 	if strings.TrimSpace(latex) == "" {
-		return "ocr_recognize: 没有识别出公式。"
+		return "公式识别完成：未识别出公式。"
 	}
 	if outPath := strings.TrimSpace(stringVal(args, "output_path")); outPath != "" {
 		written, wErr := writeOCRResultFile(outPath, latex)
@@ -273,8 +570,15 @@ func runOCRRecognizePDF(app *App, path string, args map[string]interface{}) stri
 	// A page already in the transcript is done. Skip model load and OCR so a
 	// retried start_page does not download an engine or overwrite the file.
 	startPage := ocrPositiveInt(args, "start_page", 1, 0)
-	if receipt, ok := ocrTranscriptAlreadyCovers(path, outPath, startPage); ok {
-		return receipt
+	previous, readErr := os.ReadFile(outPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return "ocr_recognize: read output file: " + readErr.Error()
+	}
+	previousText := string(previous)
+	if readErr == nil && len(previous) > 0 {
+		if receipt, ok := ocrTranscriptAlreadyCoversText(path, outPath, previousText, startPage); ok {
+			return receipt
+		}
 	}
 	if app != nil {
 		if _, _, ok := app.ensureOCRModelFiles(); !ok {
@@ -290,12 +594,8 @@ func runOCRRecognizePDF(app *App, path string, args map[string]interface{}) stri
 		}
 		return "ocr_recognize: read pdf: " + treeErr.Error()
 	}
-	previous, readErr := os.ReadFile(outPath)
-	if readErr != nil && !os.IsNotExist(readErr) {
-		return "ocr_recognize: read output file: " + readErr.Error()
-	}
 	// Stop before the next finished page so this call does not OCR it again.
-	endPage := agent.OCRTranscriptNextDonePage(string(previous), startPage)
+	endPage := agent.OCRTranscriptNextDonePage(previousText, startPage)
 	batch, _, err := tree.OCRImagePages(startPage, agent.OCRPDFPageBatchMax, endPage, func(imageBase64 string) (string, error) {
 		results, recErr := sharedNativeOCRProvider().Recognize(imageBase64)
 		if recErr != nil {
@@ -311,11 +611,11 @@ func runOCRRecognizePDF(app *App, path string, args map[string]interface{}) stri
 		return "ocr_recognize: 未能用本机 PP-OCRv6 读取该 PDF 的页面图片。不要安装其他 OCR 引擎。"
 	}
 	if strings.TrimSpace(batch.Text) == "" && batch.Recognized == 0 && batch.NextPage == 0 {
-		return ocrRecognizePastEnd(outPath, batch.TotalPages)
+		return ocrRecognizePastEndTranscript(outPath, batch.TotalPages, previousText)
 	}
 	// Merge keeps finished pages, fills gaps, and replaces an extract-error
 	// page. start_page=1 must not wipe a transcript that already has later pages.
-	merged := agent.MergeOCRTranscript(string(previous), batch.Text)
+	merged := agent.MergeOCRTranscript(previousText, batch.Text)
 	written, wErr := writeOCRResultFile(outPath, merged)
 	if wErr != nil {
 		return "ocr_recognize: write output file: " + wErr.Error()
@@ -372,14 +672,18 @@ func ocrRecognizePastEnd(outPath string, total int) string {
 	if previous, err := os.ReadFile(outPath); err == nil {
 		text = string(previous)
 	}
+	return ocrRecognizePastEndTranscript(outPath, total, text)
+}
+
+func ocrRecognizePastEndTranscript(outPath string, total int, text string) string {
 	next := agent.OCRTranscriptFirstMissing(text)
 	if next > 0 && (total <= 0 || next <= total) {
 		return ocrTranscriptReceipt(outPath, text, total, 0, true)
 	}
 	if total > 0 {
-		return fmt.Sprintf("ocr_recognize: 已到文件末尾（共 %d 页）。不要安装其他 OCR 引擎。", total)
+		return fmt.Sprintf("OCR 完成：已到文件末尾（共 %d 页）。不要安装其他 OCR 引擎。", total)
 	}
-	return "ocr_recognize: 已到文件末尾。不要安装其他 OCR 引擎。"
+	return "OCR 完成：已到文件末尾。不要安装其他 OCR 引擎。"
 }
 
 // ocrTranscriptAlreadyCovers reports that this start_page is already in the
@@ -390,7 +694,10 @@ func ocrTranscriptAlreadyCovers(pdfPath, outPath string, startPage int) (string,
 	if err != nil || len(existing) == 0 {
 		return "", false
 	}
-	text := string(existing)
+	return ocrTranscriptAlreadyCoversText(pdfPath, outPath, string(existing), startPage)
+}
+
+func ocrTranscriptAlreadyCoversText(pdfPath, outPath, text string, startPage int) (string, bool) {
 	if !agent.OCRTranscriptPageDone(text, startPage) {
 		return "", false
 	}

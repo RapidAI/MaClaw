@@ -3969,8 +3969,8 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		prevOutputs = codingPrevOutputsForRepoMaintTurn(prevOutputs)
 	}
 	// Cap this request's continuation chain at the dispatch work actually
-	// planned: writer + reviewer per step plus retry slack (see
-	// armDesktopCodingContinuationBudget).
+	// planned: writer, reviewer, and compile-repair roots per step, plus
+	// retry slack (see armDesktopCodingContinuationBudget).
 	if h.app != nil {
 		h.app.armDesktopCodingContinuationBudget(userID, len(tasks))
 	}
@@ -4326,7 +4326,69 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 				}
 			}
 			ok, vcmd, vout, skipped := runCodingWorkbenchStepVerifyForTask(ctx, verifyRoot, taskFiles)
+			repairNote := ""
+			if !skipped && !ok && verifyLogHasCompilerDiagnostic(vout) {
+				outcome, usage := runLocalStepCompileRepair(ctx, loopCtx, cfg, httpClient, h, verifyRoot, taskFiles, t.Index, vcmd, vout, onTk, onPr)
+				if outcome.Cancelled || outcome.Attempted {
+					v1Result.FilesModified = append(v1Result.FilesModified, outcome.Modified...)
+					v1Result.FilesCreated = append(v1Result.FilesCreated, outcome.Created...)
+					v1Result.Iterations += usage.Iterations
+					v1Result.ToolCalls += usage.ToolCalls
+					v1Result.InputTokens += usage.InputTokens
+					v1Result.OutputTokens += usage.OutputTokens
+					v1Result.EstCostRMB += usage.Cost
+					if usage.LastPrompt > 0 {
+						v1Result.LastPromptTokens = usage.LastPrompt
+					}
+					if usage.LastCompletion > 0 {
+						v1Result.LastCompletionTokens = usage.LastCompletion
+					}
+					usageMu.Lock()
+					mergedModified = append(mergedModified, outcome.Modified...)
+					mergedCreated = append(mergedCreated, outcome.Created...)
+					totalToolCalls += usage.ToolCalls
+					totalIters += usage.Iterations
+					totalInTok += usage.InputTokens
+					totalOutTok += usage.OutputTokens
+					totalCost += usage.Cost
+					if usage.LastPrompt > 0 {
+						lastInTok = usage.LastPrompt
+					}
+					if usage.LastCompletion > 0 {
+						lastOutTok = usage.LastCompletion
+					}
+					usageMu.Unlock()
+					if sourcePreview && (len(outcome.Modified)+len(outcome.Created) > 0) {
+						disk, modified, created := verifyRoot, outcome.Modified, outcome.Created
+						if parallelTurn != nil {
+							disk, modified, created = parallelTurn.previewPaths(projectPath, modified, created)
+						}
+						emitCodingSubAgentCodeFileEvents(h.app, codeSessionID, disk, modified, created, previewRoutePath)
+					}
+				}
+				if outcome.Cancelled {
+					// A skip is a closed row. Resume would start at the next
+					// step and leave this compile unrepaired.
+					h.recordOrchestratedCodingStepStatus(planned, userID, t.Index, codingRunnerSkipStickyStatus("cancelled"), "cancelled")
+					return &v2.TaskRunResult{
+						TaskIndex:     t.Index,
+						Title:         t.Title,
+						Status:        v2.TaskSkipped,
+						FilesCreated:  v1Result.FilesCreated,
+						FilesModified: v1Result.FilesModified,
+						Error:         "cancelled",
+					}
+				}
+				if outcome.Attempted {
+					ok, vcmd, vout = outcome.OK, outcome.Cmd, outcome.Output
+					skipped = false
+					repairNote = outcome.Note
+				}
+			}
 			gateSum := codingWorkbenchStepGateSummary(ok, vcmd, vout, skipped)
+			if repairNote != "" {
+				gateSum = repairNote + "\n" + gateSum
+			}
 			if !skipped {
 				if ok {
 					log.Printf("[workflow-v2] T%d step verify passed: %s", t.Index, vcmd)
@@ -4939,9 +5001,9 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			sessionMem.LastSummary = codingContinuationResumeNote()
 		}
 	}
-	// Same continuation-chain budget as the local runner: writer + reviewer
-	// per step plus retry slack, so a remote multi-step plan cannot mint an
-	// unbounded turn chain either.
+	// Same continuation-chain budget as the local runner: writer, reviewer,
+	// and compile-repair roots per step, plus retry slack, so a remote
+	// multi-step plan cannot mint an unbounded turn chain either.
 	if h.app != nil {
 		h.app.armDesktopCodingContinuationBudget(userID, len(tasks))
 	}
@@ -5165,7 +5227,58 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 				}
 				taskFiles := append(append([]string{}, turnFilesModified...), turnFilesCreated...)
 				ok, vcmd, vout, skipped := runCodingWorkbenchRemoteStepVerifyForTask(h, remoteCtx.SessionID, remoteCtx.ProjectDir, taskFiles)
+				repairNote := ""
+				if !skipped && !ok && verifyLogHasCompilerDiagnostic(vout) {
+					outcome, usage := runRemoteStepCompileRepair(nil, loopCtx, cfg, httpClient, h, remoteCtx, runner, remoteCtx.ProjectDir, taskFiles, step.Index, vcmd, vout, wrapCodingAgentReasoningToken(onToken), onProgress)
+					if outcome.Cancelled || outcome.Attempted {
+						stepResult.FilesModified = append(stepResult.FilesModified, outcome.Modified...)
+						stepResult.FilesCreated = append(stepResult.FilesCreated, outcome.Created...)
+						turnFilesModified = append(turnFilesModified, outcome.Modified...)
+						turnFilesCreated = append(turnFilesCreated, outcome.Created...)
+						stepResult.Iterations += usage.Iterations
+						stepResult.ToolCalls += usage.ToolCalls
+						stepResult.InputTokens += usage.InputTokens
+						stepResult.OutputTokens += usage.OutputTokens
+						stepResult.EstCostRMB += usage.Cost
+						if usage.LastPrompt > 0 {
+							stepResult.LastPromptTokens = usage.LastPrompt
+						}
+						if usage.LastCompletion > 0 {
+							stepResult.LastCompletionTokens = usage.LastCompletion
+						}
+						totalTools += usage.ToolCalls
+						totalIters += usage.Iterations
+						totalInTok += usage.InputTokens
+						totalOutTok += usage.OutputTokens
+						totalCost += usage.Cost
+						if usage.LastPrompt > 0 {
+							lastInTok = usage.LastPrompt
+						}
+						if usage.LastCompletion > 0 {
+							lastOutTok = usage.LastCompletion
+						}
+					}
+					if outcome.Cancelled {
+						stepResult.Status = "cancelled"
+						stepResult.Error = "cancelled"
+						// Same row as a runner cancel. codingStepSkipped is
+						// closed, so 继续 would pass over this step.
+						stepStatus = codingRunnerSkipStickyStatus(stepResult.Error)
+						h.recordOrchestratedCodingStepChild(planned, userID, step.Index, stepStatus, "cancelled", childID)
+						runResults = append(runResults, remoteCodingStepToRunResult(step, stepResult))
+						_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
+						break
+					}
+					if outcome.Attempted {
+						ok, vcmd, vout = outcome.OK, outcome.Cmd, outcome.Output
+						skipped = false
+						repairNote = outcome.Note
+					}
+				}
 				gateSum := codingWorkbenchStepGateSummary(ok, vcmd, vout, skipped)
+				if repairNote != "" {
+					gateSum = repairNote + "\n" + gateSum
+				}
 				if !skipped {
 					if ok {
 						log.Printf("[workflow-v2] T%d remote step verify passed: %s", step.Index, vcmd)

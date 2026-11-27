@@ -47,6 +47,19 @@ var codingSurfaceTrustedAdapters = map[tool.CapabilityID]string{
 // fallbacks must be added back here when they appear.
 var codingSurfaceToolsOutsideHostRegistry = map[string]string{}
 
+// codingSurfaceToolsOwnedByOtherMigrations names host tools the coding surface
+// may call but whose managed replacement is owned outside the coding-runtime
+// migration. The probe still requires them to be host-registered; it does not
+// charge their capability coverage to the coding belt.
+var codingSurfaceToolsOwnedByOtherMigrations = map[string]string{
+	// The legacy adapter catalog assigns OCR to media-platform. No trusted
+	// managed OCR adapter exists yet; one must preserve that platform's model
+	// lifecycle and attachment/PDF contract. Charging that gap to coding would
+	// misstate ownership: it is not part of the coding workspace/tool-dispatch
+	// cutover, but the explicit entry keeps the dependency visible.
+	"ocr_recognize": "media-platform OCR migration",
+}
+
 // TestCodingSurfaceCapabilityCoverageProbe is the read-only probe for the
 // agentic half of the migration. It changes no routing, and it still describes
 // the coding subagent's static belt, which is reached through its own entry
@@ -68,6 +81,7 @@ func TestCodingSurfaceCapabilityCoverageProbe(t *testing.T) {
 	h := &IMMessageHandler{registry: registry}
 	registerBuiltinTools(registry, h)
 	registerNonCodeTools(registry, &App{testHomeDir: t.TempDir()})
+	registerOCRTools(registry, &App{testHomeDir: t.TempDir()})
 
 	var (
 		unexpectedlyAbsent  []string
@@ -87,6 +101,9 @@ func TestCodingSurfaceCapabilityCoverageProbe(t *testing.T) {
 		}
 		if knownAbsent {
 			unexpectedlyPresent = append(unexpectedlyPresent, name)
+		}
+		if _, ownedElsewhere := codingSurfaceToolsOwnedByOtherMigrations[name]; ownedElsewhere {
+			continue
 		}
 		if len(registered.CapabilityProvisions) == 0 {
 			unannotated = append(unannotated, name)
@@ -143,8 +160,12 @@ func TestCodingSurfaceAnnotationsStayOutOfTheManagedCatalog(t *testing.T) {
 	h := &IMMessageHandler{registry: registry}
 	registerBuiltinTools(registry, h)
 	registerNonCodeTools(registry, &App{testHomeDir: t.TempDir()})
+	registerOCRTools(registry, &App{testHomeDir: t.TempDir()})
 
 	for _, name := range codingSubAgentToolOrder {
+		if _, ownedElsewhere := codingSurfaceToolsOwnedByOtherMigrations[name]; ownedElsewhere {
+			continue
+		}
 		registered, ok := registry.Get(name)
 		if !ok || registered == nil || len(registered.CapabilityProvisions) == 0 {
 			continue

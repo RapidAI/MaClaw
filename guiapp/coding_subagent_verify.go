@@ -138,6 +138,116 @@ func scopeGoVerifyToTaskAt(cmd, projectPath string, taskFiles []string, exeDir s
 	return formatTaskGoVerify(pkgs, meta, normalizeVerifyOutDir(exeDir)), false, ""
 }
 
+// repairGoVerifyCommand scopes the project command to the original task
+// files, then typechecks packages the repair had to open. Those packages
+// are built, not vetted. go vet would analyze them and compile their tests.
+// A pre-existing test failure is a vet tool error, and that class of failure
+// is never historical, but the command that failed did not compile those
+// tests. go build typechecks the same non-test files an importer compiles.
+// The build is first so a later historical vet failure cannot skip it.
+func repairGoVerifyCommand(cmd, projectPath string, commandFiles, judgeFiles []string, exeDir string) (scoped string, skip bool, reason string) {
+	exeDir = normalizeVerifyOutDir(exeDir)
+	scoped, skip, reason = scopeGoVerifyToTaskAt(cmd, projectPath, judgeFiles, exeDir)
+	if skip {
+		// The original files named no Go package. Scope the files the repair
+		// actually touched instead of treating that as a clean pass.
+		return scopeGoVerifyToTaskAt(cmd, projectPath, commandFiles, exeDir)
+	}
+	if !commandUsesGoToolchain(scoped) {
+		return scoped, false, ""
+	}
+	build := formatRepairTypecheck(goPackagesOutside(projectPath, commandFiles, judgeFiles), exeDir)
+	if build == "" {
+		return scoped, false, ""
+	}
+	return build + " && " + scoped, false, ""
+}
+
+// commandUsesGoToolchain reports a verify command that already invokes go
+// build, vet, or test. Other ecosystems must not gain a go build.
+func commandUsesGoToolchain(cmd string) bool {
+	fields := strings.Fields(cmd)
+	for i := 0; i < len(fields); i++ {
+		if strings.Trim(fields[i], `"`) != "go" {
+			continue
+		}
+		j := i + 1
+		if j < len(fields) && fields[j] == "-C" {
+			j += 2
+		}
+		if j >= len(fields) {
+			continue
+		}
+		switch strings.Trim(fields[j], `"`) {
+		case "build", "vet", "test":
+			return true
+		}
+	}
+	return false
+}
+
+// goPackagesOutside returns packages named by files that are not already
+// named by already. A second file in a package the task already verifies
+// does not widen the command.
+func goPackagesOutside(projectPath string, files, already []string) []taskGoPkg {
+	have := make(map[string]bool)
+	for _, pkg := range goPackagesForTask(projectPath, already) {
+		have[pkg.moduleDir+"\x00"+pkg.pkg] = true
+	}
+	var extra []taskGoPkg
+	for _, pkg := range goPackagesForTask(projectPath, files) {
+		if have[pkg.moduleDir+"\x00"+pkg.pkg] {
+			continue
+		}
+		extra = append(extra, pkg)
+	}
+	return extra
+}
+
+// formatRepairTypecheck is a compile check. It does not run vet, so the
+// package's analyzers and tests stay out of this step. With an output
+// directory, each package is written to one file sink. A directory -o
+// rejects a library ("no main packages to build"), and a plain go build of
+// a main package writes the executable into the project. The file sink
+// accepts both, including when the tree is not on this machine and package
+// main cannot be seen.
+func formatRepairTypecheck(pkgs []taskGoPkg, exeDir string) string {
+	if len(pkgs) == 0 {
+		return ""
+	}
+	grouped := map[string][]taskGoPkg{}
+	var order []string
+	for _, pkg := range pkgs {
+		if _, ok := grouped[pkg.moduleDir]; !ok {
+			order = append(order, pkg.moduleDir)
+		}
+		grouped[pkg.moduleDir] = appendTaskGoPkg(grouped[pkg.moduleDir], pkg)
+	}
+	sort.Strings(order)
+	sink := ""
+	if exeDir != "" {
+		sink = exeDir + "repair.out"
+	}
+	var parts []string
+	for _, mod := range order {
+		ps := grouped[mod]
+		sort.Slice(ps, func(i, j int) bool { return ps[i].pkg < ps[j].pkg })
+		if sink == "" {
+			args := make([]string, 0, len(ps))
+			for _, pkg := range ps {
+				args = append(args, pkg.pkg)
+			}
+			parts = append(parts, goModuleCommand(mod, "build", args))
+			continue
+		}
+		// -o names one file, so each package is its own build.
+		for _, pkg := range ps {
+			parts = append(parts, goModuleCommand(mod, "build", []string{"-o", sink, pkg.pkg}))
+		}
+	}
+	return strings.Join(parts, " && ")
+}
+
 // localVerifyBuildOutDir is where a local step gate puts main-package
 // executables. go build of package main otherwise drops them in the repo.
 func localVerifyBuildOutDir() string {
@@ -1362,7 +1472,7 @@ func (s *CodingSubAgent) runPostLoopVerifyFixCycle(
 		// enough project context for the fix.
 		truncatedOutput := truncateForSubAgentVerify(promoteRelatedGoDiagnostics(verifyResult, s.projectPath, taskFiles), subAgentVerifyOutputMaxTokens)
 		fixPrompt := fmt.Sprintf(
-			"验证命令 `%s` 执行失败。错误输出：\n```\n%s\n```\n\n请分析错误并修复代码使验证通过。只做最小必要修改。修复后不要重新运行验证命令（系统会自动运行）。",
+			"验证命令 `%s` 执行失败。错误输出：\n```\n%s\n```\n\n请分析错误并修复代码使验证通过。编译器点名的文件都在本次修复范围内，即使本任务原先没有改它们；做让这些文件重新可编译的最小修改，不要用 git checkout/restore 回滚整文件，也不要以别人的文件或约定为由停下来。只做最小必要修改。修复后不要重新运行验证命令（系统会自动运行）。",
 			verifyCmd, truncatedOutput)
 
 		// Run fix loop as a fresh RunLoop (shares system prompt + tools via cb).

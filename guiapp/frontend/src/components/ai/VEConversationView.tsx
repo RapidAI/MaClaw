@@ -10,6 +10,7 @@ import { MessageContentRenderer } from "./MessageContentRenderer";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { AssistantInputStack } from "./AssistantInputStack";
 import { AssistantReplyCopyButton } from "./AssistantReplyCopyButton";
+import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
 import { MentionPopover, useMentionKeyboard, type MentionParticipant } from "./MentionPopover";
 import { getParticipantColor } from "./VEGroupChat";
 import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
@@ -23,7 +24,7 @@ import type { UseVoiceInputResult } from "./useVoiceInput";
 import { classifyDisplayAttachmentType, isBinaryDocumentAttachment } from "./attachmentClassification";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { getWailsAppModule as loadWailsAppModule, type WailsAppModule } from "../../utils/wailsAppModule";
-import { firstVEStreamText, projectAnswerSlices, visibleHistoryMessageContent, visibleVEStreamContent } from "./visibleChatText";
+import { firstVEStreamText, projectAnswerSlices, sanitizeVisibleChatText, visibleHistoryMessageContent, visibleVEStreamContent } from "./visibleChatText";
 import { applyUserScrollFollow, isAwayFromBottom, tryPinAssistantOutput } from "./assistantOutputScrollLogic";
 import { localizeAIAssistantError } from "./aiAssistantI18n";
 import { createStreamCoalescer, type StreamCoalescer } from "./streamCoalescer";
@@ -115,6 +116,16 @@ export interface VEMessage {
     localOnly?: boolean;
     /** Synthetic local message kind for rendering or filtering. */
     messageKind?: "employee_intro";
+    /** Private thought shown above the answer. Not part of the reply text. */
+    reasoning?: string;
+    /** This turn's answer is still open. History rows leave it unset. */
+    pendingAnswer?: boolean;
+}
+
+/** Thought parked for a speaker who is not the one currently on screen. */
+interface HeldVEReasoning {
+    fromId: string;
+    text: string;
 }
 
 export interface VEMessageAttachment {
@@ -201,9 +212,16 @@ export interface VEConversationState {
     messages: VEMessage[];
     streaming: boolean;
     streamContent: string;
+    streamReasoning: string;
+    /** Speaker of streamReasoning. Empty while the thought has no from id yet. */
+    streamReasoningFromId: string;
+    /** Thoughts from other speakers, kept out of the live panel until they answer. */
+    heldReasoning: HeldVEReasoning[];
     streamFromId: string;
     streamFromName: string;
     streamAttachments: VEMessageAttachment[];
+    /** Speakers who have started an answer in this turn and have not finished. */
+    unfinishedAnswerIds: string[];
     activityPhase: string;
     activityName: string;
     error: VEConversationError | null;
@@ -279,7 +297,7 @@ const LOCAL_CONFIG_CHANGED_EVENT = "maclaw-config-changed";
 
 /**
  * Inactivity silence timeout (seconds). If the remote agent sends no activity
- * signal (stream chunk, stream end, disconnect) within this window after the
+ * signal (stream chunk, reasoning, stream end, disconnect) within this window after the
  * last activity, the response gate is released and input is unlocked.
  *
  * This is distinct from `agent_response_timeout_sec` (max total time).
@@ -325,57 +343,550 @@ interface VEStreamChunkEntry {
     attachments: VEMessageAttachment[];
 }
 
+interface VEReasoningEntry {
+    text: string;
+    fromId: string;
+}
+
+function clearedLiveReasoning(): Pick<VEConversationState, "streamReasoning" | "streamReasoningFromId" | "heldReasoning"> {
+    return { streamReasoning: "", streamReasoningFromId: "", heldReasoning: [] };
+}
+
+/** The speaker who just became active moves to the end, so ending one resumes whoever was interrupted last. */
+function rememberUnfinishedAnswer(ids: string[] | undefined, id: string): string[] {
+    const list = ids ?? [];
+    if (!id) return list;
+    const rest = list.filter((item) => !participantIdentityMatches(item, id));
+    return [...rest, id];
+}
+
+function forgetUnfinishedAnswer(ids: string[] | undefined, id: string): string[] {
+    const list = ids ?? [];
+    if (!id) return list;
+    return list.filter((item) => !participantIdentityMatches(item, id));
+}
+
+function latestUserMessageIndex(messages: VEMessage[]): number {
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === "user") return i;
+    }
+    return -1;
+}
+
+/** Latest answer from this speaker after the latest user message. Without one, only a fragment parked in this turn matches. */
+function latestCurrentTurnAssistantIndex(messages: VEMessage[], fromId: string): number {
+    if (!fromId) return -1;
+    const userAt = latestUserMessageIndex(messages);
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i];
+        if (message.role === "user") break;
+        if (userAt < 0 && !message.pendingAnswer) continue;
+        if (message.role === "assistant" && message.fromId && participantIdentityMatches(message.fromId, fromId)) return i;
+    }
+    return -1;
+}
+
+/** A fragment parked in this turn, still waiting for the rest of that employee's answer. */
+function latestPendingAnswerIndex(messages: VEMessage[], fromId: string): number {
+    if (!fromId) return -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i];
+        if (message.role === "user") break;
+        if (message.pendingAnswer && message.role === "assistant" && message.fromId && participantIdentityMatches(message.fromId, fromId)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+function pendingSpeakerIds(messages: VEMessage[]): string[] {
+    const ids: string[] = [];
+    const start = latestUserMessageIndex(messages) + 1;
+    for (let i = start; i < messages.length; i++) {
+        const message = messages[i];
+        const fromId = message.fromId || "";
+        if (!message.pendingAnswer || message.role !== "assistant" || !fromId) continue;
+        if (ids.some((id) => participantIdentityMatches(id, fromId))) continue;
+        ids.push(fromId);
+    }
+    return ids;
+}
+
+/** Drop the employee who just finished, and keep any parked fragment whose id was no longer in the list. */
+function speakersStillAnswering(ids: string[] | undefined, messages: VEMessage[], endedSpeaker: string): string[] {
+    let next = forgetUnfinishedAnswer(ids, endedSpeaker);
+    for (const id of pendingSpeakerIds(messages)) {
+        if (endedSpeaker && participantIdentityMatches(id, endedSpeaker)) continue;
+        if (next.some((item) => participantIdentityMatches(item, id))) continue;
+        next = [...next, id];
+    }
+    return next;
+}
+
+function answerOpening(existing: string, stream: string): string {
+    if (!existing) return stream;
+    if (!stream) return existing;
+    if (stream.startsWith(existing) || existing.startsWith(stream)) {
+        return stream.length >= existing.length ? stream : existing;
+    }
+    return existing + stream;
+}
+
+/**
+ * The ended employee's answer already on screen is one bubble.
+ * A parked fragment and the live buffer fold together, then the settled ending lands on that opening.
+ */
+function commitSpeakerAnswer(
+    messages: VEMessage[],
+    speakerId: string,
+    streamContent: string,
+    terminalContent: string,
+    attachments: VEMessageAttachment[],
+    reasoning: string,
+    fromName: string,
+): { messages: VEMessage[]; placed: boolean } {
+    const start = latestUserMessageIndex(messages) + 1;
+    const indexes: number[] = [];
+    if (speakerId) {
+        messages.forEach((message, index) => {
+            if (
+                index >= start
+                && message.pendingAnswer
+                && message.role === "assistant"
+                && message.fromId
+                && participantIdentityMatches(message.fromId, speakerId)
+            ) indexes.push(index);
+        });
+    }
+    let opening = "";
+    let mergedAttachments: VEMessageAttachment[] = [];
+    let mergedReasoning: string | undefined;
+    let fragmentName = "";
+    let fragmentId = speakerId;
+    for (const index of indexes) {
+        const fragment = messages[index];
+        opening = answerOpening(opening, fragment.content);
+        if (fragment.attachments?.length) mergedAttachments = mergeVEMessageAttachments(mergedAttachments, fragment.attachments);
+        mergedReasoning = joinVEReasoning(mergedReasoning, fragment.reasoning || "");
+        fragmentName = fragment.fromName || fragmentName;
+        fragmentId = fragment.fromId || fragmentId;
+    }
+    opening = answerOpening(opening, streamContent);
+    if (attachments.length) mergedAttachments = mergeVEMessageAttachments(mergedAttachments, attachments);
+    mergedReasoning = joinVEReasoning(mergedReasoning, reasoning);
+    const content = projectAnswerSlices(opening, terminalContent);
+    const last = indexes.length ? messages[indexes[indexes.length - 1]] : undefined;
+    if (!content && mergedAttachments.length === 0 && !mergedReasoning) {
+        if (indexes.length === 0) return { messages, placed: false };
+        const next = messages.slice();
+        for (let i = indexes.length - 1; i >= 0; i--) next.splice(indexes[i], 1);
+        return { messages: next, placed: true };
+    }
+    const answer: VEMessage = {
+        id: last?.id || generateMsgId(),
+        role: "assistant",
+        content,
+        timestamp: last?.timestamp || Date.now(),
+        fromId: fragmentId || speakerId || undefined,
+        fromName: fromName || fragmentName || last?.fromName || undefined,
+        attachments: mergedAttachments.length ? mergedAttachments : undefined,
+        reasoning: mergedReasoning,
+        pendingAnswer: undefined,
+    };
+    if (indexes.length === 0) return { messages: [...messages, answer], placed: true };
+    const next = messages.slice();
+    for (let i = indexes.length - 2; i >= 0; i--) next.splice(indexes[i], 1);
+    next[indexes[indexes.length - 1] - (indexes.length - 1)] = answer;
+    return { messages: next, placed: true };
+}
+
+function parkStreamOntoCurrentTurn(prev: VEConversationState, reasoning: string): VEMessage[] {
+    const fromId = prev.streamFromId;
+    const parked: VEMessage = {
+        id: generateMsgId(),
+        role: "assistant",
+        content: prev.streamContent,
+        timestamp: Date.now(),
+        fromId: fromId || undefined,
+        fromName: prev.streamFromName || undefined,
+        attachments: prev.streamAttachments.length ? prev.streamAttachments : undefined,
+        reasoning: reasoning || undefined,
+        pendingAnswer: true,
+    };
+    const index = latestCurrentTurnAssistantIndex(prev.messages, fromId);
+    if (index < 0) return [...prev.messages, parked];
+    const existing = prev.messages[index];
+    const attachments = prev.streamAttachments.length
+        ? mergeVEMessageAttachments(existing.attachments ?? [], prev.streamAttachments)
+        : (existing.attachments ?? []);
+    const next = prev.messages.slice();
+    next[index] = {
+        ...existing,
+        content: existing.content + prev.streamContent,
+        fromName: prev.streamFromName || existing.fromName,
+        attachments: attachments.length ? attachments : undefined,
+        reasoning: joinVEReasoning(existing.reasoning, reasoning),
+        pendingAnswer: true,
+    };
+    return next;
+}
+
+/** Put a parked answer back on the live buffer so later tokens continue it. */
+function liftCurrentTurnAnswer(prev: VEConversationState, speakerId: string): VEConversationState {
+    const index = latestCurrentTurnAssistantIndex(prev.messages, speakerId);
+    if (index < 0) return prev;
+    const message = prev.messages[index];
+    const messages = prev.messages.slice();
+    messages.splice(index, 1);
+    const taken = takeHeldReasoning(prev.heldReasoning, speakerId);
+    const reasoning = joinVEReasoning(message.reasoning, taken.text) || "";
+    return {
+        ...prev,
+        messages,
+        streaming: true,
+        streamContent: message.content,
+        streamReasoning: reasoning,
+        streamReasoningFromId: reasoning ? (message.fromId || speakerId) : "",
+        heldReasoning: taken.rest,
+        streamFromId: message.fromId || speakerId,
+        streamFromName: message.fromName || "",
+        streamAttachments: message.attachments ? message.attachments.slice() : [],
+    };
+}
+
+function takeHeldReasoning(held: HeldVEReasoning[], fromId: string): { text: string; rest: HeldVEReasoning[] } {
+    if (!fromId || held.length === 0) return { text: "", rest: held };
+    const index = held.findIndex((item) => participantIdentityMatches(item.fromId, fromId));
+    if (index < 0) return { text: "", rest: held };
+    return { text: held[index].text, rest: held.filter((_, itemIndex) => itemIndex !== index) };
+}
+
+function parkHeldReasoning(held: HeldVEReasoning[], fromId: string, text: string): HeldVEReasoning[] {
+    const index = held.findIndex((item) => participantIdentityMatches(item.fromId, fromId));
+    if (index < 0) return [...held, { fromId, text }];
+    const next = held.slice();
+    next[index] = { fromId: next[index].fromId, text: next[index].text + text };
+    return next;
+}
+
+function reasoningOnlyMessage(fromId: string, text: string): VEMessage {
+    return {
+        id: generateMsgId(),
+        role: "assistant",
+        content: "",
+        timestamp: Date.now(),
+        fromId: fromId || undefined,
+        reasoning: text,
+    };
+}
+
+/** Fold unspoken thoughts into the transcript once the turn is over. */
+function settleParkedReasoning(prev: VEConversationState): VEMessage[] {
+    if (prev.streaming) return prev.messages;
+    const extra: VEMessage[] = [];
+    const live = prev.streamReasoning.trim();
+    if (live) extra.push(reasoningOnlyMessage(prev.streamReasoningFromId, live));
+    for (const item of prev.heldReasoning) {
+        const text = item.text.trim();
+        if (text) extra.push(reasoningOnlyMessage(item.fromId, text));
+    }
+    return extra.length ? [...prev.messages, ...extra] : prev.messages;
+}
+
 /**
  * Fold one stream chunk into the conversation state — exactly the update
  * handleStreamChunk applied per event. Extracted so both the immediate
  * first-chunk paint and the 33ms coalesced flush run the identical logic,
  * keeping message order, sender switches, and attachment merges unchanged.
+ * A thought stays with the speaker who produced it.
  */
 function applyVEStreamChunkEntry(prev: VEConversationState, entry: VEStreamChunkEntry): VEConversationState {
     const hasPendingStream = !!prev.streamContent || prev.streamAttachments.length > 0;
+    const error = prev.error?.type === "response_timeout" ? null : prev.error;
     if (prev.streaming && hasPendingStream && entry.senderId && prev.streamFromId && !participantIdentityMatches(entry.senderId, prev.streamFromId)) {
-        const completedMsg: VEMessage = {
-            id: generateMsgId(),
-            role: "assistant",
-            content: prev.streamContent,
-            timestamp: Date.now(),
-            fromId: prev.streamFromId,
-            fromName: prev.streamFromName || undefined,
-            attachments: prev.streamAttachments.length ? prev.streamAttachments : undefined,
-        };
+        const taken = takeHeldReasoning(prev.heldReasoning, entry.senderId);
+        const liveBelongsToNext = !!prev.streamReasoningFromId && participantIdentityMatches(prev.streamReasoningFromId, entry.senderId);
+        const completedReasoning = liveBelongsToNext ? "" : prev.streamReasoning.trim();
+        let messages = parkStreamOntoCurrentTurn(prev, completedReasoning);
+        let baseContent = "";
+        let baseReasoning = liveBelongsToNext ? prev.streamReasoning : "";
+        let baseAttachments: VEMessageAttachment[] = [];
+        let baseName = entry.senderName;
+        const liftIndex = latestCurrentTurnAssistantIndex(messages, entry.senderId);
+        if (liftIndex >= 0) {
+            const lifted = messages[liftIndex];
+            baseContent = lifted.content;
+            baseReasoning = joinVEReasoning(lifted.reasoning, baseReasoning) || "";
+            baseAttachments = lifted.attachments ?? [];
+            baseName = entry.senderName || lifted.fromName || "";
+            messages = messages.slice();
+            messages.splice(liftIndex, 1);
+        }
         return {
             ...prev,
             streaming: true,
-            streamContent: entry.content,
+            streamContent: baseContent + entry.content,
+            streamReasoning: joinVEReasoning(baseReasoning, taken.text) || "",
+            streamReasoningFromId: entry.senderId,
+            heldReasoning: taken.rest,
             streamFromId: entry.senderId,
-            streamFromName: entry.senderName,
-            streamAttachments: entry.attachments,
-            messages: [...prev.messages, completedMsg],
-            error: prev.error?.type === "response_timeout" ? null : prev.error,
+            streamFromName: baseName,
+            streamAttachments: entry.attachments.length ? mergeVEMessageAttachments(baseAttachments, entry.attachments) : baseAttachments,
+            messages,
+            unfinishedAnswerIds: rememberUnfinishedAnswer(rememberUnfinishedAnswer(prev.unfinishedAnswerIds, prev.streamFromId), entry.senderId),
+            error,
         };
+    }
+    const aligned = alignReasoningWithChunkSender(prev, entry.senderId);
+    const senderId = entry.senderId || prev.streamFromId;
+    const continuing = prev.streaming && hasPendingStream && (!entry.senderId || !prev.streamFromId || participantIdentityMatches(entry.senderId, prev.streamFromId));
+    let messages = aligned.messages;
+    let streamContent = prev.streamContent;
+    let streamReasoning = aligned.streamReasoning;
+    let streamReasoningFromId = aligned.streamReasoningFromId;
+    let heldReasoning = aligned.heldReasoning;
+    let streamAttachments = entry.attachments.length ? mergeVEMessageAttachments(prev.streamAttachments, entry.attachments) : prev.streamAttachments;
+    let streamFromName = entry.senderName || prev.streamFromName;
+    const alreadyUnfinished = !!senderId && (
+        (prev.unfinishedAnswerIds ?? []).some((id) => participantIdentityMatches(id, senderId))
+        || latestPendingAnswerIndex(prev.messages, senderId) >= 0
+    );
+    if (!continuing && alreadyUnfinished) {
+        const liftIndex = latestCurrentTurnAssistantIndex(messages, senderId);
+        if (liftIndex >= 0) {
+            const lifted = messages[liftIndex];
+            messages = messages.slice();
+            messages.splice(liftIndex, 1);
+            streamContent = lifted.content + streamContent;
+            streamReasoning = joinVEReasoning(lifted.reasoning, streamReasoning) || "";
+            if (streamReasoning) streamReasoningFromId = senderId;
+            if (lifted.attachments?.length) streamAttachments = mergeVEMessageAttachments(lifted.attachments, streamAttachments);
+            streamFromName = entry.senderName || lifted.fromName || streamFromName;
+        }
     }
     return {
         ...prev,
         streaming: true,
-        streamContent: prev.streamContent + entry.content,
+        streamContent: streamContent + entry.content,
+        streamReasoning,
+        streamReasoningFromId,
+        heldReasoning,
         streamFromId: entry.senderId || prev.streamFromId,
-        streamFromName: entry.senderName || prev.streamFromName,
-        streamAttachments: entry.attachments.length ? mergeVEMessageAttachments(prev.streamAttachments, entry.attachments) : prev.streamAttachments,
-        error: prev.error?.type === "response_timeout" ? null : prev.error,
+        streamFromName,
+        streamAttachments,
+        messages,
+        unfinishedAnswerIds: rememberUnfinishedAnswer(prev.unfinishedAnswerIds, senderId),
+        error,
     };
 }
 
+/** Keep the open thought with its speaker when an answer chunk arrives. */
+function alignReasoningWithChunkSender(prev: VEConversationState, senderId: string): Pick<VEConversationState, "messages" | "streamReasoning" | "streamReasoningFromId" | "heldReasoning"> {
+    let messages = prev.messages;
+    let streamReasoning = prev.streamReasoning;
+    let streamReasoningFromId = prev.streamReasoningFromId;
+    let heldReasoning = prev.heldReasoning;
+    if (
+        senderId
+        && streamReasoning.trim()
+        && streamReasoningFromId
+        && !participantIdentityMatches(senderId, streamReasoningFromId)
+    ) {
+        messages = [...messages, reasoningOnlyMessage(streamReasoningFromId, streamReasoning.trim())];
+        streamReasoning = "";
+        streamReasoningFromId = "";
+    }
+    if (senderId) {
+        const taken = takeHeldReasoning(heldReasoning, senderId);
+        if (taken.text) {
+            streamReasoning += taken.text;
+            streamReasoningFromId = senderId;
+            heldReasoning = taken.rest;
+        } else if (!streamReasoningFromId && streamReasoning) {
+            streamReasoningFromId = senderId;
+        }
+    }
+    return { messages, streamReasoning, streamReasoningFromId, heldReasoning };
+}
+
+/**
+ * Fold one reasoning delta. The same speaker appends. A different speaker
+ * with an open answer is parked; with no open answer the previous thought
+ * settles on its own so the two thoughts never concatenate.
+ */
+function applyVEReasoningEntry(prev: VEConversationState, entry: VEReasoningEntry): VEConversationState {
+    const text = entry.text;
+    if (!text) return prev;
+    const fromId = entry.fromId;
+    const error = prev.error?.type === "response_timeout" ? null : prev.error;
+    const activeFrom = prev.streamReasoningFromId || (prev.streaming ? prev.streamFromId : "");
+    const sameSpeaker = !fromId || !activeFrom || participantIdentityMatches(fromId, activeFrom);
+    if (sameSpeaker) {
+        return {
+            ...prev,
+            streamReasoning: prev.streamReasoning + text,
+            streamReasoningFromId: fromId || activeFrom,
+            error,
+        };
+    }
+    const openStream = !!prev.streamContent || prev.streamAttachments.length > 0;
+    if (openStream) {
+        return {
+            ...prev,
+            heldReasoning: parkHeldReasoning(prev.heldReasoning, fromId, text),
+            error,
+        };
+    }
+    const settled = prev.streamReasoning.trim();
+    return {
+        ...prev,
+        messages: settled ? [...prev.messages, reasoningOnlyMessage(prev.streamReasoningFromId || activeFrom, settled)] : prev.messages,
+        streamReasoning: text,
+        streamReasoningFromId: fromId,
+        error,
+    };
+}
+
+function veEventSpeakerId(data: { from_id?: unknown; fromId?: unknown; sender_id?: unknown; senderId?: unknown } | null | undefined): string {
+    return String(data?.from_id || data?.fromId || data?.sender_id || data?.senderId || "");
+}
+
+/** Speaker who currently owns the open answer or the live thought. */
+function openVEStreamSpeaker(prev: VEConversationState): string {
+    if (prev.streaming) return prev.streamFromId;
+    if (prev.streamReasoning.trim() || prev.streamContent || prev.streamAttachments.length > 0) {
+        return prev.streamReasoningFromId || prev.streamFromId;
+    }
+    return "";
+}
+
+function joinVEReasoning(existing: string | undefined, extra: string): string | undefined {
+    const base = (existing || "").trim();
+    const next = extra.trim();
+    if (!next) return base || undefined;
+    if (!base || base === next || base.endsWith(next)) return base || next;
+    return base + next;
+}
+
+/**
+ * The conversation keeps one tool hold. An unnamed start is that hold.
+ * A named start belongs to that employee and ends when that employee ends.
+ */
+function veSpeakerEndsTool(owner: string, speaker: string): boolean {
+    if (!owner) return true;
+    return !!speaker && participantIdentityMatches(owner, speaker);
+}
+
+/** An unnamed tool_done is the global hold finishing. Another employee's done leaves the hold. */
+function veToolDoneEndsHold(owner: string, speaker: string): boolean {
+    if (!speaker) return true;
+    return veSpeakerEndsTool(owner, speaker);
+}
+
+/**
+ * A stream_end from someone other than the open speaker. Concurrent employees
+ * each finish on their own; folding that ending onto the live buffer would
+ * cut off whoever is still talking and release the turn.
+ */
+function applyForeignVEStreamEnd(
+    prev: VEConversationState,
+    endFrom: string,
+    endName: string,
+    terminalContent: string,
+    endAttachments: VEMessageAttachment[],
+): VEConversationState {
+    const taken = takeHeldReasoning(prev.heldReasoning, endFrom);
+    let extraReasoning = taken.text.trim();
+    let streamReasoning = prev.streamReasoning;
+    let streamReasoningFromId = prev.streamReasoningFromId;
+    if (streamReasoningFromId && participantIdentityMatches(streamReasoningFromId, endFrom)) {
+        const live = streamReasoning.trim();
+        if (live) extraReasoning = extraReasoning ? extraReasoning + live : live;
+        streamReasoning = "";
+        streamReasoningFromId = "";
+    }
+    const kept = {
+        heldReasoning: taken.rest,
+        streamReasoning,
+        streamReasoningFromId,
+    };
+    if (!terminalContent && endAttachments.length === 0 && !extraReasoning) {
+        if (taken.rest === prev.heldReasoning && streamReasoning === prev.streamReasoning) return prev;
+        return { ...prev, ...kept };
+    }
+    for (let i = prev.messages.length - 1; i >= 0; i--) {
+        const message = prev.messages[i];
+        // This turn starts at the latest user message. An earlier answer stays as it was.
+        if (message.role === "user") break;
+        if (message.role !== "assistant" || !message.fromId || !participantIdentityMatches(message.fromId, endFrom)) continue;
+        const content = projectAnswerSlices(message.content, terminalContent);
+        const attachments = endAttachments.length
+            ? mergeVEMessageAttachments(message.attachments ?? [], endAttachments)
+            : (message.attachments ?? []);
+        const reasoning = joinVEReasoning(message.reasoning, extraReasoning);
+        const unchanged = content === message.content
+            && (reasoning || undefined) === (message.reasoning || undefined)
+            && endAttachments.length === 0
+            && taken.rest === prev.heldReasoning
+            && streamReasoning === prev.streamReasoning;
+        if (unchanged) return prev;
+        const messages = prev.messages.slice();
+        messages[i] = {
+            ...message,
+            content,
+            attachments: attachments.length ? attachments : undefined,
+            reasoning,
+            pendingAnswer: undefined,
+        };
+        return { ...prev, ...kept, messages };
+    }
+    const created: VEMessage = {
+        id: generateMsgId(),
+        role: "assistant",
+        content: terminalContent,
+        timestamp: Date.now(),
+        fromId: endFrom,
+        fromName: endName || undefined,
+        attachments: endAttachments.length ? endAttachments : undefined,
+        reasoning: extraReasoning || undefined,
+    };
+    return { ...prev, ...kept, messages: [...prev.messages, created] };
+}
+
 function veMessagesForSnapshot(state: VEConversationState): VEMessage[] {
-    if (!state.streamContent && state.streamAttachments.length === 0) return state.messages;
-    return [...state.messages, {
-        id: `stream-snapshot-${state.sessionId || "active"}-${state.streamFromId || "assistant"}`,
+    const heldMessages = state.heldReasoning.flatMap((item) => {
+        const text = item.text.trim();
+        if (!text) return [];
+        const message: VEMessage = {
+            id: `held-snapshot-${state.sessionId || "active"}-${item.fromId || "assistant"}`,
+            role: "assistant",
+            content: "",
+            timestamp: Date.now(),
+            fromId: item.fromId || undefined,
+            reasoning: text,
+        };
+        return [message];
+    });
+    const messages = heldMessages.length ? [...state.messages, ...heldMessages] : state.messages;
+    const reasoning = state.streamReasoning.trim();
+    if (!state.streamContent && state.streamAttachments.length === 0 && !reasoning) return messages;
+    return [...messages, {
+        id: `stream-snapshot-${state.sessionId || "active"}-${state.streamFromId || state.streamReasoningFromId || "assistant"}`,
         role: "assistant",
         content: state.streamContent,
         timestamp: Date.now(),
-        fromId: state.streamFromId || undefined,
+        fromId: state.streamFromId || state.streamReasoningFromId || undefined,
         fromName: state.streamFromName || undefined,
         attachments: state.streamAttachments.length ? state.streamAttachments : undefined,
+        reasoning: reasoning || undefined,
+        pendingAnswer: (state.streamContent || state.streamAttachments.length > 0) ? true : undefined,
     }];
+}
+
+function veReasoningPanelLabel(lang: string | undefined, live: boolean): string {
+    return live
+        ? tailText(lang ?? "", "Thinking...", "正在思考")
+        : tailText(lang ?? "", "Thinking process", "思考过程");
 }
 
 /** Create a session with timeout */
@@ -599,9 +1110,13 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         messages: initialMessages || [],
         streaming: false,
         streamContent: "",
+        streamReasoning: "",
+        streamReasoningFromId: "",
+        heldReasoning: [],
         streamFromId: "",
         streamFromName: "",
         streamAttachments: [],
+        unfinishedAnswerIds: pendingSpeakerIds(initialMessages || []),
         activityPhase: "",
         activityName: "",
         error: null,
@@ -636,6 +1151,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     useImperativeHandle(ref, () => ({
         getState: () => {
             streamChunkCoalescerRef.current?.flush("ve");
+            reasoningCoalescerRef.current?.flush("ve");
             return {
                 messages: veMessagesForSnapshot(stateRef.current),
                 sessionId: stateRef.current.sessionId,
@@ -662,6 +1178,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const awaitingReplyRef = useRef(false);
     const activityArmedRef = useRef(false);
     const toolInProgressRef = useRef(false);
+    const toolOwnerRef = useRef("");
     const queueDrainRunningRef = useRef(false);
     const responseWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -679,10 +1196,26 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         stateRef.current = apply(stateRef.current);
         setState(prev => apply(prev));
     }, []);
+    const publishReasoning = useCallback((entries: VEReasoningEntry[]) => {
+        if (entries.length === 0) return;
+        const apply = (prev: VEConversationState) => {
+            let next = prev;
+            for (const entry of entries) next = applyVEReasoningEntry(next, entry);
+            return next;
+        };
+        stateRef.current = apply(stateRef.current);
+        setState(prev => apply(prev));
+    }, []);
     const streamChunkCoalescerRef = useRef<StreamCoalescer<string, VEStreamChunkEntry> | null>(null);
     if (streamChunkCoalescerRef.current === null) {
         streamChunkCoalescerRef.current = createStreamCoalescer<string, VEStreamChunkEntry>({
             onFlush: (_key, entries) => publishStreamChunks(entries),
+        });
+    }
+    const reasoningCoalescerRef = useRef<StreamCoalescer<string, VEReasoningEntry> | null>(null);
+    if (reasoningCoalescerRef.current === null) {
+        reasoningCoalescerRef.current = createStreamCoalescer<string, VEReasoningEntry>({
+            onFlush: (_key, entries) => publishReasoning(entries),
         });
     }
     const authPendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -795,11 +1328,15 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const showAwaitingReply = useCallback(() => {
         activityArmedRef.current = false;
         toolInProgressRef.current = false;
+        toolOwnerRef.current = "";
         if (!mountedRef.current) return;
         setAwaitingReplyVisible(true);
-        setState((prev) => prev.activityPhase || prev.activityName
-            ? { ...prev, activityPhase: "", activityName: "" }
-            : prev);
+        setState((prev) => {
+            const clearActivity = !!(prev.activityPhase || prev.activityName);
+            const clearPending = prev.unfinishedAnswerIds.length > 0;
+            if (!clearActivity && !clearPending) return prev;
+            return { ...prev, activityPhase: "", activityName: "", unfinishedAnswerIds: [] };
+        });
     }, []);
 
     const hideAwaitingReply = useCallback(() => {
@@ -811,6 +1348,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         awaitingReplyRef.current = false;
         activityArmedRef.current = false;
         toolInProgressRef.current = false;
+        toolOwnerRef.current = "";
         hideAwaitingReply();
         if (responseWatchdogRef.current) {
             clearTimeout(responseWatchdogRef.current);
@@ -825,12 +1363,24 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             const timeoutMessage = timeoutReason === "silence"
                 ? "response_silence"
                 : `response_total:${Math.max(1, Math.round(timeoutSeconds || DEFAULT_AGENT_TIMEOUT_SEC))}`;
-            setState((prev) => ({
-                ...prev,
-                activityPhase: "",
-                activityName: "",
-                error: { type: "response_timeout", message: timeoutMessage },
-            }));
+            // The wait is over. A thought that never became an answer is a
+            // finished 思考过程, not a live 正在思考 beside 暂无响应. A partial
+            // answer already on screen keeps its thought.
+            setState((prev) => {
+                const base = {
+                    activityPhase: "",
+                    activityName: "",
+                    unfinishedAnswerIds: [] as string[],
+                    error: { type: "response_timeout" as const, message: timeoutMessage },
+                };
+                if (prev.streaming) return { ...prev, ...base };
+                return {
+                    ...prev,
+                    ...base,
+                    ...clearedLiveReasoning(),
+                    messages: settleParkedReasoning(prev),
+                };
+            });
             // Keep a durable, privacy-safe breadcrumb for support diagnosis. The
             // backend sanitizes the payload and writes it under ~/.maclaw.
             logVEFrontendDiagnostic({
@@ -978,6 +1528,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         sendingRef.current = false;
         awaitingReplyRef.current = false;
         toolInProgressRef.current = false;
+        toolOwnerRef.current = "";
         queueDrainRunningRef.current = false;
         if (responseWatchdogRef.current) {
             clearTimeout(responseWatchdogRef.current);
@@ -1172,7 +1723,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         const container = messageListRef.current;
         const tail = container?.lastElementChild;
         if (tail) tailResizeObserverRef.current?.observe(tail);
-    }, [awaitingReplyVisible, pinConversationTail, state.activityPhase, state.messages, state.streamContent]);
+    }, [awaitingReplyVisible, pinConversationTail, state.activityPhase, state.messages, state.streamContent, state.streamReasoning]);
 
     useEffect(() => {
         if (typeof ResizeObserver !== "function") return;
@@ -1457,15 +2008,18 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         showLocalIntroAfterClearRef.current = true;
         sessionIdRef.current = null;
         streamChunkCoalescerRef.current?.flush("ve");
+        reasoningCoalescerRef.current?.flush("ve");
         setState((prev) => ({
             ...prev,
             sessionId: null,
             messages: [],
             streaming: false,
             streamContent: "",
+            ...clearedLiveReasoning(),
             streamFromId: "",
             streamFromName: "",
             streamAttachments: [],
+            unfinishedAnswerIds: [],
             activityPhase: "",
             activityName: "",
             error: null,
@@ -1566,38 +2120,122 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             const sessionId = data?.session_id || data?.sessionId;
             if (sessionId && sessionId !== sessionIdRef.current) return;
             if (!mountedRef.current) return;
-            hideAwaitingReply();
             streamChunkCoalescerRef.current?.flush("ve");
+            reasoningCoalescerRef.current?.flush("ve");
+            // Each employee finishes on their own stream_end. An ending from
+            // someone who does not own the open buffer must not close it.
+            const endFrom = veEventSpeakerId(data);
+            const openSpeaker = openVEStreamSpeaker(stateRef.current);
+            if (endFrom && openSpeaker && !participantIdentityMatches(endFrom, openSpeaker)) {
+                const terminalContent = visibleVEStreamContent(firstVEStreamText(data?.content, data?.chunk));
+                const endAttachments = normalizeVEMessageAttachments(data?.attachments);
+                const endName = String(data?.from_name || data?.fromName || data?.sender_name || data?.senderName || "");
+                const releaseTool = !!toolOwnerRef.current && veSpeakerEndsTool(toolOwnerRef.current, endFrom);
+                if (releaseTool) {
+                    toolInProgressRef.current = false;
+                    toolOwnerRef.current = "";
+                }
+                setState((prev) => {
+                    const next = applyForeignVEStreamEnd(prev, endFrom, endName, terminalContent, endAttachments);
+                    const unfinishedAnswerIds = forgetUnfinishedAnswer(next.unfinishedAnswerIds, endFrom);
+                    const clearActivity = releaseTool && !!(next.activityPhase || next.activityName);
+                    return {
+                        ...next,
+                        unfinishedAnswerIds,
+                        activityPhase: clearActivity ? "" : next.activityPhase,
+                        activityName: clearActivity ? "" : next.activityName,
+                    };
+                });
+                refreshSilenceTimer();
+                return;
+            }
+            // One other employee still thinking: this speaker's stream_end is
+            // not the end of the user turn. Releasing the gate here would
+            // drain the queue and freeze that thought before they answer.
+            // A late end after the gate already fired must not re-lock it.
+            const heldNow = stateRef.current.heldReasoning.filter((item) => item.text.trim());
+            const endedId = endFrom || openSpeaker;
+            const unfinishedAfter = speakersStillAnswering(stateRef.current.unfinishedAnswerIds, stateRef.current.messages, endedId);
+            // Another employee already has answer text in this turn. Their
+            // stream_end has not arrived, so the user turn stays open.
+            const stayForAnswer = awaitingReplyRef.current && unfinishedAfter.length > 0;
+            const keepWaiting = awaitingReplyRef.current && !stayForAnswer && heldNow.length === 1;
+            const releaseTool = veSpeakerEndsTool(toolOwnerRef.current, openSpeaker || endFrom);
+            if (!keepWaiting && !stayForAnswer) hideAwaitingReply();
             setState((prev) => {
                 // stream_end carries the settled ending. Fold it onto the opening
                 // already on screen. A delivery failure stays a separate notice.
+                // Flush the reasoning coalescer first so the tail is on prev.
+                // One parked thought stays live for that speaker. Any other
+                // parked thoughts become their own 思考过程 messages.
                 const terminalContent = visibleVEStreamContent(firstVEStreamText(data?.content, data?.chunk));
-                const finalContent = projectAnswerSlices(prev.streamContent, terminalContent);
                 const endAttachments = normalizeVEMessageAttachments(data?.attachments);
                 const attachments = endAttachments.length ? mergeVEMessageAttachments(prev.streamAttachments, endAttachments) : prev.streamAttachments;
-                if (!finalContent && attachments.length === 0) return { ...prev, streaming: false, streamContent: "", streamFromId: "", streamFromName: "", streamAttachments: [], activityPhase: "", activityName: "" };
-                const newMsg: VEMessage = {
-                    id: generateMsgId(),
-                    role: "assistant",
-                    content: finalContent,
-                    timestamp: Date.now(),
-                    fromId: prev.streamFromId || undefined,
-                    fromName: prev.streamFromName || undefined,
-                    attachments: attachments.length ? attachments : undefined,
-                };
-                return {
+                const reasoning = prev.streamReasoning.trim();
+                const held = prev.heldReasoning.filter((item) => item.text.trim());
+                const endedSpeaker = endFrom || openVEStreamSpeaker(prev) || prev.streamFromId;
+                const speakerFromId = prev.streamFromId || prev.streamReasoningFromId || endedSpeaker;
+                const committed = commitSpeakerAnswer(
+                    prev.messages,
+                    endedSpeaker || speakerFromId,
+                    prev.streamContent,
+                    terminalContent,
+                    attachments,
+                    reasoning,
+                    prev.streamFromName,
+                );
+                const unfinished = speakersStillAnswering(prev.unfinishedAnswerIds, committed.messages, endedSpeaker);
+                if (awaitingReplyRef.current && unfinished.length > 0) {
+                    const parked: VEConversationState = {
+                        ...prev,
+                        messages: committed.messages,
+                        unfinishedAnswerIds: unfinished,
+                        streaming: false,
+                        streamContent: "",
+                        streamReasoning: "",
+                        streamReasoningFromId: "",
+                        streamFromId: "",
+                        streamFromName: "",
+                        streamAttachments: [],
+                        activityPhase: releaseTool ? "" : prev.activityPhase,
+                        activityName: releaseTool ? "" : prev.activityName,
+                    };
+                    return liftCurrentTurnAnswer(parked, unfinished[unfinished.length - 1]);
+                }
+                const surfaceLive = keepWaiting && held.length === 1;
+                const extra: VEMessage[] = surfaceLive ? [] : held.flatMap((item) => {
+                    const text = item.text.trim();
+                    return text ? [reasoningOnlyMessage(item.fromId, text)] : [];
+                });
+                const settled = {
                     ...prev,
+                    messages: extra.length ? [...committed.messages, ...extra] : committed.messages,
                     streaming: false,
                     streamContent: "",
+                    streamReasoning: surfaceLive ? held[0].text : "",
+                    streamReasoningFromId: surfaceLive ? held[0].fromId : "",
+                    heldReasoning: [],
                     streamFromId: "",
                     streamFromName: "",
                     streamAttachments: [],
-                    activityPhase: "",
-                    activityName: "",
-                    messages: [...prev.messages, newMsg],
+                    unfinishedAnswerIds: [],
+                    activityPhase: keepWaiting && !releaseTool ? prev.activityPhase : "",
+                    activityName: keepWaiting && !releaseTool ? prev.activityName : "",
                 };
+                return settled;
             });
-            releaseResponseGate();
+            if (keepWaiting || stayForAnswer) {
+                // A tool owned by the employee who just finished no longer blocks
+                // the silence window. A tool owned by someone still in this turn stays.
+                if (releaseTool) {
+                    toolInProgressRef.current = false;
+                    toolOwnerRef.current = "";
+                }
+                if (keepWaiting) setAwaitingReplyVisible(true);
+                refreshSilenceTimer();
+            } else {
+                releaseResponseGate();
+            }
         };
 
         const handleDisconnect = (data: any) => {
@@ -1608,18 +2246,37 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             hideAwaitingReply();
             releaseResponseGate();
             streamChunkCoalescerRef.current?.flush("ve");
+            reasoningCoalescerRef.current?.flush("ve");
             setState((prev) => ({
                 ...prev,
                 streaming: false,
                 streamContent: "",
+                ...clearedLiveReasoning(),
                 streamFromId: "",
                 streamFromName: "",
                 streamAttachments: [],
+                unfinishedAnswerIds: [],
                 activityPhase: "",
                 activityName: "",
                 connectionState: "disconnected",
             }));
             attemptReconnect();
+        };
+
+        const handleReasoning = (data: any) => {
+            const sessionId = data?.session_id || data?.sessionId;
+            if (sessionId && sessionId !== sessionIdRef.current) return;
+            if (!mountedRef.current) return;
+            const text = sanitizeVisibleChatText(data?.text);
+            if (!text.trim()) return;
+            // Refresh on the event, including a delta that only joins the
+            // 33ms burst, so a fast thought cannot trip the silence gate.
+            refreshSilenceTimer();
+            const fromId = String(data?.from_id || data?.fromId || "");
+            const entry: VEReasoningEntry = { text, fromId };
+            if (reasoningCoalescerRef.current?.push("ve", entry)) {
+                publishReasoning([entry]);
+            }
         };
 
         const handleActivity = (data: any) => {
@@ -1634,8 +2291,22 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             } else {
                 activityArmedRef.current = true;
             }
+            // A later "accepted" from someone else must not hide the tool that
+            // is still keeping the silence window disarmed.
+            if ((phase === "routing" || phase === "accepted") && toolInProgressRef.current) {
+                refreshSilenceTimer();
+                return;
+            }
             const name = veActivityToolName(data?.name);
-            toolInProgressRef.current = phase === "tool_start";
+            const speaker = veEventSpeakerId(data);
+            if (phase === "tool_start") {
+                toolInProgressRef.current = true;
+                toolOwnerRef.current = speaker;
+            } else if (phase === "tool_done") {
+                if (!veToolDoneEndsHold(toolOwnerRef.current, speaker)) return;
+                toolInProgressRef.current = false;
+                toolOwnerRef.current = "";
+            }
             refreshSilenceTimer();
             setState((prev) => {
                 if (!prev.streaming && !awaitingReplyRef.current) return prev;
@@ -1649,6 +2320,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         };
 
         const unsub1 = EventsOn("ve:stream_chunk", handleStreamChunk);
+        const unsubReasoning = EventsOn("ve:reasoning", handleReasoning);
         const unsubActivity = EventsOn("ve:activity", handleActivity);
         const unsub2 = EventsOn("ve:stream_end", handleStreamEnd);
         const unsub3 = EventsOn("ve:disconnected", handleDisconnect);
@@ -1666,8 +2338,11 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
 
         return () => {
             streamChunkCoalescerRef.current?.dispose();
+            reasoningCoalescerRef.current?.dispose();
             if (typeof unsub1 === "function") unsub1();
             else EventsOff("ve:stream_chunk");
+            if (typeof unsubReasoning === "function") unsubReasoning();
+            else EventsOff("ve:reasoning");
             if (typeof unsubActivity === "function") unsubActivity();
             else EventsOff("ve:activity");
             if (typeof unsub2 === "function") unsub2();
@@ -1677,7 +2352,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (typeof unsub4 === "function") unsub4();
             else EventsOff("ve:session_renewed");
         };
-    }, [attemptReconnect, hideAwaitingReply, publishStreamChunks, refreshSilenceTimer, releaseResponseGate]);
+    }, [attemptReconnect, hideAwaitingReply, publishReasoning, publishStreamChunks, refreshSilenceTimer, releaseResponseGate]);
 
     // --- Message Sending ---
 
@@ -1769,13 +2444,17 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         queueDrainRunningRef.current = true;
         awaitingReplyRef.current = true;
         showAwaitingReply();
-        setState((prev) => ({
-            ...prev,
-            messages: prev.messages.some((item) => item.id === msg.message.id)
-                ? prev.messages
-                : [...prev.messages, msg.message],
-            error: null,
-        }));
+        setState((prev) => {
+            const settled = settleParkedReasoning(prev);
+            return {
+                ...prev,
+                ...clearedLiveReasoning(),
+                messages: settled.some((item) => item.id === msg.message.id)
+                    ? settled
+                    : [...settled, msg.message],
+                error: null,
+            };
+        });
         const sent = await doSendMessage(msg.content, msg.filePaths, msg.id);
         queueDrainRunningRef.current = false;
         if (sent) recordSubmittedPrompt(msg.content);
@@ -1837,7 +2516,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
 
         setState((prev) => ({
             ...prev,
-            messages: [...prev.messages, userMsg],
+            ...clearedLiveReasoning(),
+            messages: [...settleParkedReasoning(prev), userMsg],
             error: null,
         }));
         setInputText("");
@@ -1972,6 +2652,24 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
 
     // --- Render ---
 
+    // The live panel stays "正在思考" until the thought moves onto a message.
+    // While the answer is streaming it sits under the speaker name, matching
+    // the settled message, so stream_end does not jump the name.
+    const liveReasoning = state.streamReasoning.trim() ? (
+        <div className="vecv-live-reasoning" data-testid="ve-live-reasoning" style={{ maxWidth: "84%", width: "100%" }}>
+            <AssistantReasoningPanel
+                defaultOpen
+                live
+                label={veReasoningPanelLabel(lang, true)}
+                lang={lang}
+                theme={theme}
+                contentKey={`ve-live-${state.sessionId || "session"}`}
+            >
+                {state.streamReasoning}
+            </AssistantReasoningPanel>
+        </div>
+    ) : null;
+
     return (
         <div
             className="mc-ve-conversation"
@@ -2041,6 +2739,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     />
                 ))}
 
+                {!state.streaming && liveReasoning}
+
                 {/* Awaiting visible response — status chip, no speaker name → no name tail */}
                 {awaitingReplyVisible && !state.streaming && (
                     <div className="mc-ve-thinking vecv-thinking" data-testid="ve-thinking-indicator">
@@ -2087,6 +2787,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                             )}
                             <span>{readableSpeakerName(state.streamFromName, state.streamFromId, participants, assistantDisplayName)}</span>
                         </div>
+                        {liveReasoning}
                         <ChatBubbleFrame
                             side="left"
                             tailPlacement="side"
@@ -2377,7 +3078,9 @@ const MessageBubble = memo(function MessageBubble({ message, sessionId, theme, i
     const speakerName = isUser ? userName : assistantName;
     const hasAttachments = !!message.attachments?.length;
     const hasContent = message.content.trim().length > 0;
+    const reasoningText = !isUser ? (message.reasoning || "").trim() : "";
     const shouldRenderContent = hasContent || !hasAttachments || !!message.sendFailed;
+    const showBubble = shouldRenderContent && (hasContent || hasAttachments || !!message.sendFailed || !reasoningText);
     const isLocalIntro = !isUser && message.localOnly && message.messageKind === "employee_intro";
 
     return (
@@ -2437,7 +3140,21 @@ const MessageBubble = memo(function MessageBubble({ message, sessionId, theme, i
                 )}
                 <span>{speakerName}</span>
             </div>
-            {shouldRenderContent && (
+            {reasoningText && (
+                <div style={{ maxWidth: "84%", width: "100%" }}>
+                    <AssistantReasoningPanel
+                        defaultOpen={false}
+                        live={false}
+                        label={veReasoningPanelLabel(lang, false)}
+                        lang={lang || (isZh ? "zh-Hans" : "en")}
+                        theme={theme}
+                        contentKey={`ve-reason-${message.id}`}
+                    >
+                        {message.reasoning}
+                    </AssistantReasoningPanel>
+                </div>
+            )}
+            {showBubble && (
                 <ChatBubbleFrame
                     side={isUser ? "right" : "left"}
                     tailPlacement="side"

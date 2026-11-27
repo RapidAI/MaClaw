@@ -844,6 +844,725 @@ describe("VEConversationView", () => {
             expect(send).toHaveBeenLastCalledWith("test-session-1", "Second turn");
         });
 
+        it("shows reasoning while the answer is still streaming and keeps the wait alive", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({ existingSessionId: "test-session-1", sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "Slow reply" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            act(() => {
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", text: "\x01先看资料" });
+            });
+            expect(screen.getByTestId("assistant-reasoning-label").textContent).toContain("正在思考");
+            expect(screen.getByTestId("ve-live-reasoning").textContent).toContain("先看资料");
+            expect(screen.getByTestId("ve-thinking-indicator")).toBeTruthy();
+            expect(screen.getByTestId("ve-thinking-indicator").contains(screen.getByTestId("ve-live-reasoning"))).toBe(false);
+
+            await act(async () => { await vi.advanceTimersByTimeAsync(80_000); });
+            expect(screen.queryByTestId("ve-error-banner")).toBeNull();
+
+            act(() => {
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", text: "再核对" });
+            });
+            await act(async () => { await vi.advanceTimersByTimeAsync(80_000); });
+            expect(screen.queryByTestId("ve-error-banner")).toBeNull();
+            expect(screen.getByTestId("ve-live-reasoning").textContent).toContain("再核对");
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: "\x01private" });
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: "答案" });
+            });
+            await flushStreamBurst();
+            const indicator = screen.getByTestId("ve-streaming-indicator");
+            const live = screen.getByTestId("ve-live-reasoning");
+            expect(indicator.textContent).toContain("答案");
+            expect(indicator.textContent).not.toContain("private");
+            expect(live.textContent).toContain("先看资料");
+            expect(indicator.contains(live)).toBe(true);
+            const bubble = screen.getByTestId("ve-streaming-content");
+            expect(live.compareDocumentPosition(bubble) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+            const streamingText = indicator.textContent || "";
+            expect(streamingText.indexOf("Test VE")).toBeLessThan(streamingText.indexOf("先看资料"));
+            expect(streamingText.indexOf("先看资料")).toBeLessThan(streamingText.indexOf("答案"));
+
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1", content: "答案" });
+            });
+            expect(screen.getByTestId("assistant-reasoning-label").textContent).toContain("思考过程");
+            expect(screen.getByText("答案")).toBeTruthy();
+            expect(screen.getByText("先看资料再核对")).toBeTruthy();
+        });
+
+        it("coalesces a reasoning burst and flushes the tail before the answer settles", async () => {
+            renderConversation({ existingSessionId: "test-session-1" });
+
+            act(() => {
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", text: "先看" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", text: "资料" });
+            });
+            const live = screen.getByTestId("ve-live-reasoning");
+            expect(live.textContent).toContain("先看");
+            expect(live.textContent).not.toContain("资料");
+
+            await flushStreamBurst();
+            expect(screen.getByTestId("ve-live-reasoning").textContent).toContain("先看资料");
+
+            act(() => {
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", text: "再" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", text: "核对" });
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: "答案" });
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1", content: "答案" });
+            });
+            expect(screen.getByText("先看资料再核对")).toBeTruthy();
+            expect(screen.getByText("答案")).toBeTruthy();
+            expect(screen.queryByTestId("ve-live-reasoning")).toBeNull();
+        });
+
+        it("keeps a buffered reasoning tail in the persistence snapshot", async () => {
+            const ref = createRef<VEConversationHandle>();
+            const { unmount } = render(
+                <VEConversationView
+                    ref={ref}
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    existingSessionId="test-session-1"
+                    initiateConversation={vi.fn()}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={vi.fn()}
+                />
+            );
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", text: "先看" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", text: "资料" });
+            });
+            const handle = ref.current;
+            unmount();
+
+            const saved = handle?.getState().messages ?? [];
+            expect(saved.some((message) => message.reasoning === "先看资料")).toBe(true);
+        });
+
+        it("does not concatenate thoughts from two employees", async () => {
+            renderConversation({
+                existingSessionId: "test-session-1",
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                ],
+            });
+
+            act(() => {
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-a", text: "A想" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-b", text: "B想" });
+            });
+            await flushStreamBurst();
+
+            const live = screen.getByTestId("ve-live-reasoning");
+            expect(live.textContent).toContain("B想");
+            expect(live.textContent).not.toContain("A想");
+            expect(live.textContent).toContain("正在思考");
+            expect(screen.getByText("A想")).toBeTruthy();
+            expect(screen.getAllByTestId("assistant-reasoning-label").some((label) => label.textContent?.includes("思考过程"))).toBe(true);
+        });
+
+        it("appends reasoning across sender id aliases", async () => {
+            renderConversation({ existingSessionId: "test-session-1" });
+
+            act(() => {
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-a", text: "A" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve_a", text: "再" });
+            });
+            await flushStreamBurst();
+
+            expect(screen.getAllByTestId("assistant-reasoning-label")).toHaveLength(1);
+            expect(screen.getByTestId("ve-live-reasoning").textContent).toContain("A再");
+        });
+
+        it("parks another employee's thought until that employee answers", async () => {
+            renderConversation({
+                existingSessionId: "test-session-1",
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                ],
+            });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-a", from_name: "Agent A", content: "A says" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-a", text: "A想" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-b", text: "B想" });
+            });
+            await flushStreamBurst();
+            const live = screen.getByTestId("ve-live-reasoning");
+            expect(live.textContent).toContain("A想");
+            expect(live.textContent).not.toContain("B想");
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-b", from_name: "Agent B", content: "B says" });
+            });
+            await flushStreamBurst();
+            const indicator = screen.getByTestId("ve-streaming-indicator");
+            expect(indicator.textContent).toContain("Agent B");
+            expect(indicator.textContent).toContain("B想");
+            expect(indicator.textContent).toContain("B says");
+            expect(indicator.textContent).not.toContain("A想");
+            expect(screen.getByText("A想")).toBeTruthy();
+            expect(screen.getByText("A says")).toBeTruthy();
+        });
+
+        it("keeps waiting when another employee is still thinking", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                existingSessionId: "test-session-1",
+                sendMessage: send,
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                ],
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "First" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+            expect(send).toHaveBeenCalledTimes(1);
+
+            fireEvent.change(textarea, { target: { value: "Second" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+            expect(send).toHaveBeenCalledTimes(1);
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-a", from_name: "Agent A", content: "A says" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-a", text: "A想" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-b", text: "B想" });
+            });
+            await flushStreamBurst();
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1", from_id: "ve-a", content: "A says" });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(1);
+            expect(screen.getByTestId("ve-queued-message-panel").textContent).toContain("Second");
+            const live = screen.getByTestId("ve-live-reasoning");
+            expect(live.textContent).toContain("B想");
+            expect(live.textContent).toContain("正在思考");
+            expect(screen.getByTestId("ve-thinking-indicator")).toBeTruthy();
+            const aMessage = screen.getByText("A says").closest(".mc-ve-message");
+            expect(aMessage?.textContent).toContain("A想");
+            expect(aMessage?.textContent).not.toContain("B想");
+            expect(screen.getAllByTestId("assistant-reasoning-label").some((label) => label.textContent?.includes("思考过程"))).toBe(true);
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-b", from_name: "Agent B", content: "B says" });
+            });
+            await flushStreamBurst();
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1", from_id: "ve-b", content: "B says" });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(2);
+            expect(send).toHaveBeenLastCalledWith("test-session-1", "Second");
+            const bMessage = screen.getByText("B says").closest(".mc-ve-message");
+            expect(bMessage?.textContent).toContain("B想");
+            expect(bMessage?.textContent).not.toContain("A想");
+            expect(screen.queryByTestId("ve-live-reasoning")).toBeNull();
+        });
+
+        it("does not close the employee who is still speaking when another employee finishes", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                existingSessionId: "test-session-1",
+                sendMessage: send,
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                ],
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "First" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.change(textarea, { target: { value: "Second" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-a", from_name: "Agent A", content: "A opening" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-a", text: "A想" });
+            });
+            await flushStreamBurst();
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-b", from_name: "Agent B", content: "B opening" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-a", text: "再" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-b", text: "B想" });
+            });
+            await flushStreamBurst();
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1", from_id: "ve-a", content: "A opening plus the rest" });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(1);
+            expect(screen.getByTestId("ve-queued-message-panel").textContent).toContain("Second");
+            const indicator = screen.getByTestId("ve-streaming-indicator");
+            expect(indicator.textContent).toContain("B opening");
+            expect(indicator.textContent).toContain("B想");
+            expect(indicator.textContent).not.toContain("A想");
+            const list = screen.getByTestId("ve-message-list");
+            expect(list.textContent).toContain("A opening plus the rest");
+            expect(list.textContent).toContain("A想再");
+
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1", from_id: "ve-b", content: "B opening done" });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(2);
+            expect(send).toHaveBeenLastCalledWith("test-session-1", "Second");
+            expect(screen.queryByTestId("ve-streaming-indicator")).toBeNull();
+            const bMessage = screen.getByText("B opening done").closest(".mc-ve-message");
+            expect(bMessage?.textContent).toContain("B想");
+        });
+
+        it("continues an employee answer when their later tokens arrive while someone else is speaking", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                existingSessionId: "test-session-1",
+                sendMessage: send,
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                ],
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "First" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.change(textarea, { target: { value: "Second" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-a", from_name: "Agent A", content: "Hello " });
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-b", from_name: "Agent B", content: "B says" });
+            });
+            await flushStreamBurst();
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-a", from_name: "Agent A", content: "world and more" });
+            });
+            await flushStreamBurst();
+
+            expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("Hello world and more");
+            const parked = Array.from(document.querySelectorAll(".mc-ve-message:not(.mc-ve-message--streaming)")).map((el) => el.textContent || "");
+            expect(parked.some((text) => text.includes("B says"))).toBe(true);
+            expect(parked.some((text) => text.trim() === "Hello" || text.includes("Hello ") && !text.includes("world and more"))).toBe(false);
+
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({
+                    session_id: "test-session-1",
+                    from_id: "ve-a",
+                    content: "Hello world and more, and that is the end of it.",
+                });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(1);
+            expect(screen.getByTestId("ve-queued-message-panel").textContent).toContain("Second");
+            expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("B says");
+            const afterA = Array.from(document.querySelectorAll(".mc-ve-message:not(.mc-ve-message--streaming)")).map((el) => el.textContent || "");
+            expect(afterA.filter((text) => text.includes("Hello world and more, and that is the end of it."))).toHaveLength(1);
+            expect(afterA.some((text) => text.includes("Hello ") && !text.includes("and that is the end"))).toBe(false);
+
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({
+                    session_id: "test-session-1",
+                    from_id: "ve-b",
+                    content: "B says and finishes the reply",
+                });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(2);
+            expect(send).toHaveBeenLastCalledWith("test-session-1", "Second");
+            expect(screen.queryByTestId("ve-streaming-indicator")).toBeNull();
+            const done = Array.from(document.querySelectorAll(".mc-ve-message")).map((el) => el.textContent || "");
+            expect(done.filter((text) => text.includes("B says and finishes the reply"))).toHaveLength(1);
+            expect(done.filter((text) => text.includes("Hello world and more, and that is the end of it."))).toHaveLength(1);
+        });
+
+        it("resumes the employee who was just interrupted when another employee finishes", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                existingSessionId: "test-session-1",
+                sendMessage: send,
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                    { id: "ve-c", name: "Agent C", online: true },
+                ],
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "First" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.change(textarea, { target: { value: "Second" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-a", from_name: "Agent A", content: "A one " });
+            });
+            await flushStreamBurst();
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-b", from_name: "Agent B", content: "B one" });
+            });
+            await flushStreamBurst();
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-a", from_name: "Agent A", content: "A two" });
+            });
+            await flushStreamBurst();
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-c", from_name: "Agent C", content: "C speaks" });
+            });
+            await flushStreamBurst();
+
+            expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("C speaks");
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({
+                    session_id: "test-session-1",
+                    from_id: "ve-c",
+                    from_name: "Agent C",
+                    content: "C speaks and finishes",
+                });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(1);
+            expect(screen.getByTestId("ve-queued-message-panel").textContent).toContain("Second");
+            const indicator = screen.getByTestId("ve-streaming-indicator");
+            expect(indicator.textContent).toContain("Agent A");
+            expect(indicator.textContent).toContain("A one A two");
+            expect(indicator.textContent).not.toContain("B one");
+            const parked = Array.from(document.querySelectorAll(".mc-ve-message:not(.mc-ve-message--streaming)")).map((el) => el.textContent || "");
+            expect(parked.some((text) => text.includes("B one"))).toBe(true);
+            expect(parked.some((text) => text.includes("A one"))).toBe(false);
+            expect(parked.filter((text) => text.includes("C speaks and finishes"))).toHaveLength(1);
+
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({
+                    session_id: "test-session-1",
+                    from_id: "ve-a",
+                    content: "A one A two and finishes",
+                });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(1);
+            const afterA = screen.getByTestId("ve-streaming-indicator");
+            expect(afterA.textContent).toContain("B one");
+            expect(afterA.textContent).not.toContain("A one");
+            const settled = Array.from(document.querySelectorAll(".mc-ve-message:not(.mc-ve-message--streaming)")).map((el) => el.textContent || "");
+            expect(settled.filter((text) => text.includes("A one A two and finishes"))).toHaveLength(1);
+            expect(settled.filter((text) => text.includes("C speaks and finishes"))).toHaveLength(1);
+
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({
+                    session_id: "test-session-1",
+                    from_id: "ve-b",
+                    content: "B one and finishes",
+                });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(2);
+            expect(send).toHaveBeenLastCalledWith("test-session-1", "Second");
+            expect(screen.queryByTestId("ve-streaming-indicator")).toBeNull();
+            const done = Array.from(document.querySelectorAll(".mc-ve-message")).map((el) => el.textContent || "");
+            expect(done.filter((text) => text.includes("A one A two and finishes"))).toHaveLength(1);
+            expect(done.filter((text) => text.includes("B one and finishes"))).toHaveLength(1);
+            expect(done.filter((text) => text.includes("C speaks and finishes"))).toHaveLength(1);
+        });
+
+        it("continues a restored partial answer in the same bubble", async () => {
+            renderConversation({
+                existingSessionId: "test-session-1",
+                initialMessages: [
+                    { id: "u1", role: "user", content: "问", timestamp: 1 },
+                    { id: "a1", role: "assistant", content: "Hello ", timestamp: 2, fromId: "ve-a", fromName: "Agent A", pendingAnswer: true },
+                ],
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                ],
+            });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-a", from_name: "Agent A", content: "world and more" });
+            });
+            await flushStreamBurst();
+
+            expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("Hello world and more");
+            const parked = Array.from(document.querySelectorAll(".mc-ve-message:not(.mc-ve-message--streaming)")).map((el) => el.textContent || "");
+            expect(parked.some((text) => text.includes("Hello ") && !text.includes("world and more"))).toBe(false);
+
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({
+                    session_id: "test-session-1",
+                    from_id: "ve-a",
+                    content: "Hello world and more, and that is the end of it.",
+                });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(screen.queryByTestId("ve-streaming-indicator")).toBeNull();
+            const done = Array.from(document.querySelectorAll(".mc-ve-message")).map((el) => el.textContent || "");
+            expect(done.filter((text) => text.includes("Hello world and more, and that is the end of it."))).toHaveLength(1);
+            expect(done.some((text) => text.includes("Hello ") && !text.includes("and that is the end"))).toBe(false);
+        });
+
+        it("arms the silence window again after the open speaker finishes during a tool", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                existingSessionId: "test-session-1",
+                sendMessage: send,
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                ],
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "First" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            act(() => {
+                eventHandlers.get("ve:activity")?.({ session_id: "test-session-1", phase: "accepted" });
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-a", from_name: "Agent A", content: "A says" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-a", text: "A想" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-b", text: "B想" });
+                eventHandlers.get("ve:activity")?.({ session_id: "test-session-1", phase: "tool_start", name: "knowledge_search" });
+            });
+            await flushStreamBurst();
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1", from_id: "ve-a", content: "A says" });
+            });
+
+            expect(screen.getByTestId("ve-live-reasoning").textContent).toContain("B想");
+            await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+
+            expect(screen.getByTestId("ve-error-banner").textContent).toContain("暂无响应");
+            expect(screen.queryByTestId("ve-live-reasoning")).toBeNull();
+            expect(screen.getByText("B想")).toBeTruthy();
+            expect(screen.getAllByTestId("assistant-reasoning-label").some((label) => label.textContent?.includes("思考过程"))).toBe(true);
+        });
+
+        it("keeps an earlier answer when another employee finishes during this turn", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                existingSessionId: "test-session-1",
+                sendMessage: send,
+                initialMessages: [
+                    { id: "old-user", role: "user", content: "昨天的问题", timestamp: 1 },
+                    { id: "old-a", role: "assistant", content: "old answer", timestamp: 2, fromId: "ve-a", fromName: "Agent A" },
+                ],
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                ],
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "今天的问题" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.change(textarea, { target: { value: "Second" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-b", from_name: "Agent B", content: "B opening" });
+            });
+            await flushStreamBurst();
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({
+                    session_id: "test-session-1",
+                    from_id: "ve-a",
+                    from_name: "Agent A",
+                    content: "brand new answer from employee A",
+                });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(1);
+            expect(screen.getByTestId("ve-queued-message-panel").textContent).toContain("Second");
+            const bubbles = Array.from(document.querySelectorAll(".mc-ve-message")).map((el) => el.textContent || "");
+            expect(bubbles.some((text) => text.includes("old answer") && !text.includes("brand new answer"))).toBe(true);
+            expect(bubbles.some((text) => text.includes("brand new answer from employee A") && !text.includes("old answer"))).toBe(true);
+            expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("B opening");
+        });
+
+        it("keeps the silence window disarmed while the employee still waited on is inside a tool", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                existingSessionId: "test-session-1",
+                sendMessage: send,
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                ],
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "First" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            act(() => {
+                eventHandlers.get("ve:activity")?.({ session_id: "test-session-1", phase: "accepted" });
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-a", from_name: "Agent A", content: "A says" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-a", text: "A想" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-b", text: "B想" });
+                eventHandlers.get("ve:activity")?.({ session_id: "test-session-1", phase: "tool_start", name: "knowledge_search", from_id: "ve-b" });
+                eventHandlers.get("ve:activity")?.({ session_id: "test-session-1", phase: "accepted", from_id: "ve-a" });
+            });
+            await flushStreamBurst();
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1", from_id: "ve-a", content: "A says" });
+            });
+
+            expect(screen.getByTestId("ve-live-reasoning").textContent).toContain("B想");
+            expect(screen.getByTestId("ve-activity-status").textContent).toContain("正在查阅资料");
+            await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+
+            expect(screen.queryByTestId("ve-error-banner")).toBeNull();
+            expect(screen.getByTestId("ve-live-reasoning").textContent).toContain("B想");
+            expect(screen.getByTestId("ve-activity-status").textContent).toContain("正在查阅资料");
+
+            act(() => {
+                eventHandlers.get("ve:activity")?.({ session_id: "test-session-1", phase: "tool_done", name: "knowledge_search", from_id: "ve-a" });
+            });
+            await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+            expect(screen.queryByTestId("ve-error-banner")).toBeNull();
+            expect(screen.getByTestId("ve-live-reasoning").textContent).toContain("B想");
+
+            act(() => {
+                eventHandlers.get("ve:activity")?.({ session_id: "test-session-1", phase: "tool_done", name: "knowledge_search", from_id: "ve-b" });
+            });
+            await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+
+            expect(screen.getByTestId("ve-error-banner").textContent).toContain("暂无响应");
+            expect(screen.queryByTestId("ve-live-reasoning")).toBeNull();
+            expect(screen.getByText("B想")).toBeTruthy();
+            expect(screen.getAllByTestId("assistant-reasoning-label").some((label) => label.textContent?.includes("思考过程"))).toBe(true);
+        });
+
+        it("arms the silence window when the employee inside a tool finishes while someone else is still speaking", async () => {
+            renderConversation({
+                existingSessionId: "test-session-1",
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                ],
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "First" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            act(() => {
+                eventHandlers.get("ve:activity")?.({ session_id: "test-session-1", phase: "accepted" });
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-b", from_name: "Agent B", content: "B opening" });
+                eventHandlers.get("ve:activity")?.({ session_id: "test-session-1", phase: "tool_start", name: "knowledge_search", from_id: "ve-a" });
+            });
+            await flushStreamBurst();
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({
+                    session_id: "test-session-1",
+                    from_id: "ve-a",
+                    from_name: "Agent A",
+                    content: "brand new answer from employee A",
+                });
+            });
+
+            expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("B opening");
+            expect(screen.queryByTestId("ve-error-banner")).toBeNull();
+            await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+
+            expect(screen.getByTestId("ve-error-banner").textContent).toContain("暂无响应");
+            expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("B opening");
+            const bubbles = Array.from(document.querySelectorAll(".mc-ve-message")).map((el) => el.textContent || "");
+            expect(bubbles.some((text) => text.includes("brand new answer from employee A"))).toBe(true);
+        });
+
+        it("settles every parked thought when more than one employee is still unspoken", async () => {
+            renderConversation({
+                existingSessionId: "test-session-1",
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                    { id: "ve-c", name: "Agent C", online: true },
+                ],
+            });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", from_id: "ve-a", from_name: "Agent A", content: "A says" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-a", text: "A想" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-b", text: "B想" });
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", from_id: "ve-c", text: "C想" });
+            });
+            await flushStreamBurst();
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1", from_id: "ve-a", content: "A says" });
+            });
+
+            expect(screen.queryByTestId("ve-live-reasoning")).toBeNull();
+            const aMessage = screen.getByText("A says").closest(".mc-ve-message");
+            expect(aMessage?.textContent).toContain("A想");
+            expect(aMessage?.textContent).not.toContain("B想");
+            expect(aMessage?.textContent).not.toContain("C想");
+            expect(screen.getByText("B想")).toBeTruthy();
+            expect(screen.getByText("C想")).toBeTruthy();
+            expect(screen.getAllByTestId("assistant-reasoning-label").every((label) => label.textContent?.includes("思考过程"))).toBe(true);
+        });
+
+        it("settles a reasoning-only stall as a finished thought when the silence gate fires", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({ existingSessionId: "test-session-1", sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "Silent thought" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            act(() => {
+                eventHandlers.get("ve:reasoning")?.({ session_id: "test-session-1", text: "先看资料" });
+            });
+            expect(screen.getByTestId("ve-live-reasoning").textContent).toContain("正在思考");
+
+            await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+
+            expect(screen.getByTestId("ve-error-banner").textContent).toContain("暂无响应");
+            expect(screen.queryByTestId("ve-live-reasoning")).toBeNull();
+            expect(screen.queryByTestId("ve-thinking-indicator")).toBeNull();
+            expect(screen.getByText("先看资料")).toBeTruthy();
+            expect(screen.getByTestId("assistant-reasoning-label").textContent).toContain("思考过程");
+        });
+
         it("shows a thinking hint after sending until a visible response arrives", async () => {
             const send = vi.fn().mockResolvedValue(undefined);
             renderConversation({ existingSessionId: "test-session-1", sendMessage: send });

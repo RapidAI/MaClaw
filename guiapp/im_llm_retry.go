@@ -55,7 +55,10 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestAfterError(
 	}
 	// Thinking or answer text already reached the host. Another stream would
 	// duplicate the visible turn and can wipe this prefix if the retry fails.
-	if llmResponseHasVisibleOutput(resp) {
+	// A reasoning-only outage, a truncated body, or an opened tool call with
+	// no arguments has not produced an answer, so that failure can be resent.
+	// Answer text and a call that already has arguments still stop the retry.
+	if llmResponseBlocksStreamRetry(resp, err) {
 		return result
 	}
 	if adaptiveRetry != nil {
@@ -64,6 +67,20 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestAfterError(
 	}
 	h.retryAgentLoopLLMRequestFallback(ctx, reqCtx, cfg, conversation, tools, httpClient, onToken, onProgress, streamDoneCallback, firstRequestMetrics, &result)
 	return result
+}
+
+// llmResponseBlocksStreamRetry reports that this partial must not be resent.
+// Ordinary visible output, including reasoning, blocks. A temporary Responses
+// frame, a truncated body, an idle stall, or a timeout blocks only when an
+// answer or a tool call with arguments is already on the response.
+func llmResponseBlocksStreamRetry(resp *llm.Response, err error) bool {
+	if !llmResponseHasVisibleOutput(resp) {
+		return false
+	}
+	if llm.ResponseHasCommittedAnswer(resp) {
+		return true
+	}
+	return !llm.UncommittedStreamCutCanRetry(err)
 }
 
 func (h *IMMessageHandler) retryAgentLoopLLMRequestAdaptive(

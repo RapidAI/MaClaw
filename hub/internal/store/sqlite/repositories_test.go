@@ -38,6 +38,87 @@ func newTestStore(t *testing.T) *store.Store {
 	return NewStore(provider)
 }
 
+func TestUserCreateStampsMissingClock(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	before := time.Now().UTC().Add(-2 * time.Second)
+	user := &store.User{
+		ID:               "u-clock",
+		TenantID:         store.DefaultTenantID,
+		Email:            "clock@example.com",
+		SN:               "SN-clock",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+	}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := st.Users.GetByID(ctx, "u-clock")
+	if err != nil || got == nil {
+		t.Fatalf("get: %v %+v", err, got)
+	}
+	if got.CreatedAt.Before(before) || got.UpdatedAt.Before(before) {
+		t.Fatalf("created=%s updated=%s before=%s", got.CreatedAt, got.UpdatedAt, before)
+	}
+}
+
+func TestUserListReadsSQLiteCreatedAt(t *testing.T) {
+	provider, err := NewProvider(Config{
+		DSN:               filepath.Join(t.TempDir(), "hub-test.db"),
+		WAL:               true,
+		BusyTimeoutMS:     5000,
+		MaxReadOpenConns:  4,
+		MaxReadIdleConns:  2,
+		MaxWriteOpenConns: 1,
+		MaxWriteIdleConns: 1,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	st := NewStore(provider)
+	ctx := context.Background()
+	user := &store.User{
+		ID:               "u-sqlite-clock",
+		TenantID:         store.DefaultTenantID,
+		Email:            "sqlite-clock@example.com",
+		SN:               "SN-sqlite-clock",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        time.Date(2026, 11, 2, 4, 0, 0, 0, time.UTC),
+		UpdatedAt:        time.Date(2026, 11, 2, 4, 0, 0, 0, time.UTC),
+	}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `UPDATE users SET created_at = ? WHERE id = ?`, "2026-11-02 12:00:00", user.ID); err != nil {
+		t.Fatalf("rewrite created_at: %v", err)
+	}
+	items, err := st.Users.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var got *store.User
+	for _, item := range items {
+		if item != nil && item.ID == user.ID {
+			got = item
+		}
+	}
+	if got == nil {
+		t.Fatal("listed user missing")
+	}
+	want := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	if !got.CreatedAt.Equal(want) {
+		t.Fatalf("created_at = %s text=%q", got.CreatedAt, got.CreatedAtText)
+	}
+	if got.CreatedAtText != "2026-11-02 12:00:00" {
+		t.Fatalf("created_at text = %q", got.CreatedAtText)
+	}
+}
+
 func TestUserReferralPaginationUsesStableTieBreakers(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

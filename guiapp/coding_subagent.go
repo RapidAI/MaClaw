@@ -812,7 +812,9 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	// Documentation paths are a file class, same as the remote gate. An empty
 	// edit set stays on the existing post-loop path.
 	docOnlyEdits := cb != nil && codingEditsAreDocumentationOnly(cb.getFilesModified(), cb.getFilesCreated())
-	if qualityGateEnabled && !s.horizonPosture && !operational && !inquiry && !goalTurn && result.Error == "" && !result.HardExit && result.AskUser == nil && !cb.ShouldStop() && !docOnlyEdits {
+	// Host compile repair already sits inside the step gate. That gate reruns
+	// the same command, so this turn must not start its own verify-fix loop.
+	if qualityGateEnabled && !s.horizonPosture && !operational && !inquiry && !goalTurn && !codingTaskIsHostCompileRepair(task) && result.Error == "" && !result.HardExit && result.AskUser == nil && !cb.ShouldStop() && !docOnlyEdits {
 		if verifiers := cb.recoverableVerifications(); len(verifiers) > 0 {
 			// The original wrapper already ran successfully.  Recovery exists to
 			// obtain an auditable exit status, not to let an automatic retry alter
@@ -1017,6 +1019,9 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 				verificationStatus, verificationSummary = maybeRelaxDeferredPlanStepVerification(stepTitle, stepDesc, reqCtx, verificationStatus, verificationSummary)
 			}
 			verificationStatus, verificationSummary = relaxDocumentationOnlyVerification(verificationStatus, verificationSummary, allFilesModified, allFilesCreated)
+			if codingTaskIsHostCompileRepair(task) {
+				verificationStatus, verificationSummary = codingSubAgentQualityNotNeeded, "host compile repair: the step gate reruns verification"
+			}
 			status, errMsg = applySubAgentExplorationOutcome(status, errMsg, explorationStatus, explorationSummary, len(existingFilesModified))
 			status, errMsg = applySubAgentVerificationOutcome(status, errMsg, verificationStatus, verificationSummary)
 		} else {
@@ -1992,6 +1997,7 @@ This request is running on the temporary uncorrelated Coding compatibility surfa
 
 ## Available posture
 - Gather repository evidence with the read-only definitions that are present (for example Glob, ripgrep, list_directory, read_file, git_diff, code_navigation, and approved knowledge/research lookups).
+- Use ocr_recognize when a screenshot or diagnostic image must be read. On this surface omit output_path and use the returned text; do not install or invoke Python OCR packages.
 - If the project has .codegraph/, use code_navigation for structure, symbols, and call edges. A text search that already returned lines is evidence; use those lines and do not repeat that search. When the name is unknown and the question is about behavior or which module owns it, use code_search. Known symbols and call edges stay on code_navigation. Exact text stays on ripgrep.
 - Do not claim that a file was changed, a command was run, a child was delegated, or structured localization was submitted: those operations are not available on this request surface.
 `)
@@ -2450,7 +2456,8 @@ func filterCodingToolsForRole(tools []map[string]interface{}, sa *CodingSubAgent
 		}
 		return out
 	}
-	return (codingagent.ToolPolicy{Role: role, Allowed: codingSubAgentSpawnRoleTools[role], Normalize: canonicalCodingSubAgentToolName}).FilterToolDefinitions(tools)
+	filtered := (codingagent.ToolPolicy{Role: role, Allowed: codingSubAgentSpawnRoleTools[role], Normalize: canonicalCodingSubAgentToolName}).FilterToolDefinitions(tools)
+	return narrowCodingOCROutputPathForReadOnly(filtered)
 }
 
 func filterToolsByHorizonSurface(tools []map[string]interface{}, surface []string) []map[string]interface{} {
@@ -3060,6 +3067,12 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			// transport-only rewrite that the quality audit cannot see.
 			bashArgs["command"] = normalizeSubAgentVerificationCommandForExecution(command)
 		}
+		// The bound checkout is the only writable surface. A command that still
+		// names the shared tree after the rewrite must not start a shell.
+		if msg := c.parallelCheckoutCommandRejection(stringVal(bashArgs, "command"), stringVal(bashArgs, "working_dir")); msg != "" {
+			c.trackCommandResult(bashArgs, msg, false)
+			return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, msg), Outcome: codingToolOutcomeBlocked}
+		}
 		// Maint jobs reject a cwd or absolute argument outside the ghost
 		// before any shell starts. Project-scope checks do not see those arguments.
 		if err := repoMaintRejectShell(h, c.subagent.taskPermissionOwnerID(), stringVal(bashArgs, "working_dir"), stringVal(bashArgs, "command")); err != nil {
@@ -3130,6 +3143,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			c.trackGitDiff(result.Text)
 		}
 		return result
+	case "ocr_recognize":
+		return c.executeCodingOCRRecognize(args)
 	case codeSearchToolName:
 		return c.executeLocalCodeSearch(args, argsJSON)
 	case codeNavigationToolName:
@@ -3563,6 +3578,8 @@ func codingSubAgentStringArgumentFields(name string) []string {
 		return []string{"query", "path"}
 	case "ssh":
 		return []string{"action", "host", "user", "auth_method", "key_path", "password", "label", "initial_command", "session_id", "command", "task_id", "local_path", "remote_path"}
+	case "ocr_recognize":
+		return []string{"image_path", "image_base64", "output_path", "mode"}
 	default:
 		return nil
 	}
@@ -3580,6 +3597,8 @@ func codingSubAgentNumberArgumentFields(name string) []string {
 		return []string{"port", "timeout", "wait_seconds", "tail_lines"}
 	case codeSearchToolName:
 		return []string{"top_k"}
+	case "ocr_recognize":
+		return []string{"start_page"}
 	default:
 		return nil
 	}
@@ -3608,6 +3627,10 @@ func codingSubAgentNumberArgumentMin(name, field string) (int64, bool) {
 		}
 	case codeSearchToolName:
 		if field == "top_k" {
+			return 1, true
+		}
+	case "ocr_recognize":
+		if field == "start_page" {
 			return 1, true
 		}
 	}
@@ -3769,6 +3792,8 @@ func codingSubAgentToolArgumentExample(name string) string {
 		return `{"query":"search terms"}`
 	case codeSearchToolName:
 		return `{"query":"where configuration is written to disk","path":"."}`
+	case "ocr_recognize":
+		return `{"image_path":"docs/screenshot.png"}`
 	default:
 		return ""
 	}
@@ -3794,6 +3819,8 @@ func codingSubAgentToolArgumentAliasHint(name string) string {
 		return `Accepted aliases: server/server_name -> server_id; tool/name -> tool_name; args/params/input -> arguments.`
 	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
 		return `Accepted aliases: text/question/keyword/keywords/term/terms/search_terms/q -> query.`
+	case "ocr_recognize":
+		return `Accepted aliases: image/file/file_path/path -> image_path; output/result_path -> output_path.`
 	default:
 		return ""
 	}
@@ -3886,6 +3913,13 @@ func applyCodingSubAgentToolArgumentAliases(name string, args map[string]interfa
 		changed = applyCodingSubAgentToolArgumentAlias(args, "args", "arguments") || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "params", "arguments") || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "input", "arguments") || changed
+	case "ocr_recognize":
+		changed = applyCodingSubAgentToolArgumentAlias(args, "image", "image_path") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "file", "image_path") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "file_path", "image_path") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "path", "image_path") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "output", "output_path") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "result_path", "output_path") || changed
 	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
 		changed = applyCodingSubAgentQueryArgumentAliases(args) || changed
 	}
@@ -4032,7 +4066,7 @@ func redactInvalidCodingSubAgentArgsLogText(argsJSON string) string {
 	}
 	lower := strings.ToLower(trimmed)
 	containsContent := false
-	for _, key := range []string{`"content"`, `"old_string"`, `"new_string"`, `"replacement"`, `"text"`} {
+	for _, key := range []string{`"content"`, `"old_string"`, `"new_string"`, `"replacement"`, `"text"`, `"image_base64"`} {
 		if strings.Contains(lower, key) {
 			containsContent = true
 			break
@@ -4058,7 +4092,7 @@ func redactInvalidCodingSubAgentArgsLogText(argsJSON string) string {
 
 func firstCodingSubAgentSensitiveLogKeyIndex(lower string) int {
 	first := -1
-	for _, key := range []string{`"content"`, `"old_string"`, `"new_string"`, `"replacement"`, `"text"`, `"password"`, `"token"`, `"api_key"`, `"apikey"`, `"secret"`, `"authorization"`} {
+	for _, key := range []string{`"content"`, `"old_string"`, `"new_string"`, `"replacement"`, `"text"`, `"image_base64"`, `"password"`, `"token"`, `"api_key"`, `"apikey"`, `"secret"`, `"authorization"`} {
 		if idx := strings.Index(lower, key); idx >= 0 && (first < 0 || idx < first) {
 			first = idx
 		}
@@ -4086,7 +4120,7 @@ func redactCodingSubAgentLogArgs(args map[string]interface{}) {
 func isCodingSubAgentContentLogKey(key string) bool {
 	normalized := normalizeCodingSubAgentLogKey(key)
 	switch normalized {
-	case "content", "oldstring", "newstring", "replacement", "text":
+	case "content", "oldstring", "newstring", "replacement", "text", "imagebase64":
 		return true
 	}
 	return strings.Contains(normalized, "content") || strings.HasSuffix(normalized, "text")
@@ -4243,9 +4277,9 @@ func codingOutcomeFromSearchOutcome(outcome agent.SearchToolOutcome) codingToolO
 
 // mapParallelWorktreePath sends an absolute path copied from the primary tree
 // into this turn's checkout. Relative names are joined onto the checkout
-// first. Step verify and hooks call bash with the primary after the merge,
-// and they do not go through this helper, so the checkout map stays off that
-// command runner.
+// first. Model bash rewrites command text in withDefaultWorkingDir through
+// the same map. Step verify and hooks run after the merge and call the shell
+// directly, so those commands keep the primary.
 func (c *codingSubAgentCallbacks) mapParallelWorktreePath(path string) string {
 	if c == nil || c.subagent == nil {
 		return path
@@ -4316,25 +4350,95 @@ func (c *codingSubAgentCallbacks) withDefaultWorkingDir(args map[string]interfac
 	for k, v := range args {
 		copied[k] = v
 	}
-	if command, ok := copied["command"].(string); ok {
-		copied["command"] = strings.TrimSpace(command)
-	}
 	copied["timeout"] = normalizeCodingBashTimeout(copied["timeout"])
 	wd, _ := copied["working_dir"].(string)
 	wd = strings.TrimSpace(wd)
 	projectPath := c.projectPath()
 	if wd == "" && projectPath != "" {
-		copied["working_dir"] = projectPath
-		return copied
-	}
-	if wd != "" && !filepath.IsAbs(wd) && projectPath != "" {
+		wd = projectPath
+	} else if wd != "" && !filepath.IsAbs(wd) && projectPath != "" {
 		wd = filepath.Join(projectPath, wd)
-		copied["working_dir"] = wd
 	}
 	if mapped := c.mapParallelWorktreePath(wd); mapped != wd {
-		copied["working_dir"] = mapped
+		wd = mapped
+	}
+	if wd != "" {
+		copied["working_dir"] = wd
+	}
+	// Rewrite after the working directory is the checkout. Relative climbs
+	// resolve against that directory, not against the shared tree.
+	if command, ok := copied["command"].(string); ok {
+		copied["command"] = c.rewriteParallelCommandPaths(strings.TrimSpace(command), wd)
 	}
 	return copied
+}
+
+// rewriteParallelCommandPaths maps names of the shared tree inside a model
+// shell command onto this turn's checkout. File tools already do this for
+// their path arguments. The command text is the same surface: a cd or
+// Copy-Item that still names the primary writes the directory another task holds.
+// base is the checkout the shell starts in.
+func (c *codingSubAgentCallbacks) rewriteParallelCommandPaths(command, base string) string {
+	if c == nil || c.subagent == nil {
+		return command
+	}
+	task := projectPathFromSessionOwnerID(c.subagent.taskPermissionOwnerID())
+	turn := codingParallelTurnFor(task)
+	root := codingParallelProtectedRoot(turn)
+	if task == "" || root == "" {
+		return command
+	}
+	mapPath := func(logical string) (string, bool) {
+		mapped, ok := codingParallelMappedDir(task, logical)
+		if !ok || mapped == "" || sameNormalizedPath(mapped, logical) {
+			return "", false
+		}
+		return mapped, true
+	}
+	command = rewriteCommandOntoParallelCheckout(command, root, mapPath)
+	return rewriteResolvedCommandPaths(command, root, base, mapPath)
+}
+
+// parallelCheckoutCommandRejection refuses a shell that still names the shared
+// tree after rewriting. A checkout nested inside that tree cannot be rejected
+// this way: the rewritten path would still contain the root and every later
+// command would block. Model bash is the caller. Full-access approval does
+// not override it, because the other task still holds the directory.
+func (c *codingSubAgentCallbacks) parallelCheckoutCommandRejection(command, workingDir string) string {
+	if c == nil || c.subagent == nil {
+		return ""
+	}
+	task := projectPathFromSessionOwnerID(c.subagent.taskPermissionOwnerID())
+	turn := codingParallelTurnFor(task)
+	root := codingParallelProtectedRoot(turn)
+	if root == "" {
+		return ""
+	}
+	checkout := ""
+	if turn != nil && turn.wt != nil {
+		checkout = strings.TrimSpace(turn.wt.Path)
+	}
+	if checkout != "" && pathInsideWorkRoot(root, checkout) {
+		return ""
+	}
+	// A relative climb, D:repo, or D:\other\..\Repo never contains the root
+	// text. Resolve those against the checkout as well.
+	if !commandNamesProtectedRoot(command, root) && !commandNamesProtectedRoot(workingDir, root) && !commandReachesProtectedRoot(command, root, workingDir) {
+		return ""
+	}
+	dest := ""
+	if turn != nil {
+		if turn.wt != nil {
+			dest = strings.TrimSpace(turn.wt.ProjectPath)
+		}
+		if dest == "" {
+			dest = strings.TrimSpace(turn.execDir)
+		}
+	}
+	if dest == "" {
+		dest = c.projectPath()
+	}
+	return "这条命令仍指向另一个任务正在写入的目录，没有执行。请改在独立检出中操作：" + dest
 }
 
 func normalizeCodingBashTimeout(raw interface{}) float64 {
@@ -6264,6 +6368,12 @@ func (c *codingSubAgentCallbacks) trackGuardrailViolation(toolName string, args 
 	if path == "" {
 		path, _ = args["working_dir"].(string)
 	}
+	if path == "" {
+		path, _ = args["image_path"].(string)
+	}
+	if path == "" {
+		path, _ = args["output_path"].(string)
+	}
 	command, _ := args["command"].(string)
 	if strings.TrimSpace(command) == "" {
 		command, _ = args["initial_command"].(string)
@@ -6403,6 +6513,9 @@ func (c *codingSubAgentCallbacks) trackSearchResult(toolName string, args map[st
 		query, _ = args["url"].(string)
 	}
 	path, _ := args["path"].(string)
+	if path == "" {
+		path, _ = args["image_path"].(string)
+	}
 	fetchOffset, fetchNextOffset, fetchTotalChars, fetchHasMore, fetchRangeKnown := localizationWebFetchPagination(toolName, args, result)
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -16549,7 +16662,7 @@ func codingToolEventTarget(name, argsJSON, projectRoot string) string {
 	canonical := canonicalCodingSubAgentToolName(name)
 	bare := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(canonical)), "ssh_")
 	switch bare {
-	case "bash", "glob", "ripgrep", "grep", "search_files", "grep_search", "list_directory", "list_dir", "code_navigation", "code_search", "spawn_coding_agent", "todo_write":
+	case "bash", "glob", "ripgrep", "grep", "search_files", "grep_search", "list_directory", "list_dir", "code_navigation", "code_search", "spawn_coding_agent", "todo_write", "ocr_recognize":
 	default:
 		return ""
 	}
@@ -16582,6 +16695,7 @@ func codingToolEventTarget(name, argsJSON, projectRoot string) string {
 		codingToolEventArgString(args, "file_path"),
 		codingToolEventArgString(args, "filename"),
 		codingToolEventArgString(args, "target_path"),
+		codingToolEventArgString(args, "image_path"),
 		codingToolEventArgString(args, "directory"),
 		codingToolEventArgString(args, "dir"),
 	)
@@ -17965,7 +18079,7 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
 		appendCodingSubAgentCompatibilityChecklist(&b)
 	} else {
-		appendCodingSubAgentPreflightChecklist(&b, c.codingQualityGateOn())
+		appendCodingSubAgentPreflightChecklist(&b, c.codingQualityGateOn(), codingTaskIsHostCompileRepair(c.task))
 	}
 	if bullets := codingPrevOutputsForBullets(c.prevOutputs); len(bullets) > 0 {
 		b.WriteString("**前置任务上下文**：\n")
@@ -18011,7 +18125,7 @@ func compactCodingSubAgentTaskUserMessage(message string) string {
 	return truncateRunesV2(message, codingSubAgentTaskDescriptionMaxRunes+overheadBudget)
 }
 
-func appendCodingSubAgentPreflightChecklist(b *strings.Builder, qualityGateEnabled bool) {
+func appendCodingSubAgentPreflightChecklist(b *strings.Builder, qualityGateEnabled bool, hostCompileRepair bool) {
 	if b == nil {
 		return
 	}
@@ -18020,13 +18134,17 @@ func appendCodingSubAgentPreflightChecklist(b *strings.Builder, qualityGateEnabl
 	b.WriteString("2. State likely files and risk/impact.\n")
 	b.WriteString("3. Choose the minimal edit approach.\n")
 	b.WriteString("4. If this is a retry, use retry context and avoid repeating the failed approach.\n")
-	if qualityGateEnabled {
+	if hostCompileRepair {
+		b.WriteString("5. This turn is a host compile repair. The compiler already named the files. Read those files and make the smallest edit that removes the diagnostic. Do not submit report_localization.\n")
+	} else if qualityGateEnabled {
 		b.WriteString("5. For bug fixes, call code_navigation, reproduce or explain why not, reject a plausible alternative, and make an explicit research decision. Unknown/current/third-party facts require web_search of the exact error plus component/version; then submit report_localization before editing existing code. Once accepted, keep editing the reported files on later turns; resubmit only if the report was rejected, the root cause changed, or the gate says the previous report is bound to an older surface.\n")
 	} else {
 		b.WriteString("5. For bug fixes, call code_navigation when it helps, reproduce or explain why not, and make an explicit research decision. Unknown/current/third-party facts require web_search of the exact error plus component/version. report_localization is optional, and a missing report does not block edits.\n")
 	}
 	b.WriteString("\n**Before finalizing**:\n")
-	if qualityGateEnabled {
+	if hostCompileRepair {
+		b.WriteString("1. Do not run the verification command. The host reruns it after this turn.\n")
+	} else if qualityGateEnabled {
 		b.WriteString("1. After the last edit, run matching verification command(s): test/build/lint/typecheck. Do not present pre-edit verification as final verification.\n")
 	} else {
 		b.WriteString("1. If you changed code, run a matching test or build when it helps. Pipes, redirection, and combined commands are fine. Do not hide a failure with || true or || echo.\n")
@@ -19056,6 +19174,7 @@ func buildLocalInspectionRoleSystemPrompt(projectPath string, role codingSubAgen
 - code_search：不知道名字、问的是行为或模块在哪时使用。命中是片段，不是源码读取，不能因此修改文件。已知符号和调用边仍用 code_navigation。精确文本用 ripgrep
 - Glob / ripgrep / list_directory / read_file：正文搜索。已经返回的行算数，不要把同一次查找再做一遍
 - git_diff：只读 diff/status（如可用）
+- ocr_recognize：识别截图/诊断图片文字；只读子代理省略 output_path，直接使用返回文本，不要用 Python OCR 绕行
 `)
 	if role == codingRoleReviewer {
 		b.WriteString("- bash：诊断与验证命令（不要用 shell 改写文件或 Git 工作区）\n")
@@ -19303,11 +19422,12 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 - 修改已有文件时优先使用 edit_file 或 edit_lines；禁止用 write_file 重写已有文件来做小修改。edit_file 失败时先 read_file 确认当前内容，再改用 edit_lines。
 - write_file 只用于创建新文件，或在用户/仓库流程明确要求时追加 TEST_REPORT.md。
 - bash 用于测试、构建、lint、typecheck、调试命令；长命令必须设置 timeout，working_dir 必须在项目路径内。
+- 识别截图、诊断图或公式时调用 ocr_recognize；禁止安装/绕行 Python OCR。image_path 可填项目相对路径；仅可写回合需要保存大结果/PDF 时才用 output_path。
 - 需要辅助能力时使用本轮提供的受限 Skill/MCP 函数别名（若已提供）；不要假设用户会手动再安装工具。
 
 ## 验证优先流程
 1. 能自动化覆盖的行为变更，应添加或更新聚焦测试；无法合理自动化时，在总结中说明原因。
-2. 修改后运行匹配的验证命令（test/build/lint/typecheck），失败时分析错误后再修复。编译/链接失败必须在本回合改命令或改代码后重跑。
+2. 修改后运行匹配的验证命令（test/build/lint/typecheck），失败时分析错误后再修复。编译/链接失败必须在本回合改命令或改代码后重跑。编译器点名的文件即使不是本任务原先要改的文件，也要做最小修改让包重新能编译，不要以别人的文件或约定为由停下来。用户消息含 [host-compile-repair] 时只改点名文件，不要自己跑验证命令，宿主会重跑。
 3. 完成前调用 git_diff 自检，确认改动范围符合任务要求。若项目不是 Git 仓库，说明该情况并依赖文件审计列表，不要用 bash 反复跑 git status/diff/log，也不要对 git 自检加 2>/dev/null。
 4. 只在用户明确要求或仓库已有流程要求时，才追加 TEST_REPORT.md；不要默认制造报告文件。
 
@@ -19315,13 +19435,14 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 - 禁止擅自执行破坏性删除、清理或 Git 工作区/索引/历史改写命令，例如 git reset --hard、git checkout --、git checkout .、git restore、git switch、git merge/rebase/stash、git add/commit/apply/cherry-pick/revert/rm/mv/update-index/read-tree、git clean -f、rm -rf、Remove-Item -Recurse、rmdir /s、del /s。若当前任务原文明确要求清空或删除项目路径内的文件，或明确要求改写 Git 工作区，必须调用 bash（working_dir 设为项目路径）；宿主只在「用户确认」下弹出确认，「完全控制」和「工作区信任」自动放行。禁止只回复文字拒绝而不调用工具。
 - 禁止对 git status/diff/log 自检使用 2>/dev/null 或 >/dev/null 掩盖错误输出。
 - 禁止不读文件就直接修改；禁止无关重构、无关格式化、依赖 churn 或 speculative feature work。
-- 遇到无法解决的问题，说明具体原因，不要反复重试相同的失败操作。编译失败先改命令再重跑。
+- 遇到无法解决的问题，说明具体原因，不要反复重试相同的失败操作。命令本身写错时先改命令再重跑。编译器已经点名文件和行时，改那些代码，不要改验证命令来躲开它。
 `)
 
 	b.WriteString(fmt.Sprintf(`
 ## Single-task contract
 - Work only on the assigned task. Avoid broad refactors, unrelated formatting, dependency churn, or speculative feature work; keep edits small and reviewable.
-- If verification fails because of unrelated pre-existing errors, report the exact blocker with file/line when available.
+- A compile or link error that stops verification is part of the assigned task even when the compiler names a file this task did not originally change. Fix that file with the smallest edit that makes the package compile, then rerun verification in this turn. Do not stop by saying the file belongs to someone else. When the user message contains [host-compile-repair], edit the named files and do not run the verification command; the host reruns it.
+- If verification fails only because of unrelated pre-existing errors from an analyzer or vet, report the exact blocker with file/line when available and do not expand the task to clean them up.
 
 ## Final answer
 %s
@@ -19594,6 +19715,7 @@ var codingSubAgentToolOrder = []string{
 	"bash",
 	"list_directory",
 	"git_diff",
+	"ocr_recognize",
 }
 
 // codingSubAgentFullEnvExtraToolOrder is always available in fullEnvironment
@@ -20244,6 +20366,8 @@ func applyCodingSubAgentToolHints(fn map[string]interface{}) {
 	case "edit_lines":
 		setCodingSubAgentToolPropDescription(props, "content", fmt.Sprintf("New content for replace/insert. Keep under %d characters; split large edits into multiple small calls.", codingSubAgentInlineContentLimit))
 		setCodingSubAgentToolPropMaxLength(props, "content", codingSubAgentInlineContentLimit)
+	case "ocr_recognize":
+		fn["description"] = "Recognize text in an image with the built-in local PP-OCRv6 engine (offline). Use it for screenshots, diagnostic images, scanned image pages, or mode=formula for one printed formula image; do not install or invoke Python OCR. Provide image_path (project-relative accepted) or image_base64. A scanned PDF requires output_path in a writable turn and is processed in batches; continue at the start_page named in each result. Use output_path only for large/PDF transcripts."
 	}
 }
 
@@ -20329,6 +20453,14 @@ func codingSubAgentExtraToolDefinitions() []map[string]interface{} {
 				"path":   map[string]string{"type": "string", "description": "Git 仓库路径（可选，默认项目路径）"},
 				"staged": map[string]string{"type": "boolean", "description": "是否查看已暂存 diff（可选）"},
 			}, nil),
+		buildToolDef("ocr_recognize", "Recognize text in an image with the built-in local PP-OCRv6 engine (fully offline). Use this for screenshots, diagnostic images, scanned image pages, or mode=formula for one printed formula image. Do not install or invoke Python OCR packages. Relative image_path/output_path resolve inside the coding project; output_path is only for large/PDF transcripts on writable turns.",
+			map[string]interface{}{
+				"image_path":   map[string]string{"type": "string", "description": "Local PNG/JPEG image, or a scanned PDF when output_path is available"},
+				"image_base64": map[string]string{"type": "string", "description": "Base64-encoded PNG/JPEG image (data-URI allowed)"},
+				"output_path":  map[string]string{"type": "string", "description": "Optional text output path for large or PDF recognition results"},
+				"start_page":   map[string]string{"type": "integer", "description": "1-based PDF page to start from"},
+				"mode":         map[string]string{"type": "string", "description": "text (default) or formula"},
+			}, nil),
 	}
 }
 
@@ -20363,10 +20495,12 @@ func RunTaskWithSubAgent(
 }
 
 // defaultGUICodingRuntimeOptions is the production admission policy for a GUI
-// turn. Inquiry turns are read-only. Implementation turns declare the plan's
-// files, or the project root when the file list is empty, and require a
-// successful before/after workspace probe. Disjoint file claims can run
-// beside each other. An overlapping claim, including the project root,
+// turn. Inquiry turns and goal plan turns are read-only. A goal execute step
+// still declares a write scope, and its completion is the saved goal call, so
+// it does not require a workspace diff. Other implementation turns declare
+// the plan's files, or the project root when the file list is empty, and
+// require a successful before/after workspace probe. Disjoint file claims can
+// run beside each other. An overlapping claim, including the project root,
 // waits. A later task with a private worktree sets DeferredWorktree.
 // Isolated worktree execution is a separate options path.
 func defaultGUICodingRuntimeOptions(task *TaskItem, projectPath string) *guiCodingRuntimeOptions {
@@ -20379,7 +20513,11 @@ func defaultGUICodingRuntimeOptions(task *TaskItem, projectPath string) *guiCodi
 		options.ReadOnly = true
 		return options
 	}
-	options.RequireFinalWorkspaceGate = true
+	// The quality path skips file audits on a goal continuation because the
+	// host phase is complete when the goal call is saved. A confirmation step
+	// that changes nothing is a passed turn. Requiring a workspace diff here
+	// records final_workspace_unchanged and then fails the goal.
+	options.RequireFinalWorkspaceGate = !taskCarriesGoalContinuation(task, "")
 	if task != nil {
 		options.DeclaredWrites = append(options.DeclaredWrites, task.Files...)
 		options.DeclaredWrites = append(options.DeclaredWrites, task.ActualFiles...)

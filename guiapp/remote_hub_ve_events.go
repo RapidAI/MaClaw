@@ -8,21 +8,23 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
 // VE WebSocket event type constants emitted by Maclaw Hub.
 const (
-	veEventListUpdate         = "ve:list_update"
-	veEventStatusChange       = "ve:status_change"
-	veEventAuthRequest        = "ve:auth_request"
-	veEventApproved           = "ve:approved"
-	veEventRejected           = "ve:rejected"
-	veEventDisabled           = "ve:disabled"
-	veEventGroupConfig        = "ve:group_config"
-	veEventDiscussionInvite   = "ve:discussion_invite"
-	veEventDiscussionMessage  = "ve:discussion_message"
-	veEventDiscussionActivity = "ve:discussion_activity"
-	veEventDiscussionRename   = "ve:discussion_rename"
+	veEventListUpdate          = "ve:list_update"
+	veEventStatusChange        = "ve:status_change"
+	veEventAuthRequest         = "ve:auth_request"
+	veEventApproved            = "ve:approved"
+	veEventRejected            = "ve:rejected"
+	veEventDisabled            = "ve:disabled"
+	veEventGroupConfig         = "ve:group_config"
+	veEventDiscussionInvite    = "ve:discussion_invite"
+	veEventDiscussionMessage   = "ve:discussion_message"
+	veEventDiscussionActivity  = "ve:discussion_activity"
+	veEventDiscussionReasoning = "ve:discussion_reasoning"
+	veEventDiscussionRename    = "ve:discussion_rename"
 	// veEventApprovalRequest is Hub → machine delivery of a workflow approval node payload.
 	// Wire type matches hub/internal/httpapi.approvalRequestWireType.
 	veEventApprovalRequest = "ve:approval_request"
@@ -51,6 +53,9 @@ func (c *RemoteHubClient) handleVEEvent(msg inboundHubEnvelope) {
 		return
 	case veEventDiscussionActivity:
 		c.emitVEDiscussionActivity(msg)
+		return
+	case veEventDiscussionReasoning:
+		c.emitVEDiscussionReasoning(msg)
 		return
 	case veEventApprovalRequest:
 		// Approval pipeline may call Hub decision API + local registry — never block readLoop.
@@ -102,6 +107,33 @@ func (c *RemoteHubClient) emitVEDiscussionActivity(msg inboundHubEnvelope) {
 		return
 	}
 	c.app.emitEvent("ve:activity", discussionActivityFrontendPayload(decodeVEEventPayloadMap(msg)))
+}
+
+func (c *RemoteHubClient) emitVEDiscussionReasoning(msg inboundHubEnvelope) {
+	if c == nil || c.app == nil {
+		return
+	}
+	payload := discussionReasoningFrontendPayload(decodeVEEventPayloadMap(msg))
+	if strings.TrimSpace(discussionActivityString(payload, "text")) == "" {
+		return
+	}
+	c.app.emitEvent("ve:reasoning", payload)
+}
+
+func discussionReasoningFrontendPayload(payload map[string]any) map[string]any {
+	text := ""
+	if payload != nil {
+		text, _ = payload["text"].(string)
+	}
+	text = textutil.SanitizeVisibleChatText(text)
+	if strings.TrimSpace(text) == "" {
+		text = ""
+	}
+	return map[string]any{
+		"session_id": discussionActivityString(payload, "session_id", "sessionId"),
+		"from_id":    discussionActivityString(payload, "from_id", "fromId"),
+		"text":       text,
+	}
 }
 
 func discussionActivityFrontendPayload(payload map[string]any) map[string]any {

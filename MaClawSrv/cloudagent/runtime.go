@@ -165,20 +165,21 @@ type trackedCancel struct {
 
 // Runtime is the in-process cloud-agent host. Open does not start tickers.
 type Runtime struct {
-	root        string
-	adminSecret string
-	mu          sync.Mutex
-	instances   map[string]*instance
-	cancels     map[string]trackedCancel
-	stop        context.CancelFunc
-	httpClient  *http.Client
-	exec        executor
-	inFlight    int
-	lastUsed    time.Time
-	streamMu    sync.Mutex
-	grants      map[string]map[string]struct{}
-	stream      map[string]*streamLane
-	streamLogAt time.Time
+	root         string
+	adminSecret  string
+	mu           sync.Mutex
+	instances    map[string]*instance
+	cancels      map[string]trackedCancel
+	stop         context.CancelFunc
+	httpClient   *http.Client
+	exec         executor
+	inFlight     int
+	lastUsed     time.Time
+	streamMu     sync.Mutex
+	grants       map[string]map[string]struct{}
+	stream       map[string]*streamLane
+	streamLogAt  time.Time
+	sessionNeeds sessionNeedResolver
 }
 
 // Open prepares cloud-agents under dataRoot and marks leftover running turns

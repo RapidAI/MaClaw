@@ -288,7 +288,8 @@
   }
 
   function boundUserRegisteredRaw(item) {
-    return String(item && (item.created_at || item.CreatedAt) || '').trim();
+    if (!item || typeof item !== 'object') return '';
+    return String(item.created_at || item.CreatedAt || item.createdAt || '').trim();
   }
 
   var registeredInfoCache = typeof WeakMap === 'function' ? new WeakMap() : null;
@@ -309,6 +310,10 @@
       var date = new Date(ms);
       info.day = formatRegisteredDay(date);
       info.stamp = info.day + ' ' + pad2(date.getHours()) + ':' + pad2(date.getMinutes());
+    } else if (raw) {
+      // A stored clock that this browser cannot parse is still a registration
+      // time. Showing the fallback would claim the column was empty.
+      info.stamp = raw;
     }
     if (registeredInfoCache) registeredInfoCache.set(item, info);
     return info;
@@ -846,7 +851,7 @@
   };
   global.loadBoundUsers = async function loadBoundUsers() {
     try {
-      const data = await api('/api/admin/users');
+      const data = await api('/api/admin/users', { cache: 'no-store' });
       global.renderBoundUsers(data.users || []);
     } catch (err) {
       setOutput(tr('bindFailed', { error: err.message }));

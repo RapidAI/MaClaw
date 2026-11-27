@@ -121,13 +121,23 @@ func TestVEStreamChunkCoalescerReleasesTailWhenTheModelPauses(t *testing.T) {
 
 func TestConsumeRuntimeSSEResponseDropsReasoningChunks(t *testing.T) {
 	s := platformAwareMachineSender{}
-	body := strings.NewReader("data: {\"chunk\":\"\\u0001thinking\"}\n\ndata: {\"chunk\":\"answer\"}\n\ndata: {\"done\":true,\"content\":\"answer\"}\n\n")
-	got, err := s.consumeRuntimeSSEResponse(body, "tenant", digitalEmployeeEntry{ID: "ve-1"}, time.Now(), nil)
+	body := strings.NewReader("data: {\"chunk\":\"\\u0001thinking\"}\n\ndata: {\"reasoning\":\"more thought\"}\n\ndata: {\"chunk\":\"answer\"}\n\ndata: {\"done\":true,\"content\":\"answer\"}\n\n")
+	var thoughts []string
+	got, err := s.consumeRuntimeSSEResponseWithReasoning(body, "tenant", digitalEmployeeEntry{ID: "ve-1"}, time.Now(), func(chunk string) {
+		if strings.Contains(chunk, "thinking") || strings.Contains(chunk, "thought") {
+			t.Fatalf("answer chunk included reasoning: %q", chunk)
+		}
+	}, func(text string) {
+		thoughts = append(thoughts, text)
+	})
 	if err != nil {
 		t.Fatalf("consume: %v", err)
 	}
 	if got != "answer" {
 		t.Fatalf("got %q, want answer without reasoning chunk", got)
+	}
+	if strings.Join(thoughts, "|") != "thinking|more thought" {
+		t.Fatalf("thoughts=%q", thoughts)
 	}
 }
 

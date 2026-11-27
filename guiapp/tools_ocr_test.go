@@ -84,6 +84,9 @@ func TestOCRRecognizePastEndKeepsGap(t *testing.T) {
 	if !strings.Contains(got, "start_page=2") || !strings.Contains(got, "第 2 页") || strings.Contains(got, "第 8 页") || strings.Contains(got, "已到文件末尾") {
 		t.Fatalf("a gap past the end must name the missing page: %q", got)
 	}
+	if strings.HasPrefix(got, "ocr_recognize:") {
+		t.Fatalf("gap receipt must stay a success result, not an error prefix: %q", got)
+	}
 	var body strings.Builder
 	for i := 1; i <= 3; i++ {
 		if i > 1 {
@@ -97,6 +100,9 @@ func TestOCRRecognizePastEndKeepsGap(t *testing.T) {
 	got = ocrRecognizePastEnd(outPath, 3)
 	if !strings.Contains(got, "已到文件末尾") || strings.Contains(got, "start_page=") {
 		t.Fatalf("a finished transcript is the end: %q", got)
+	}
+	if strings.HasPrefix(got, "ocr_recognize:") {
+		t.Fatalf("complete receipt must stay a success result, not an error prefix: %q", got)
 	}
 }
 

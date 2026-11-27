@@ -211,6 +211,10 @@ func NewHTTPServerWithError(svc *agentservice.Service, adminSecret string, knowl
 	if cloudErr != nil {
 		return nil, fmt.Errorf("cloud agents: %w", cloudErr)
 	}
+	// The cloud host reads capability needs from the same resolver main
+	// already attached to this service. Resolution happens on the turn, so
+	// a later ConfigureDynamicSemanticRouting still applies.
+	cloudRT.SetSessionNeedResolver(srvCloudSessionNeeds{svc: svc})
 	s.cloudRuntime = cloudRT
 	s.routes()
 	s.startSandboxStartupDiagnoseIfEnabled()

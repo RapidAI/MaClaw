@@ -5,6 +5,7 @@ import type { ChatAttachment, ChatMessage } from "./useAIAssistant";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { AttachmentDocumentPreview } from "./AttachmentDocumentPreview";
 import { AttachmentImageThumbnail } from "./AttachmentImagePreview";
+import { useChatMediaMenu, type ChatMediaTarget } from "./chatMediaMenu";
 
 function compactAttachmentLabel(fileName: string, extension: string): string {
     const raw = (extension || fileName.match(/\.[^./\\]+$/)?.[0] || "").replace(/^\./, "").trim();
@@ -20,6 +21,24 @@ export function partitionUserAttachments(attachments: readonly ChatAttachment[])
         else inline.push(attachment);
     }
     return { inline, documents };
+}
+
+function MediaMenuTarget({ lang, target, style, title, children }: {
+    lang: string;
+    target: ChatMediaTarget;
+    style: React.CSSProperties;
+    title?: string;
+    children?: React.ReactNode;
+}) {
+    const { onContextMenu, menu } = useChatMediaMenu(lang);
+    return (
+        <>
+            <span title={title} aria-label={target.fileName} style={style} onContextMenu={(event) => onContextMenu(event, target)}>
+                {children}
+            </span>
+            {menu}
+        </>
+    );
 }
 
 export function UserAttachmentChip({ attachment, theme, lang }: { attachment: NonNullable<ChatMessage["attachments"]>[number]; theme: Theme; lang: string }) {
@@ -122,11 +141,22 @@ export function UserAttachmentChip({ attachment, theme, lang }: { attachment: No
         );
     }
     if (attachment.isImage && !previewFailed) {
-        return <span aria-label={attachment.fileName} style={chipStyle} />;
+        return (
+            <MediaMenuTarget
+                lang={lang}
+                style={chipStyle}
+                target={{ kind: "image", source: attachment.filePath, fileName: attachment.fileName }}
+            />
+        );
     }
     return (
-        <span title={attachment.filePath} aria-label={attachment.fileName} style={chipStyle}>
+        <MediaMenuTarget
+            lang={lang}
+            style={chipStyle}
+            title={attachment.filePath}
+            target={{ kind: "file", source: attachment.filePath, fileName: attachment.fileName }}
+        >
             {compactAttachmentLabel(attachment.fileName, attachment.extension)}
-        </span>
+        </MediaMenuTarget>
     );
 }

@@ -2485,6 +2485,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			continue
 		}
 		if err != nil {
+			resp = dropUncommittedTransientStreamPartial(resp, err)
 			finishAttempt(llmAttemptDeliveryForError(cb, containAmbiguousDelivery, resp, err))
 		}
 		// Desktop finishes the replannable operation by cancelling its context.
@@ -2788,6 +2789,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					resp, err = doLLMRequestWithTools(requestCtx, aggCFG, reqConversation, tools, invocationPolicy, receiptClient)
 				}
 				if err != nil {
+					resp = dropUncommittedTransientStreamPartial(resp, err)
 					finishAttempt(llmAttemptDeliveryForError(cb, containAmbiguousDelivery, resp, err))
 					// This send owns a manifest. Retire it before the next attempt
 					// clears the projection. The post-loop dispose only runs when
@@ -6615,7 +6617,10 @@ func doResponsesRequestWithToolsOnce(ctx context.Context, cfg corelib.MaclawLLMC
 	}
 	parsed, err := llm.ParseNonStreamResponsesAPIBody(body)
 	if err != nil {
-		return nil, err
+		// status "failed" is still HTTP 200 and parses into a body. Keep that
+		// body: an answer already in it must not be sent again, and an
+		// uncommitted one is dropped before the outer retry.
+		return parsed, err
 	}
 	return parsed, nil
 }
@@ -7223,7 +7228,7 @@ func classifyToolResult(result string) toolOutcome {
 		"工具执行异常", // im_tool_execution.go panic recovery
 		"未知工具",   // im_tool_execution.go, subagent callbacks
 		"参数解析失败", // im_tool_execution.go, tui callbacks
-		"错误:", // various tool handlers
+		"错误:",    // various tool handlers
 	}
 	trimmed := strings.TrimSpace(result)
 	for _, prefix := range errorPrefixes {
@@ -7374,6 +7379,23 @@ func resumeLLMRetryLease(cb LoopCallbacks, ctx context.Context) error {
 		return nil
 	}
 	return parker.ResumeLLMRetry(ctx)
+}
+
+// dropUncommittedTransientStreamPartial forgets a stream that ended on a
+// temporary upstream error or a transport cut before any answer or finished
+// tool call. Reasoning already shown in the thinking panel is display, and an
+// opened call with no arguments has not run. Visible assistant text and calls
+// that already have arguments stay on the response. Call this before
+// finishAttempt: a non-nil partial is ambiguous delivery, and a coding host
+// would quarantine the tool belt before that retry.
+func dropUncommittedTransientStreamPartial(resp *llm.Response, err error) *llm.Response {
+	if resp == nil || err == nil || llm.ResponseHasCommittedAnswer(resp) {
+		return resp
+	}
+	if !llm.UncommittedStreamCutCanRetry(err) {
+		return resp
+	}
+	return nil
 }
 
 // failedLLMAttemptDelivery keeps a clean gateway rejection off the ambiguous

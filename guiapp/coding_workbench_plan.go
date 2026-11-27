@@ -431,7 +431,7 @@ func codingRequestNeedsPlanFallback(userText string) bool {
 // read/search primitives.  It is used for both local and remote workbenches.
 func isCodingInquiryTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "list_directory", "glob", "read_file", "search_files", "search_file", "bash",
+	case "list_directory", "glob", "read_file", "search_files", "search_file", "bash", "ocr_recognize",
 		"ssh_read_file", "ssh_list_dir", "ssh_bash", "ssh_check_task",
 		codeNavigationToolName, codeSearchToolName, "coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
 		return true
@@ -445,7 +445,7 @@ func isCodingInquiryTool(name string) bool {
 // stay off the list; goal is appended by the caller after this filter.
 func isGoalPlanPhaseTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "list_directory", "glob", "ripgrep", "read_file", "search_files", "search_file",
+	case "list_directory", "glob", "ripgrep", "read_file", "search_files", "search_file", "ocr_recognize",
 		codeNavigationToolName, codeSearchToolName, "coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search",
 		"ssh_read_file", "ssh_list_dir":
 		return true
@@ -463,7 +463,7 @@ func filterGoalPlanPhaseTools(tools []map[string]interface{}) []map[string]inter
 			out = append(out, tool)
 		}
 	}
-	return out
+	return narrowCodingOCROutputPathForReadOnly(out)
 }
 
 func filterCodingInquiryTools(tools []map[string]interface{}) []map[string]interface{} {
@@ -475,7 +475,7 @@ func filterCodingInquiryTools(tools []map[string]interface{}) []map[string]inter
 			out = append(out, tool)
 		}
 	}
-	return out
+	return narrowCodingOCROutputPathForReadOnly(out)
 }
 
 // isCodingOperationalTool is the local counterpart of the remote operational
@@ -484,7 +484,7 @@ func filterCodingInquiryTools(tools []map[string]interface{}) []map[string]inter
 // workflow merely because it is executed locally.
 func isCodingOperationalTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "glob", "ripgrep", "read_file", "list_directory", "bash", codeNavigationToolName, codeSearchToolName,
+	case "glob", "ripgrep", "read_file", "list_directory", "bash", "ocr_recognize", codeNavigationToolName, codeSearchToolName,
 		"coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search",
 		codingAcceptanceBriefToolName:
 		return true
@@ -502,7 +502,7 @@ func filterCodingOperationalTools(tools []map[string]interface{}) []map[string]i
 			out = append(out, tool)
 		}
 	}
-	return out
+	return narrowCodingOCROutputPathForReadOnly(out)
 }
 
 func isRemoteCodingInquiryTool(name string) bool {

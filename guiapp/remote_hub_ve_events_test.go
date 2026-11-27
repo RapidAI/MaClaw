@@ -69,6 +69,39 @@ func TestHandleVEEventKeepsDiscoverableCacheForDiscussionMessage(t *testing.T) {
 	}
 }
 
+func TestDiscussionReasoningFrontendPayloadKeepsThought(t *testing.T) {
+	got := discussionReasoningFrontendPayload(map[string]any{
+		"session_id": "sess-1",
+		"from_id":    "ve-1",
+		"text":       "\x01plan the reply",
+	})
+	if got["session_id"] != "sess-1" || got["from_id"] != "ve-1" || got["text"] != "plan the reply" {
+		t.Fatalf("payload=%v", got)
+	}
+	if discussionReasoningFrontendPayload(map[string]any{"text": "\x01"})["text"] != "" {
+		t.Fatal("sentinel-only reasoning should be empty")
+	}
+}
+
+func TestHandleVEEventForwardsDiscussionReasoning(t *testing.T) {
+	var name string
+	var payload map[string]any
+	app := &App{testEmit: func(event string, data ...interface{}) {
+		name = event
+		if len(data) == 1 {
+			payload, _ = data[0].(map[string]any)
+		}
+	}}
+	client := &RemoteHubClient{app: app}
+	client.handleVEEvent(inboundHubEnvelope{
+		Type:    veEventDiscussionReasoning,
+		Payload: json.RawMessage(`{"session_id":"sess-1","from_id":"ve-1","text":"plan the reply"}`),
+	})
+	if name != "ve:reasoning" || payload["text"] != "plan the reply" || payload["session_id"] != "sess-1" {
+		t.Fatalf("event=%q payload=%v", name, payload)
+	}
+}
+
 func TestDiscussionActivityFrontendPayloadFlattensHubFields(t *testing.T) {
 	got := discussionActivityFrontendPayload(map[string]any{
 		"session_id": "sess-1",

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,13 +23,35 @@ type HubResolver interface {
 	HubsByTenantPairs(ctx context.Context, pairs []string) ([]HubEndpoint, error)
 }
 
+// hubCascade is the publish and revoke side effect. *CascadeService implements it.
+type hubCascade interface {
+	DispatchToHubs(ctx context.Context, notif *Notification, targetHubs []HubEndpoint) error
+	DispatchRevoke(ctx context.Context, notifID string, targetHubs []HubEndpoint) error
+}
+
+// ScheduledDispatchOwner is the HA gate for the due-draft promoter.
+// One live node starts a send. Before the Hub push it writes a dispatch
+// lease and replicates that lease, so a node that becomes owner while the
+// push is still running leaves the draft alone. DispatchLease is how long
+// that fence lasts; after it, a dead sender can be taken over. An empty
+// DispatchIdentity means this process has no peer database to fence.
+type ScheduledDispatchOwner interface {
+	OwnsScheduledDispatch() bool
+	DispatchIdentity() string
+	DispatchLease() time.Duration
+}
+
 // Service implements HubCenter notification business logic.
 type Service struct {
 	store      Store
-	cascade    *CascadeService
+	cascade    hubCascade
 	resolver   HubResolver
 	sync       SyncRecorder
+	owner      ScheduledDispatchOwner
 	translator Translator
+	// sending is the in-process attempt for a draft. The row stays a draft
+	// until that attempt finishes, so the next tick must not start another.
+	sending sync.Map
 }
 
 // SyncRecorder records notification state changes for HubCenter HA.
@@ -38,11 +62,14 @@ type SyncRecorder interface {
 
 // NewService creates a new HubCenter notification service.
 func NewService(store Store, cascade *CascadeService, resolver HubResolver) *Service {
-	return &Service{
+	svc := &Service{
 		store:    store,
-		cascade:  cascade,
 		resolver: resolver,
 	}
+	if cascade != nil {
+		svc.cascade = cascade
+	}
+	return svc
 }
 
 func (s *Service) SetSyncRecorder(recorder SyncRecorder) {
@@ -50,6 +77,13 @@ func (s *Service) SetSyncRecorder(recorder SyncRecorder) {
 		return
 	}
 	s.sync = recorder
+}
+
+func (s *Service) SetDispatchOwner(owner ScheduledDispatchOwner) {
+	if s == nil {
+		return
+	}
+	s.owner = owner
 }
 
 // SetTranslator installs the model-service translator used when an admin
@@ -188,6 +222,170 @@ func (s *Service) CreateNotification(ctx context.Context, req CreateRequest) (*N
 	return notif, nil
 }
 
+// PublishDue releases drafts whose publish_at has arrived. A publish request
+// with a future time is stored as a draft; this is what sends it. A draft
+// with no publish_at is left alone. A due draft that has already expired is
+// marked expired and is not cascaded.
+//
+// Each HA node has its own database, so a local claim does not stop a peer
+// from cascading the same draft. Only the node ScheduledDispatchOwner names
+// may start a send. The row stays a draft until the cascade attempt
+// finishes, then it is claimed and replicated. Before that push, the sender
+// writes a dispatch lease and replicates it. A peer that becomes owner
+// while the lease is current leaves the draft alone. A crash or a resolve
+// failure leaves the draft; the lease expires so another owner can send.
+// Two nodes that cannot see each other past the probe grace can still both
+// send. That window is the partition itself.
+func (s *Service) PublishDue(ctx context.Context, now time.Time) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	if s.owner != nil && !s.owner.OwnsScheduledDispatch() {
+		return nil
+	}
+	now = now.UTC()
+	self, leaseFor := "", time.Duration(0)
+	if s.owner != nil {
+		self = strings.TrimSpace(s.owner.DispatchIdentity())
+		leaseFor = s.owner.DispatchLease()
+	}
+	due, err := s.store.ListDueDrafts(ctx, now)
+	if err != nil {
+		return err
+	}
+	for _, item := range due {
+		if item == nil || item.ID == "" {
+			continue
+		}
+		if _, busy := s.sending.Load(item.ID); busy {
+			continue
+		}
+		if dispatchLeaseHeldByOther(item, self, now) {
+			continue
+		}
+		if item.ExpireAt != nil && !item.ExpireAt.After(now) {
+			s.expireDueDraft(ctx, item, now)
+			continue
+		}
+		if _, loaded := s.sending.LoadOrStore(item.ID, struct{}{}); loaded {
+			continue
+		}
+		cp := *item
+		if self != "" && leaseFor > 0 {
+			until := now.Add(leaseFor)
+			ok, err := s.store.ClaimDispatch(ctx, cp.ID, self, until, now)
+			if err != nil {
+				log.Printf("[notification] lease due draft %s: %v", cp.ID, err)
+				s.sending.Delete(cp.ID)
+				continue
+			}
+			if !ok {
+				s.sending.Delete(cp.ID)
+				continue
+			}
+			cp.DispatchNode = self
+			cp.DispatchUntil = &until
+			cp.UpdatedAt = now
+			if s.sync != nil {
+				s.sync.AppendNotification(ctx, &cp)
+			}
+		}
+		if s.cascade == nil || s.resolver == nil {
+			s.finishScheduledSend(&cp)
+			continue
+		}
+		go s.finishScheduledSend(&cp)
+	}
+	return nil
+}
+
+// dispatchLeaseHeldByOther reports that a different node already started
+// this send and its fence has not expired. The holder may renew. A missing
+// or elapsed lease is free to claim.
+func dispatchLeaseHeldByOther(item *Notification, self string, now time.Time) bool {
+	if item == nil || item.DispatchUntil == nil || !item.DispatchUntil.After(now) {
+		return false
+	}
+	holder := strings.TrimSpace(item.DispatchNode)
+	return holder != "" && holder != strings.TrimSpace(self)
+}
+
+func (s *Service) expireDueDraft(ctx context.Context, item *Notification, now time.Time) {
+	ok, err := s.store.ClaimDraft(ctx, item.ID, StatusExpired, now)
+	if err != nil {
+		log.Printf("[notification] claim due draft %s: %v", item.ID, err)
+		return
+	}
+	if !ok {
+		return
+	}
+	fresh := item
+	fresh.Status = StatusExpired
+	fresh.UpdatedAt = now
+	got, err := s.store.GetByID(ctx, item.ID)
+	if err != nil {
+		log.Printf("[notification] reload due draft %s: %v", item.ID, err)
+	} else if got == nil {
+		return
+	} else {
+		fresh = got
+	}
+	if s.sync != nil {
+		s.sync.AppendNotification(ctx, fresh)
+	}
+}
+
+func (s *Service) finishScheduledSend(n *Notification) {
+	if s == nil || n == nil {
+		return
+	}
+	defer s.sending.Delete(n.ID)
+	if err := s.dispatchCascade(n); err != nil {
+		log.Printf("[notification] cascade due draft %s: %v", n.ID, err)
+		return
+	}
+	claimedAt := time.Now().UTC()
+	ok, err := s.store.ClaimDraft(context.Background(), n.ID, StatusPublished, claimedAt)
+	if err != nil {
+		log.Printf("[notification] claim due draft %s: %v", n.ID, err)
+		return
+	}
+	if !ok {
+		return
+	}
+	fresh := n
+	fresh.Status = StatusPublished
+	fresh.UpdatedAt = claimedAt
+	got, err := s.store.GetByID(context.Background(), n.ID)
+	if err != nil {
+		log.Printf("[notification] reload due draft %s: %v", n.ID, err)
+	} else if got != nil {
+		fresh = got
+	}
+	if s.sync != nil {
+		s.sync.AppendNotification(context.Background(), fresh)
+	}
+}
+
+// RunScheduledPublisher releases due drafts once a minute until ctx ends.
+func (s *Service) RunScheduledPublisher(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		if err := s.PublishDue(ctx, time.Now()); err != nil {
+			log.Printf("[notification] publish due: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 // ListNotifications returns a paginated list of notifications with cascade results.
 func (s *Service) ListNotifications(ctx context.Context, filter ListFilter) ([]*NotificationWithCascade, int, error) {
 	notifications, total, err := s.store.List(ctx, filter)
@@ -281,25 +479,31 @@ func (s *Service) DeleteNotification(ctx context.Context, id string) error {
 	return nil
 }
 
-// dispatchCascade resolves target Hubs and dispatches the notification asynchronously.
-func (s *Service) dispatchCascade(notif *Notification) {
-	if s == nil || s.cascade == nil || s.resolver == nil {
-		return
+// CascadeAttemptBudget bounds one Hub push. HA waits out a probe interval
+// plus this budget before another node may release the same draft, so a
+// single missed probe cannot overlap the owner that is still sending.
+const CascadeAttemptBudget = 60 * time.Second
+
+// dispatchCascade resolves target Hubs and dispatches the notification.
+// A resolve error leaves a scheduled draft unclaimed. An empty audience is
+// a finished attempt.
+func (s *Service) dispatchCascade(notif *Notification) error {
+	if s == nil || s.cascade == nil || s.resolver == nil || notif == nil {
+		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), CascadeAttemptBudget)
 	defer cancel()
 
 	targetHubs, err := s.resolveAudience(ctx, notif.AudienceType, notif.AudienceIDs)
 	if err != nil {
-		// Log but do not propagate — async fire-and-forget.
 		fmt.Printf("[notification] dispatchCascade: resolve audience failed for %s: %v\n", notif.ID, err)
-		return
+		return err
 	}
 	if len(targetHubs) == 0 {
-		return
+		return nil
 	}
 
-	_ = s.cascade.DispatchToHubs(ctx, notif, targetHubs)
+	return s.cascade.DispatchToHubs(ctx, notif, targetHubs)
 }
 
 // dispatchRevoke resolves target Hubs and sends revoke signals asynchronously.
@@ -307,7 +511,7 @@ func (s *Service) dispatchRevoke(notif *Notification) {
 	if s == nil || s.cascade == nil || s.resolver == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), CascadeAttemptBudget)
 	defer cancel()
 
 	targetHubs, err := s.resolveAudience(ctx, notif.AudienceType, notif.AudienceIDs)
