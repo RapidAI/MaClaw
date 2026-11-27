@@ -1498,7 +1498,7 @@ func powershellAssignmentTarget(token string) bool {
 		return true
 	}
 	if strings.HasPrefix(token, "[") {
-		end := strings.IndexByte(token, ']')
+		end := strings.LastIndexByte(token, ']')
 		if end > 1 && end+1 < len(token) {
 			return powershellAssignmentTarget(token[end+1:])
 		}
