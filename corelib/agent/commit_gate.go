@@ -1271,7 +1271,11 @@ func argvPushesGitOnce(tokens []string, depth int) bool {
 	}
 	prepared := flattenPowerShellArrays(stripEnvAssignments(tokens))
 	invoked := len(prepared) > 0 && (prepared[0] == "&" || prepared[0] == ".")
-	tokens = foldPowerShellArgs(stripCallOperators(prepared))
+	tokens = stripCallOperators(prepared)
+	if !invoked {
+		tokens = splitPowerShellAssignment(tokens)
+	}
+	tokens = foldPowerShellArgs(tokens)
 	if len(tokens) == 0 || strings.HasPrefix(tokens[0], "#") {
 		return false
 	}
@@ -1423,16 +1427,66 @@ func skipPowerShellValue(tokens []string) ([]string, bool) {
 	return nil, false
 }
 
-// skipPowerShellAssignment drops $name = value. PowerShell assignment is its
-// own statement, so the words after the value are the next command. A call
-// such as & $git = push is not an assignment and stays on the caller path.
-// The value may be several words ($a = New-Item -Force), so a later command
-// is still scanned by expressionTailPushes.
+// skipPowerShellAssignment drops $name = value, $name += value, and
+// [type]$name = value. PowerShell runs that value, then the words after it
+// are the next command. A call such as & $git = push is not an assignment
+// and stays on the caller path. git = push is a git argument, not an
+// assignment. The value may be several words ($a = New-Item -Force), so a
+// later command is still scanned by expressionTailPushes.
+// splitPowerShellAssignment separates forms the shell tokenizer keeps
+// together: $x+=git, and [int] $n = git. Comparison tokens are left alone.
+func splitPowerShellAssignment(tokens []string) []string {
+	if len(tokens) == 0 {
+		return tokens
+	}
+	if op := gluedPowerShellAssignmentOp(tokens[0]); op != "" && op != tokens[0] {
+		target := strings.TrimSuffix(tokens[0], op)
+		if powershellAssignmentTarget(target) {
+			out := make([]string, 0, len(tokens)+2)
+			out = append(out, target, op)
+			return append(out, tokens[1:]...)
+		}
+	}
+	if len(tokens) >= 3 && powershellAssignmentOp(tokens[2]) && strings.HasPrefix(tokens[0], "[") && strings.HasSuffix(tokens[0], "]") && powershellAssignmentTarget(tokens[1]) {
+		out := make([]string, 0, len(tokens))
+		out = append(out, tokens[0]+tokens[1], tokens[2])
+		return append(out, tokens[3:]...)
+	}
+	return tokens
+}
+
 func skipPowerShellAssignment(tokens []string) ([]string, bool) {
-	if len(tokens) < 2 || tokens[1] != "=" || !powershellAssignmentTarget(tokens[0]) {
+	if len(tokens) < 2 {
+		return nil, false
+	}
+	if op := gluedPowerShellAssignmentOp(tokens[0]); op != "" {
+		if !powershellAssignmentTarget(strings.TrimSuffix(tokens[0], op)) {
+			return nil, false
+		}
+		return tokens[1:], true
+	}
+	if !powershellAssignmentOp(tokens[1]) || !powershellAssignmentTarget(tokens[0]) {
 		return nil, false
 	}
 	return tokens[2:], true
+}
+
+func gluedPowerShellAssignmentOp(token string) string {
+	for _, op := range []string{"+=", "-=", "*=", "/=", "%=", "="} {
+		if strings.HasSuffix(token, op) {
+			return op
+		}
+	}
+	return ""
+}
+
+func powershellAssignmentOp(token string) bool {
+	switch token {
+	case "=", "+=", "-=", "*=", "/=", "%=":
+		return true
+	default:
+		return false
+	}
 }
 
 func powershellAssignmentTarget(token string) bool {
@@ -1442,6 +1496,12 @@ func powershellAssignmentTarget(token string) bool {
 	}
 	if strings.HasPrefix(token, "$") || strings.HasPrefix(token, "@") {
 		return true
+	}
+	if strings.HasPrefix(token, "[") {
+		end := strings.IndexByte(token, ']')
+		if end > 1 && end+1 < len(token) {
+			return powershellAssignmentTarget(token[end+1:])
+		}
 	}
 	return len(token) >= 3 && token[0] == '%' && strings.Contains(token[1:], "%")
 }
@@ -4224,6 +4284,11 @@ func stripEnvAssignments(args []string) []string {
 	i := 0
 	for i < len(args) {
 		arg := args[i]
+		// $x+=git is a PowerShell assignment, not NAME=value. Leaving it here
+		// lets the assignment scan see the command on the right.
+		if powershellAssignmentTarget(arg) {
+			break
+		}
 		eq := strings.IndexByte(arg, '=')
 		if eq <= 0 || strings.HasPrefix(arg, "-") || strings.ContainsAny(arg[:eq], "/\\") {
 			break
