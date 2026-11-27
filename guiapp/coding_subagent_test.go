@@ -7375,6 +7375,52 @@ func TestConvertUnquotedAndAndForPowerShellPreservesQuotedText(t *testing.T) {
 	}
 }
 
+func TestKeepCodingPowerShellPipeReadersAddsWait(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{
+			name:    "select first gets wait",
+			command: `python -c "print(1)" | Select-Object -First 2`,
+			want:    `python -c "print(1)" | Select-Object -First 2 -Wait`,
+		},
+		{
+			name:    "existing wait is kept once",
+			command: `dir | Select-Object -First 5 -Wait`,
+			want:    `dir | Select-Object -First 5 -Wait`,
+		},
+		{
+			name:    "colon form gets wait",
+			command: `dir | Select-Object -First:3`,
+			want:    `dir | Select-Object -First:3 -Wait`,
+		},
+		{
+			name:    "property selection untouched",
+			command: `dir | Select-Object Name,Length`,
+			want:    `dir | Select-Object Name,Length`,
+		},
+		{
+			name:    "array slice is clamped",
+			command: `$lines[0..2]`,
+			want:    `$lines[Math]::Min(2, $_.Count - 1)]`,
+		},
+		{
+			name:    "plain index untouched",
+			command: `$lines[0]`,
+			want:    `$lines[0]`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := keepCodingPowerShellPipeReaders(tc.command); got != tc.want {
+				t.Fatalf("keepCodingPowerShellPipeReaders(%q) = %q, want %q", tc.command, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHasUnquotedWindowsCmdSyntax(t *testing.T) {
 	cases := []struct {
 		command string
@@ -7822,6 +7868,37 @@ func TestExecuteCodingBashWindowsPipedNativeNonZeroFails(t *testing.T) {
 
 	if result.Kind != codingCommandResultExitError || result.ExitCode != 7 {
 		t.Fatalf("piped native non-zero should fail with native exit code, got %#v", result)
+	}
+}
+
+func TestExecuteCodingBashWindowsEarlyPipelineStopSucceeds(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell pipeline stop behavior is Windows-specific")
+	}
+
+	result := executeCodingBash(map[string]interface{}{
+		"command": `python -c "import sys; sys.stdout.write('line\n'*40000)" | Select-Object -First 2`,
+	}, nil)
+
+	if result.Kind != codingCommandResultOK || result.ExitCode != 0 {
+		t.Fatalf("early pipeline stop of a successful writer must not fail, got %#v", result)
+	}
+	if !strings.Contains(result.Text, "line") {
+		t.Fatalf("early pipeline stop dropped the kept lines: %q", result.Text)
+	}
+}
+
+func TestExecuteCodingBashWindowsNativeExitMinusOneFails(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell native exit behavior is Windows-specific")
+	}
+
+	result := executeCodingBash(map[string]interface{}{
+		"command": `cmd /c exit -1`,
+	}, nil)
+
+	if result.Kind != codingCommandResultExitError || result.ExitCode == 0 {
+		t.Fatalf("a completed native exit of -1 must still fail, got %#v", result)
 	}
 }
 

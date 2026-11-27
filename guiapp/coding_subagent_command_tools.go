@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -302,6 +303,7 @@ func windowsCodingBashInvocation(command string) (string, []string) {
 	// compile plus a leftover hello.exe look like success. Keep short-circuit.
 	psCommand := convertUnquotedAndAndForPowerShell(command)
 	psCommand = ensurePowerShellCallOperator(psCommand)
+	psCommand = keepCodingPowerShellPipeReaders(psCommand)
 	// Wrap the command so Go observes the real command result. Native
 	// tools often write progress to stderr even when they exit 0, while
 	// PowerShell cmdlet errors can be hidden by 2>&1 pipelines. The wrapper
@@ -529,6 +531,57 @@ func quotedPowerShellExecutable(command string) bool {
 		return true
 	}
 	return strings.ContainsAny(token, `\/`)
+}
+
+// windowsCodingPipeConsumerWaitPatterns turn the early exit of a truncating
+// pipeline consumer into a full read. `Select-Object -First N` and the array
+// slice `[0..N]` stop the pipeline once they have N objects, which kills
+// the upstream native command and leaves $LASTEXITCODE at -1 even when the
+// command itself succeeded. -Wait keeps the consumer reading so the native
+// command ends on its own and reports its real exit status.
+var windowsCodingPipeConsumerWaitPatterns = []struct {
+	pattern *regexp.Regexp
+	fix     func(match []string) string
+	// alreadyApplied reports that the command already carries this rule's
+	// rewriting, so it must not be applied a second time.
+	alreadyApplied func(command string) bool
+}{
+	{
+		pattern: regexp.MustCompile(`(?i)(\bSelect-Object\b[^|;\n]*?-First(?:\s+|:)\d+)(\s|$)`),
+		fix: func(match []string) string {
+			return match[1] + " -Wait" + match[2]
+		},
+		// Already waiting: -Wait follows the matched tail, so the match
+		// itself never contains it. Rewriting again would repeat the switch.
+		alreadyApplied: func(command string) bool {
+			return regexp.MustCompile(`(?i)(\bSelect-Object\b[^|;\n]*?-First(?:\s+|:)\d+)\s-Wait\b`).MatchString(command)
+		},
+	},
+	{
+		pattern: regexp.MustCompile(`(\[)\s*(\d+)\s*\.\.\s*(\d+)\s*(\])`),
+		fix: func(match []string) string {
+			end, err := strconv.Atoi(match[3])
+			if err != nil {
+				return match[0]
+			}
+			return fmt.Sprintf("[Math]::Min(%d, $_.Count - 1)]", end)
+		},
+	},
+}
+
+// keepCodingPowerShellPipeReaders makes a truncating pipeline consumer read
+// the whole stream. Callers keep their own slice policy; this only stops the
+// consumer from aborting a command that was still writing.
+func keepCodingPowerShellPipeReaders(command string) string {
+	for _, rule := range windowsCodingPipeConsumerWaitPatterns {
+		if rule.alreadyApplied != nil && rule.alreadyApplied(command) {
+			continue
+		}
+		command = rule.pattern.ReplaceAllStringFunc(command, func(found string) string {
+			return rule.fix(rule.pattern.FindStringSubmatch(found))
+		})
+	}
+	return command
 }
 
 func wrapCodingPowerShellCommand(psCommand string) string {
