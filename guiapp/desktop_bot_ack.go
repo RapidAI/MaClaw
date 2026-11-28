@@ -63,7 +63,7 @@ type DesktopBotStatus struct {
 }
 
 const desktopBotAckSystem = `You are one desktop bot speaking to the person who owns you, in a chat. Write the single line you say right now. The work has already started; this line only tells them.
-Speak as a person would: short (one or two sentences, at most about 40 Chinese characters or 25 English words), natural, warm but plain. No customer-service phrases, no exclamation-mark enthusiasm, no emoji, no lists, no markdown. Do not repeat their message back. Do not ask them to confirm.
+Speak as a person would: short (one or two sentences, at most about 40 Chinese characters or 25 English words), natural, warm but plain. No customer-service phrases, no exclamation-mark enthusiasm, no emoji, no lists, no markdown. Do not repeat their message back. Do not ask them to confirm and do not ask for more information: the work has already started, so state the default or assumption being used instead.
 Use the kept persona's name and tone when one is given.
 kind accept: you are their working partner and have just taken this job; the work is starting. In your own words, show you understood it: what they want to end up with, the one or two requirements that matter from the goal and work card, and briefly how you will go about it. Do not copy or reorder their words, do not claim any part is done yet, and do not add goals they did not ask for. When an assumption, options or files are given, include them.
 kind supplement: they added an instruction or material to the job you are already doing (named under job already running) and that job keeps going. As their working partner, show you understood: name that job in a few words and say concretely how this changes what you will do in it (what you will now use, do differently or stop doing). Use only what their message and the running job say; do not invent requirements, do not claim it is already done, and never answer with a bare 好的/收到/我按这个改. Your line is shown after a fixed opening that already says it was added (加进去了：), so start directly with the job.
@@ -251,12 +251,19 @@ func (a *App) raceDesktopBotAck(parent context.Context, req DesktopBotAckRequest
 		err  error
 	}
 	own, fast := desktopBotAckModels(a)
-	racers := []func() (string, error){
-		func() (string, error) { return a.desktopBotAckAttemptWith(ctx, req, 0, nil, own) },
-		func() (string, error) { return a.desktopBotAckAttemptWith(ctx, req, 2, nil, corelib.MaclawLLMConfig{}) },
+	specified := a.desktopBotSpecifiedRoleOverride(maclawLLMRoleForeground)
+	measured := own
+	if specified != nil {
+		measured = *specified
 	}
-	if fast != nil {
-		racers = append(racers, func() (string, error) { return a.desktopBotAckAttemptWith(ctx, req, 0, fast, *fast) })
+	racers := []func() (string, error){
+		func() (string, error) { return a.desktopBotAckAttemptWith(ctx, req, 0, specified, measured) },
+	}
+	if specified == nil {
+		racers = append(racers, func() (string, error) { return a.desktopBotAckAttemptWith(ctx, req, 2, nil, corelib.MaclawLLMConfig{}) })
+		if fast != nil {
+			racers = append(racers, func() (string, error) { return a.desktopBotAckAttemptWith(ctx, req, 0, fast, *fast) })
+		}
 	}
 	out := make(chan result, len(racers))
 	for _, run := range racers {
@@ -372,6 +379,10 @@ func (a *App) writeDesktopBotAckInOrder(parent context.Context, req DesktopBotAc
 			}
 		}
 		ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutSec+2)*time.Second)
+		override := a.desktopBotSpecifiedRoleOverride(maclawLLMRoleForeground)
+		if attempt.hub {
+			override = nil
+		}
 		raw, err := desktopBotUnderstandLLM(ctx, a, desktopBotUnderstandRequest{
 			systemPrompt: desktopBotAckSystemFor(req.Kind) + desktopBotStyleParts() + desktopBotAckStyleNote,
 			userPrompt:   user,
@@ -379,6 +390,7 @@ func (a *App) writeDesktopBotAckInOrder(parent context.Context, req DesktopBotAc
 			fallback:     attempt.fallback,
 			hub:          attempt.hub,
 			tag:          "desktop-bot-ack",
+			override:     override,
 		})
 		cancel()
 		if err == nil {
@@ -472,6 +484,9 @@ func desktopBotAckLine(raw string, req DesktopBotAckRequest) string {
 		line = strings.TrimSpace(line[:i])
 	}
 	if line == "" || strings.HasPrefix(line, "{") || strings.HasPrefix(line, "[") || utf8.RuneCountInString(line) > 160 {
+		return ""
+	}
+	if desktopBotFirstReplyKind(req.Kind) && desktopBotRunningLineAsksForInput(line) {
 		return ""
 	}
 	words := desktopBotWordsBeforeMaterials(req.Message)

@@ -78,6 +78,18 @@ func formatShopReadback(rb ShopReadback) string {
 	if len(rb.Tracking) > 0 {
 		fmt.Fprintf(&b, ", %d tracking numbers", len(rb.Tracking))
 	}
+	if len(rb.OrderIDs) > 0 {
+		fmt.Fprintf(&b, ", order %s", strings.Join(rb.OrderIDs, "/"))
+	}
+	if rb.Address != "" {
+		fmt.Fprintf(&b, ", address %s", rb.Address)
+	}
+	if rb.ItemCount > 0 {
+		fmt.Fprintf(&b, ", %d items", rb.ItemCount)
+	}
+	if rb.PaymentStatus != "" {
+		fmt.Fprintf(&b, ", %s", rb.PaymentStatus)
+	}
 	if len(rb.Lines) == 0 && len(rb.Tracking) == 0 {
 		b.WriteString(" (nothing recognized; use browser_observe to read the page)")
 	}

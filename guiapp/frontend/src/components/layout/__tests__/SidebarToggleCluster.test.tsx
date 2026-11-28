@@ -48,6 +48,16 @@ describe('SidebarToggleCluster', () => {
         expect(onToggleRail).toHaveBeenCalledTimes(1);
     });
 
+    it('orders the toggles like the on-screen columns: nav rail (leftmost) first, task pane second', () => {
+        render(<SidebarToggleCluster {...baseProps} />);
+
+        const railToggle = screen.getByTestId('nav-rail-toggle');
+        const paneToggle = screen.getByTestId('task-pane-toggle');
+        expect(
+            Boolean(railToggle.compareDocumentPosition(paneToggle) & Node.DOCUMENT_POSITION_FOLLOWING),
+        ).toBe(true);
+    });
+
     it('hides the pane toggle off the AI workbench tab (rail-only surfaces)', () => {
         render(<SidebarToggleCluster {...baseProps} showPaneToggle={false} />);
 

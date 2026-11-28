@@ -163,4 +163,12 @@ func TestPageScriptNamesCheckout(t *testing.T) {
 	if !pageScriptNamesCheckout(`await click("支付方式"); await click("立即支付")`) {
 		t.Fatal("a later pay click must still be caught")
 	}
+	if pageScriptNamesCheckout("var t=document.body.innerText; var has=t.includes('提交订单'); document.querySelector('#publish').click()") {
+		t.Fatal("reading order text must not poison an unrelated publish click")
+	}
+	if pageScriptNamesCheckout(`var t=document.body.innerText.replace(/\s+/g,' ');
+if(t.includes('提交订单')) console.log(t)
+document.querySelector('#publish').click()`) {
+		t.Fatal("a read-only checkout string in one statement must not poison another click")
+	}
 }

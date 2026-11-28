@@ -24,11 +24,15 @@ type ShopTracking struct {
 
 // ShopReadback is a read-only summary of what a shopping page shows.
 type ShopReadback struct {
-	Site     string         `json:"site"`
-	Kind     string         `json:"kind"` // cart | orders | tracking | page
-	Lines    []ShopLine     `json:"lines,omitempty"`
-	Total    string         `json:"total,omitempty"`
-	Tracking []ShopTracking `json:"tracking,omitempty"`
+	Site          string         `json:"site"`
+	Kind          string         `json:"kind"` // cart | orders | tracking | page
+	Lines         []ShopLine     `json:"lines,omitempty"`
+	Total         string         `json:"total,omitempty"`
+	Tracking      []ShopTracking `json:"tracking,omitempty"`
+	Address       string         `json:"address,omitempty"`
+	OrderIDs      []string       `json:"order_ids,omitempty"`
+	ItemCount     int            `json:"item_count,omitempty"`
+	PaymentStatus string         `json:"payment_status,omitempty"`
 }
 
 // ShopSite maps a URL to taobao | jd | amazon | "" (unknown).
@@ -56,7 +60,7 @@ func shopKind(raw string, text string) string {
 		return "cart"
 	case strings.Contains(l, "logistics") || strings.Contains(l, "progress-tracker") || strings.Contains(l, "track"):
 		return "tracking"
-	case strings.Contains(l, "order") || strings.Contains(l, "bought") || strings.Contains(l, "your-orders"):
+	case strings.Contains(l, "order") || strings.Contains(l, "bought") || strings.Contains(l, "your-orders") || strings.Contains(l, "paysuccess") || strings.Contains(l, "order-success"):
 		return "orders"
 	case strings.Contains(text, "购物车") || strings.Contains(text, "Shopping Cart"):
 		return "cart"
@@ -65,24 +69,68 @@ func shopKind(raw string, text string) string {
 }
 
 var (
-	shopPriceRe   = regexp.MustCompile(`(?:[¥￥]|US\$|\$|CNY\s?|RMB\s?)\s?\d[\d,]*(?:\.\d{1,2})?`)
-	shopQtyRe     = regexp.MustCompile(`(?i)(?:[x×]\s?(\d{1,3})\b|数量[:：]?\s?(\d{1,3})|qty[:：]?\s?(\d{1,3}))`)
-	shopTotalRe   = regexp.MustCompile(`(?i)(?:合计|总计|实付款|应付总额|实付|subtotal|order total|total)[^\d¥￥$]{0,12}((?:[¥￥]|US\$|\$)\s?\d[\d,]*(?:\.\d{1,2})?)`)
-	shopTrackRe   = regexp.MustCompile(`(?i)(?:运单号|快递单号|物流单号|tracking (?:id|number)|tracking#?)[:：\s]*([A-Z0-9]{8,30})`)
-	shopCarrierRe = regexp.MustCompile(`(顺丰|中通|圆通|申通|韵达|京东物流|极兔|邮政|EMS|UPS|FedEx|USPS|DHL|Amazon Logistics)`)
-	shopStatusRe  = regexp.MustCompile(`(?i)(待付款|待发货|已发货|待收货|运输中|派送中|已签收|交易成功|已取消|Delivered|Shipped|Out for delivery|Arriving [A-Za-z]+ ?\d*|Cancelled)`)
+	shopPriceRe     = regexp.MustCompile(`(?:[¥￥]|US\$|\$|CNY\s?|RMB\s?)\s?\d[\d,]*(?:\.\d{1,2})?`)
+	shopQtyRe       = regexp.MustCompile(`(?i)(?:[x×]\s?(\d{1,3})\b|数量[:：]?\s?(\d{1,3})|qty[:：]?\s?(\d{1,3}))`)
+	shopTotalRe     = regexp.MustCompile(`(?i)(?:合计|总计|实付款|应付总额|实付|subtotal|order total|total)[^\d¥￥$]{0,12}((?:[¥￥]|US\$|\$)\s?\d[\d,]*(?:\.\d{1,2})?)`)
+	shopTrackRe     = regexp.MustCompile(`(?i)(?:运单号|快递单号|物流单号|tracking (?:id|number)|tracking#?)[:：\s]*([A-Z0-9]{8,30})`)
+	shopCarrierRe   = regexp.MustCompile(`(顺丰|中通|圆通|申通|韵达|京东物流|极兔|邮政|EMS|UPS|FedEx|USPS|DHL|Amazon Logistics)`)
+	shopStatusRe    = regexp.MustCompile(`(?i)(待付款|待发货|已发货|待收货|运输中|派送中|已签收|交易成功|已取消|Delivered|Shipped|Out for delivery|Arriving [A-Za-z]+ ?\d*|Cancelled)`)
+	shopAddressRe   = regexp.MustCompile(`(?i)(?:送至|收货地址|收货人|配送至|deliver(?:y)? to|shipping address)\s*[:：]?\s*([^\n]{4,160})`)
+	shopItemCountRe = regexp.MustCompile(`共\s*(\d{1,3})\s*件`)
+	shopOrderTextRe = regexp.MustCompile(`(?i)(?:订单号|order(?:\s*id|\s*number)?)\s*[:：#]?\s*([A-Z0-9]{8,32})`)
+	shopOrderURLRe  = regexp.MustCompile(`(?i)(?:orderid|order_id|ordernumber|order_number)=([A-Za-z0-9_-]{6,40})`)
 )
+
+func noteShopOrderID(seen map[string]bool, ids *[]string, id string) {
+	id = strings.Trim(strings.TrimSpace(id), "\"'，,。;；")
+	if id == "" || seen[id] {
+		return
+	}
+	seen[id] = true
+	*ids = append(*ids, id)
+}
+
+func shopPaymentStatus(text string) string {
+	switch {
+	case strings.Contains(text, "支付成功") || strings.Contains(text, "付款成功"):
+		return "支付成功"
+	case strings.Contains(text, "下单成功") || strings.Contains(text, "订单提交成功"):
+		return "下单成功"
+	case strings.Contains(text, "等待发货") || strings.Contains(text, "待发货"):
+		return "待发货"
+	default:
+		return ""
+	}
+}
 
 // ParseShopPage extracts cart lines, totals and tracking from page text.
 // It is best effort: each line is the nearest non-price text above a price.
 func ParseShopPage(rawURL, text string) ShopReadback {
 	rb := ShopReadback{Site: ShopSite(rawURL), Kind: shopKind(rawURL, text)}
+	rb.PaymentStatus = shopPaymentStatus(text)
+	seenIDs := map[string]bool{}
+	for _, m := range shopOrderURLRe.FindAllStringSubmatch(rawURL, -1) {
+		noteShopOrderID(seenIDs, &rb.OrderIDs, m[1])
+	}
 	rows := strings.Split(text, "\n")
 	lastTitle := ""
 	for i, row := range rows {
 		row = strings.TrimSpace(row)
 		if row == "" {
 			continue
+		}
+		if rb.Address == "" {
+			if m := shopAddressRe.FindStringSubmatch(row); m != nil {
+				rb.Address = strings.TrimSpace(m[1])
+			}
+		}
+		if rb.ItemCount == 0 {
+			if m := shopItemCountRe.FindStringSubmatch(row); m != nil {
+				_, _ = fmt.Sscanf(m[1], "%d", &rb.ItemCount)
+			}
+		}
+		for _, m := range shopOrderTextRe.FindAllStringSubmatch(row, -1) {
+			noteShopOrderID(seenIDs, &rb.OrderIDs, m[1])
 		}
 		if shopTotalRe.MatchString(row) {
 			if m := shopTotalRe.FindStringSubmatch(row); m != nil {

@@ -1217,3 +1217,329 @@ func userReminderCount(t *testing.T, body []byte) int {
 	}
 	return n
 }
+
+// The diagnostic replay is the sentence openCodeFreeConversation writes for a
+// host extra. The model copied it, including a trailing tag, and the turn
+// stopped. Reading it back is the same execute delivery the channel already
+// runs, so the retrieval gate sees memory_recall.
+func TestOpenCodeFreeHostReplayBecomesMemoryRecall(t *testing.T) {
+	const leaked = "execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"查看 dgx spark服务器状态\"})\n</rfl:parameter>"
+	msg := &Message{Role: "assistant", Content: leaked}
+	finish, changed := adoptLeakedToolCallsWithParser(msg, msg.Content, parseOpenCodeFreeContentToolCalls)
+	if !changed || finish != "tool_calls" || msg.Content != "" || len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Function.Name != "execute" {
+		t.Fatalf("adopt finish=%q changed=%v content=%q calls=%+v", finish, changed, msg.Content, msg.ToolCalls)
+	}
+	presented := PresentOpenCodeFreeMessage([]string{"memory_recall", "knowledge_search", "web_search"}, *msg)
+	if presented.Content != "" || len(presented.ToolCalls) != 1 || presented.ToolCalls[0].Function.Name != "memory_recall" {
+		t.Fatalf("presented = content=%q calls=%+v", presented.Content, presented.ToolCalls)
+	}
+	if got := openCodeFreeArgs(t, presented.ToolCalls[0].Function.Arguments)["query"]; got != "查看 dgx spark服务器状态" {
+		t.Fatalf("query = %#v", got)
+	}
+
+	withoutTag := "execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"查看 dgx spark服务器状态\"})"
+	again := PresentOpenCodeFreeMessage([]string{"memory_recall"}, mustAdoptOpenCodeFreeReplay(t, withoutTag))
+	if len(again.ToolCalls) != 1 || again.ToolCalls[0].Function.Name != "memory_recall" {
+		t.Fatalf("untagged = %+v", again.ToolCalls)
+	}
+
+	joined := "execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"查看 dgx spark服务器状态\"})\nexecute return MACLAW_CALL(\"knowledge_search\", {\"query\":\"dgx\"})"
+	both := PresentOpenCodeFreeMessage([]string{"memory_recall", "knowledge_search"}, mustAdoptOpenCodeFreeReplay(t, joined))
+	if len(both.ToolCalls) != 2 || both.ToolCalls[0].Function.Name != "memory_recall" || both.ToolCalls[1].Function.Name != "knowledge_search" {
+		t.Fatalf("joined replay = %+v", both.ToolCalls)
+	}
+
+	toolsForm := "tools.memory_recall({\"query\":\"查看 dgx spark服务器状态\"})"
+	fromTools := PresentOpenCodeFreeMessage([]string{"memory_recall"}, mustAdoptOpenCodeFreeReplay(t, toolsForm))
+	if len(fromTools.ToolCalls) != 1 || fromTools.ToolCalls[0].Function.Name != "memory_recall" {
+		t.Fatalf("tools form = %+v", fromTools.ToolCalls)
+	}
+
+	partialTag := "execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"天气\"})\n</rfl"
+	partial := PresentOpenCodeFreeMessage([]string{"memory_recall"}, mustAdoptOpenCodeFreeReplay(t, partialTag))
+	if len(partial.ToolCalls) != 1 || partial.ToolCalls[0].Function.Name != "memory_recall" {
+		t.Fatalf("partial tag = %+v", partial.ToolCalls)
+	}
+	if got := openCodeFreeArgs(t, partial.ToolCalls[0].Function.Arguments)["query"]; got != "天气" {
+		t.Fatalf("partial tag query = %#v", got)
+	}
+}
+
+func mustAdoptOpenCodeFreeReplay(t *testing.T, content string) Message {
+	t.Helper()
+	msg := &Message{Role: "assistant", Content: content}
+	finish, changed := adoptLeakedToolCallsWithParser(msg, msg.Content, parseOpenCodeFreeContentToolCalls)
+	if !changed || finish != "tool_calls" || msg.Content != "" {
+		t.Fatalf("adopt %q finish=%q changed=%v content=%q calls=%+v", content, finish, changed, msg.Content, msg.ToolCalls)
+	}
+	return *msg
+}
+
+func TestOpenCodeFreeHostReplayMentionStaysText(t *testing.T) {
+	prose := "请使用 return MACLAW_CALL(\"memory_recall\", {\"query\":\"天气\"}) 这种形式。"
+	calls, malformed := parseOpenCodeFreeContentToolCalls(prose)
+	if malformed || len(calls) != 0 {
+		t.Fatalf("prose mention calls=%#v malformed=%v", calls, malformed)
+	}
+	withAnswer := "我先看一下。\nexecute return MACLAW_CALL(\"memory_recall\", {\"query\":\"查看 dgx spark服务器状态\"})"
+	calls, malformed = parseOpenCodeFreeContentToolCalls(withAnswer)
+	if malformed || len(calls) != 0 {
+		t.Fatalf("answer plus replay calls=%#v malformed=%v", calls, malformed)
+	}
+	quoted := "const example = \"return MACLAW_CALL(\\\"memory_recall\\\", {\\\"query\\\":\\\"天气\\\"})\""
+	calls, malformed = parseOpenCodeFreeContentToolCalls(quoted)
+	if malformed || len(calls) != 0 {
+		t.Fatalf("quoted example calls=%#v malformed=%v", calls, malformed)
+	}
+	glued := "executereturn MACLAW_CALL(\"memory_recall\", {\"query\":\"天气\"})"
+	calls, malformed = parseOpenCodeFreeContentToolCalls(glued)
+	if malformed || len(calls) != 0 {
+		t.Fatalf("glued word calls=%#v malformed=%v", calls, malformed)
+	}
+	dots := "return MACLAW_CALL(\"goal\", {\"understanding\":\"...\"})"
+	calls, malformed = parseOpenCodeFreeContentToolCalls(dots)
+	if malformed || len(calls) != 0 {
+		t.Fatalf("dotted example calls=%#v malformed=%v", calls, malformed)
+	}
+	returns := "execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"天气\"}) returns the saved value"
+	calls, malformed = parseOpenCodeFreeContentToolCalls(returns)
+	if malformed || len(calls) != 0 {
+		t.Fatalf("returns sentence calls=%#v malformed=%v", calls, malformed)
+	}
+	genericCalls, genericMalformed := ParseContentToolCallsDetailed(prose)
+	if genericMalformed || len(genericCalls) != 0 {
+		t.Fatalf("generic parser adopted a host replay: %#v %v", genericCalls, genericMalformed)
+	}
+}
+
+func TestOpenCodeFreeBrokenHostReplayIsMalformed(t *testing.T) {
+	cutoff := "execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"x\""
+	calls, malformed := parseOpenCodeFreeContentToolCalls(cutoff)
+	if len(calls) != 0 || !malformed {
+		t.Fatalf("cutoff calls=%#v malformed=%v", calls, malformed)
+	}
+	msg := &Message{Content: cutoff}
+	finish, changed := adoptLeakedToolCallsWithParser(msg, msg.Content, parseOpenCodeFreeContentToolCalls)
+	if !changed || finish != "stop" || msg.Content != MalformedContentToolCallErrorMsg {
+		t.Fatalf("malformed adopt finish=%q changed=%v content=%q", finish, changed, msg.Content)
+	}
+	mentioned := "请使用 execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"x\""
+	calls, malformed = parseOpenCodeFreeContentToolCalls(mentioned)
+	if malformed || len(calls) != 0 {
+		t.Fatalf("cutoff inside a sentence calls=%#v malformed=%v", calls, malformed)
+	}
+	// A quote that runs onto the next line is the answer continuing.
+	continued := "execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"查看\n然后说明状态。"
+	calls, malformed = parseOpenCodeFreeContentToolCalls(continued)
+	if malformed || len(calls) != 0 {
+		t.Fatalf("newline cutoff calls=%#v malformed=%v", calls, malformed)
+	}
+	toolsCutoff := "tools.memory_recall({\"query\":\"x\""
+	calls, malformed = parseOpenCodeFreeContentToolCalls(toolsCutoff)
+	if len(calls) != 0 || !malformed {
+		t.Fatalf("tools cutoff calls=%#v malformed=%v", calls, malformed)
+	}
+	toolsMention := "请使用 tools.memory_recall({\"query\":\"x\""
+	calls, malformed = parseOpenCodeFreeContentToolCalls(toolsMention)
+	if malformed || len(calls) != 0 {
+		t.Fatalf("tools cutoff inside a sentence calls=%#v malformed=%v", calls, malformed)
+	}
+	official := "tools.shell({\"command\":\"ls\""
+	calls, malformed = parseOpenCodeFreeContentToolCalls(official)
+	if malformed || len(calls) != 0 {
+		t.Fatalf("official tools cutoff calls=%#v malformed=%v", calls, malformed)
+	}
+}
+
+func TestOpenCodeFreeHostReplayDoesNotStream(t *testing.T) {
+	const leaked = "execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"查看 dgx spark服务器状态\"})\n</rfl:parameter>"
+	streamed, msg, finish := openCodeFreeStreamedReplay(t, leaked)
+	if streamed != "" {
+		t.Fatalf("replay streamed: %q", streamed)
+	}
+	if finish != "tool_calls" || msg.Content != "" || len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Function.Name != "execute" {
+		t.Fatalf("sse finish=%q content=%q calls=%+v", finish, msg.Content, msg.ToolCalls)
+	}
+	presented := PresentOpenCodeFreeMessage([]string{"memory_recall"}, msg)
+	if len(presented.ToolCalls) != 1 || presented.ToolCalls[0].Function.Name != "memory_recall" {
+		t.Fatalf("sse presented = %+v", presented.ToolCalls)
+	}
+	if args := openCodeFreeArgs(t, presented.ToolCalls[0].Function.Arguments)["query"]; args != "查看 dgx spark服务器状态" {
+		t.Fatalf("sse query = %#v", args)
+	}
+
+	chunked, chunkMsg, chunkFinish := openCodeFreeStreamedReplay(t, "execute return ", "MACLAW_CALL(\"memory_recall\", {\"query\":\"查看 dgx spark服务器状态\"})\n</rfl:parameter>")
+	if chunked != "" || chunkFinish != "tool_calls" || chunkMsg.Content != "" || len(chunkMsg.ToolCalls) != 1 {
+		t.Fatalf("chunked stream=%q finish=%q content=%q calls=%+v", chunked, chunkFinish, chunkMsg.Content, chunkMsg.ToolCalls)
+	}
+
+	prose := "请使用 return MACLAW_CALL(\"memory_recall\", {\"query\":\"天气\"}) 这种形式。"
+	shown, proseMsg, proseFinish := openCodeFreeStreamedReplay(t, prose)
+	if proseFinish != "stop" || proseMsg.Content != prose || len(proseMsg.ToolCalls) != 0 || shown != prose {
+		t.Fatalf("prose stream=%q finish=%q content=%q calls=%+v", shown, proseFinish, proseMsg.Content, proseMsg.ToolCalls)
+	}
+
+	cutoff := "execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"x\""
+	cutoffStream, cutoffMsg, cutoffFinish := openCodeFreeStreamedReplay(t, cutoff)
+	if strings.Contains(cutoffStream, "MACLAW_CALL") || strings.Contains(cutoffStream, "query") {
+		t.Fatalf("cutoff streamed: %q", cutoffStream)
+	}
+	if cutoffFinish != "stop" || cutoffMsg.Content != MalformedContentToolCallErrorMsg || len(cutoffMsg.ToolCalls) != 0 {
+		t.Fatalf("cutoff sse finish=%q content=%q calls=%+v", cutoffFinish, cutoffMsg.Content, cutoffMsg.ToolCalls)
+	}
+
+	ordinary := "please return the file"
+	visible, hold, suppress := holdContentToolCallStreamMatching(ordinary, false, openCodeFreeCompactToolName, false)
+	if suppress || hold != "" || visible != ordinary {
+		t.Fatalf("ordinary return visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	bare := "execute"
+	visible, hold, suppress = holdContentToolCallStreamMatching(bare, true, openCodeFreeCompactToolName, false)
+	if suppress || hold != "" || visible != bare {
+		t.Fatalf("bare execute visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	mac := "MAC address is aa:bb"
+	visible, hold, suppress = holdContentToolCallStreamMatching(mac, false, openCodeFreeCompactToolName, false)
+	if suppress || hold != "" || visible != mac {
+		t.Fatalf("MAC address visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	serverMAC := "The server MAC"
+	visible, hold, suppress = holdContentToolCallStreamMatching(serverMAC, false, openCodeFreeCompactToolName, false)
+	if suppress || hold != "" || visible != serverMAC {
+		t.Fatalf("server MAC visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	tokenHeadVis, tokenHead, tokenHeadSuppress, tokenHeadOK := openCodeFreeHostReplayStreamHold("MAC", false, false)
+	if !tokenHeadOK || tokenHeadSuppress || tokenHeadVis != "" || tokenHead != "MAC" {
+		t.Fatalf("token head visible=%q hold=%q suppress=%v ok=%v", tokenHeadVis, tokenHead, tokenHeadSuppress, tokenHeadOK)
+	}
+	execHeadVis, execHead, execHeadSuppress, execHeadOK := openCodeFreeHostReplayStreamHold("execute", false, false)
+	if !execHeadOK || execHeadSuppress || execHeadVis != "" || execHead != "execute" {
+		t.Fatalf("execute head visible=%q hold=%q suppress=%v ok=%v", execHeadVis, execHead, execHeadSuppress, execHeadOK)
+	}
+	pleaseExec := "please execute"
+	visible, hold, suppress = holdContentToolCallStreamMatching(pleaseExec, false, openCodeFreeCompactToolName, false)
+	if suppress || hold != "" || visible != pleaseExec {
+		t.Fatalf("please execute visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	genericVisible, genericHold, genericSuppress := HoldContentToolCallStream(leaked, true)
+	if genericSuppress || genericHold != "" || genericVisible != leaked {
+		t.Fatalf("generic stream hid the replay: visible=%q hold=%q suppress=%v", genericVisible, genericHold, genericSuppress)
+	}
+
+	proseMention := "请使用 return MACLAW_CALL(\"memory_recall\", {\"query\":\"天气\"}) 这种形式。"
+	if _, _, _, ok := openCodeFreeHostReplayStreamHold(proseMention, false, false); ok {
+		t.Fatal("finished mention was held")
+	}
+	heldVis, held, heldSuppress, heldOK := openCodeFreeHostReplayStreamHold(leaked, false, false)
+	if !heldOK || heldSuppress || heldVis != "" || held != leaked {
+		t.Fatalf("pure replay hold visible=%q hold=%q suppress=%v ok=%v", heldVis, held, heldSuppress, heldOK)
+	}
+
+	preface, prefaceMsg, prefaceFinish := openCodeFreeStreamedReplay(t, "我先看一下。\n", "execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"天气\"})")
+	if prefaceFinish != "stop" || len(prefaceMsg.ToolCalls) != 0 || prefaceMsg.Content == "" {
+		t.Fatalf("preface finish=%q content=%q calls=%+v", prefaceFinish, prefaceMsg.Content, prefaceMsg.ToolCalls)
+	}
+	if !strings.Contains(preface, "我先看一下") || !strings.Contains(preface, "MACLAW_CALL") {
+		t.Fatalf("preface stream=%q", preface)
+	}
+	var live strings.Builder
+	liveFilter := newContentToolCallDeltaFilterWithCompactNames(func(delta string) { live.WriteString(delta) }, openCodeFreeCompactToolName)
+	liveFilter.Write("我先看一下。\n")
+	liveFilter.Write("execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"天气\"})")
+	if !strings.Contains(live.String(), "我先看一下") || !strings.Contains(live.String(), "MACLAW_CALL") {
+		t.Fatalf("call after prose stayed buffered: %q", live.String())
+	}
+
+	toolsForm := "tools.memory_recall({\"query\":\"查看 dgx spark服务器状态\"})"
+	toolsStream, toolsMsg, toolsFinish := openCodeFreeStreamedReplay(t, toolsForm)
+	if toolsStream != "" || toolsFinish != "tool_calls" || toolsMsg.Content != "" || len(toolsMsg.ToolCalls) != 1 {
+		t.Fatalf("tools stream=%q finish=%q content=%q calls=%+v", toolsStream, toolsFinish, toolsMsg.Content, toolsMsg.ToolCalls)
+	}
+	toolsPresented := PresentOpenCodeFreeMessage([]string{"memory_recall"}, toolsMsg)
+	if len(toolsPresented.ToolCalls) != 1 || toolsPresented.ToolCalls[0].Function.Name != "memory_recall" {
+		t.Fatalf("tools presented = %+v", toolsPresented.ToolCalls)
+	}
+	if args := openCodeFreeArgs(t, toolsPresented.ToolCalls[0].Function.Arguments)["query"]; args != "查看 dgx spark服务器状态" {
+		t.Fatalf("tools query = %#v", args)
+	}
+
+	splitExec, splitMsg, splitFinish := openCodeFreeStreamedReplay(t, "execute", " return MACLAW_CALL(\"memory_recall\", {\"query\":\"天气\"})")
+	if splitExec != "" || splitFinish != "tool_calls" || splitMsg.Content != "" || len(splitMsg.ToolCalls) != 1 {
+		t.Fatalf("split execute stream=%q finish=%q content=%q calls=%+v", splitExec, splitFinish, splitMsg.Content, splitMsg.ToolCalls)
+	}
+	sentence, sentenceMsg, sentenceFinish := openCodeFreeStreamedReplay(t, "execute", " the plan")
+	if sentenceFinish != "stop" || sentence != "execute the plan" || sentenceMsg.Content != "execute the plan" || len(sentenceMsg.ToolCalls) != 0 {
+		t.Fatalf("execute sentence stream=%q finish=%q content=%q calls=%+v", sentence, sentenceFinish, sentenceMsg.Content, sentenceMsg.ToolCalls)
+	}
+	tagged, taggedMsg, taggedFinish := openCodeFreeStreamedReplay(t, "</rfl:parameter>\n", "execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"天气\"})")
+	if tagged != "" || taggedFinish != "tool_calls" || taggedMsg.Content != "" || len(taggedMsg.ToolCalls) != 1 {
+		t.Fatalf("tag split stream=%q finish=%q content=%q calls=%+v", tagged, taggedFinish, taggedMsg.Content, taggedMsg.ToolCalls)
+	}
+	lines, linesMsg, linesFinish := openCodeFreeStreamedReplay(t, "第一句。", "\n", "第二句。")
+	if linesFinish != "stop" || lines != "第一句。\n第二句。" || linesMsg.Content != lines || len(linesMsg.ToolCalls) != 0 {
+		t.Fatalf("newline stream=%q finish=%q content=%q calls=%+v", lines, linesFinish, linesMsg.Content, linesMsg.ToolCalls)
+	}
+	toolsSplit, toolsSplitMsg, toolsSplitFinish := openCodeFreeStreamedReplay(t, "tools.memory_recall", "({\"query\":\"天气\"})")
+	if toolsSplit != "" || toolsSplitFinish != "tool_calls" || toolsSplitMsg.Content != "" || len(toolsSplitMsg.ToolCalls) != 1 {
+		t.Fatalf("tools split stream=%q finish=%q content=%q calls=%+v", toolsSplit, toolsSplitFinish, toolsSplitMsg.Content, toolsSplitMsg.ToolCalls)
+	}
+
+	partialTag := "execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"天气\"})\n</rfl"
+	partialVis, partialHold, partialSuppress, partialOK := openCodeFreeHostReplayStreamHold(partialTag, false, false)
+	if !partialOK || partialSuppress || partialVis != "" || partialHold != partialTag {
+		t.Fatalf("partial tag hold visible=%q hold=%q suppress=%v ok=%v", partialVis, partialHold, partialSuppress, partialOK)
+	}
+	partialStream, partialMsg, partialFinish := openCodeFreeStreamedReplay(t, partialTag)
+	if partialStream != "" || partialFinish != "tool_calls" || partialMsg.Content != "" || len(partialMsg.ToolCalls) != 1 {
+		t.Fatalf("partial tag stream=%q finish=%q content=%q calls=%+v", partialStream, partialFinish, partialMsg.Content, partialMsg.ToolCalls)
+	}
+	splitTag, splitTagMsg, splitTagFinish := openCodeFreeStreamedReplay(t, "execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"天气\"})\n<", "/rfl:parameter>")
+	if splitTag != "" || splitTagFinish != "tool_calls" || splitTagMsg.Content != "" || len(splitTagMsg.ToolCalls) != 1 {
+		t.Fatalf("split tag stream=%q finish=%q content=%q calls=%+v", splitTag, splitTagFinish, splitTagMsg.Content, splitTagMsg.ToolCalls)
+	}
+	leadTag, leadTagMsg, leadTagFinish := openCodeFreeStreamedReplay(t, "<", "/rfl:parameter>\nexecute return MACLAW_CALL(\"memory_recall\", {\"query\":\"天气\"})")
+	if leadTag != "" || leadTagFinish != "tool_calls" || leadTagMsg.Content != "" || len(leadTagMsg.ToolCalls) != 1 {
+		t.Fatalf("leading tag stream=%q finish=%q content=%q calls=%+v", leadTag, leadTagFinish, leadTagMsg.Content, leadTagMsg.ToolCalls)
+	}
+	word, wordMsg, wordFinish := openCodeFreeStreamedReplay(t, "ex", "ample")
+	if wordFinish != "stop" || word != "example" || wordMsg.Content != "example" || len(wordMsg.ToolCalls) != 0 {
+		t.Fatalf("word prefix stream=%q finish=%q content=%q calls=%+v", word, wordFinish, wordMsg.Content, wordMsg.ToolCalls)
+	}
+	loneMark, loneMarkMsg, loneMarkFinish := openCodeFreeStreamedReplay(t, "<")
+	if loneMarkFinish != "stop" || loneMark != "<" || loneMarkMsg.Content != "<" || len(loneMarkMsg.ToolCalls) != 0 {
+		t.Fatalf("lone mark stream=%q finish=%q content=%q calls=%+v", loneMark, loneMarkFinish, loneMarkMsg.Content, loneMarkMsg.ToolCalls)
+	}
+	returns := "execute return MACLAW_CALL(\"memory_recall\", {\"query\":\"天气\"}) returns the saved value"
+	if _, _, _, ok := openCodeFreeHostReplayStreamHold(returns, false, false); ok {
+		t.Fatal("finished word after a call was held")
+	}
+	toolsCutoff := "tools.memory_recall({\"query\":\"x\""
+	toolsCutoffStream, toolsCutoffMsg, toolsCutoffFinish := openCodeFreeStreamedReplay(t, toolsCutoff)
+	if strings.Contains(toolsCutoffStream, "memory_recall") || strings.Contains(toolsCutoffStream, "query") {
+		t.Fatalf("tools cutoff streamed: %q", toolsCutoffStream)
+	}
+	if toolsCutoffFinish != "stop" || toolsCutoffMsg.Content != MalformedContentToolCallErrorMsg || len(toolsCutoffMsg.ToolCalls) != 0 {
+		t.Fatalf("tools cutoff sse finish=%q content=%q calls=%+v", toolsCutoffFinish, toolsCutoffMsg.Content, toolsCutoffMsg.ToolCalls)
+	}
+}
+
+func openCodeFreeStreamedReplay(t *testing.T, chunks ...string) (string, Message, string) {
+	t.Helper()
+	events := make([]map[string]any, 0, len(chunks))
+	for i, chunk := range chunks {
+		event := map[string]any{"delta": map[string]any{"content": chunk}}
+		if i == len(chunks)-1 {
+			event["finish_reason"] = "stop"
+		}
+		events = append(events, event)
+	}
+	var streamed strings.Builder
+	resp, err := parseSSEStreamWithReasoningToolParserCompactNames(strings.NewReader(openCodeFreeSSEBody(t, events...)), func(delta string) {
+		streamed.WriteString(delta)
+	}, nil, parseOpenCodeFreeContentToolCalls, openCodeFreeCompactToolName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	choice := resp.Choices[0]
+	return streamed.String(), choice.Message, choice.FinishReason
+}

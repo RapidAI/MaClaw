@@ -2,7 +2,9 @@ package guiapp
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"image"
 	"image/png"
@@ -19,6 +21,10 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/pptx"
 )
 
+// pptxExternalPreviewDecks maps a preview directory that does not sit beside
+// its deck back to that deck, so a thumbnail read takes the same render lock.
+var pptxExternalPreviewDecks sync.Map // dir key -> deck path
+
 // pptxPreviewLocks serializes renders of the same deck so two panes (or a
 // quick close/reopen) cannot render concurrently into the same cache dir.
 var pptxPreviewLocks sync.Map // map[string]*sync.Mutex
@@ -32,10 +38,68 @@ func pptxPreviewLock(path string) *sync.Mutex {
 	return lock.(*sync.Mutex)
 }
 
-// PptxPreviewEnsure renders a .pptx deck into per-slide images (cached in a
-// "<name>_preview" folder next to the deck) and returns the render result for
-// the in-app slide preview. Reuses the previous render when every cached
-// slide image is at least as new as the deck itself.
+// pptxPreviewOutputDir is the slide-image cache for a deck. A cloud-workspace
+// file lives inside a synced mount, so its images go under the temp preview
+// directory. A folder beside the deck would be listed and pushed as workspace
+// content. Every other deck keeps the "<name>_preview" folder next to the file.
+func pptxPreviewOutputDir(deckPath string) string {
+	if !cloudWorkspacePreviewMountPath(deckPath) {
+		return pptx.DefaultPreviewDir(deckPath)
+	}
+	cleaned := filepath.Clean(deckPath)
+	folded := strings.ToLower(filepath.ToSlash(cleaned))
+	sum := sha256.Sum256([]byte(folded))
+	base := strings.TrimSuffix(filepath.Base(cleaned), filepath.Ext(cleaned))
+	base = strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|':
+			return '_'
+		}
+		if r < 32 {
+			return '_'
+		}
+		return r
+	}, base)
+	if base == "" || base == "." || base == ".." {
+		base = "deck"
+	}
+	dir := filepath.Join(os.TempDir(), "maclaw-cloud-preview", "workspace", base+"_"+hex.EncodeToString(sum[:8]))
+	pptxExternalPreviewDecks.Store(pptxPreviewDirKey(dir), cleaned)
+	return dir
+}
+
+func cloudWorkspacePreviewMountPath(path string) bool {
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	if cleaned == "" || cleaned == "." {
+		return false
+	}
+	return cloudCacheText(strings.ToLower(filepath.ToSlash(cleaned)))
+}
+
+func pptxPreviewDirKey(dir string) string {
+	dir = filepath.Clean(strings.TrimSpace(dir))
+	if runtime.GOOS == "windows" {
+		dir = strings.ToLower(dir)
+	}
+	return dir
+}
+
+func externalDeckForPreviewDir(dir string) (string, bool) {
+	value, ok := pptxExternalPreviewDecks.Load(pptxPreviewDirKey(dir))
+	if !ok {
+		return "", false
+	}
+	deck, _ := value.(string)
+	info, err := os.Stat(deck)
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+	return deck, true
+}
+
+// PptxPreviewEnsure renders a .pptx deck into per-slide images and returns the
+// render result for the in-app slide preview. Reuses the previous render when
+// every cached slide image is at least as new as the deck itself.
 func (a *App) PptxPreviewEnsure(filePath string) (*pptx.PreviewResult, error) {
 	cleaned := strings.TrimSpace(filePath)
 	if cleaned == "" {
@@ -56,7 +120,7 @@ func (a *App) PptxPreviewEnsure(filePath string) (*pptx.PreviewResult, error) {
 	if info.IsDir() {
 		return nil, fmt.Errorf("不是 PPTX 文件: %s", cleaned)
 	}
-	outDir := pptx.DefaultPreviewDir(cleaned)
+	outDir := pptxPreviewOutputDir(cleaned)
 	if cached := cachedPptxPreview(cleaned, outDir, info.ModTime()); cached != nil {
 		return cached, nil
 	}
@@ -118,11 +182,15 @@ func (a *App) PptxSlideThumbnailDataURL(path string) (string, error) {
 }
 
 // deckForSlideImage reports the deck that owns a cached slide picture.
-// The cache directory is "<name>_preview" beside the .pptx file.
+// A cloud-workspace cache is registered when the output directory is chosen.
+// Every other cache is the "<name>_preview" folder beside the .pptx file.
 func deckForSlideImage(imagePath string) (string, bool) {
 	imagePath = strings.TrimSpace(imagePath)
 	if imagePath == "" {
 		return "", false
+	}
+	if deck, ok := externalDeckForPreviewDir(filepath.Dir(imagePath)); ok {
+		return deck, true
 	}
 	dir := filepath.Dir(imagePath)
 	base := filepath.Base(dir)

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { dismissCloudAgentPreviewOpens } from "./cloudAgentVisualPreview";
 import { cloudWorkspaceIdFromPath, isCloudWorkspacePath } from "./codingTaskMode";
 
 // ── Data Models ──
@@ -1467,8 +1468,13 @@ export function useCodePreviewState(
     }, []);
 
     const closePanel = useCallback(() => {
+        // The slide-out keeps the directory tree mounted, so an in-flight
+        // cloud download would still adopt the file and reopen the pane.
+        if (appliedStateRef.current.active && previewWorkspacePath) {
+            dismissCloudAgentPreviewOpens(previewWorkspacePath);
+        }
         setState(prev => applyClosePanel(prev));
-    }, []);
+    }, [previewWorkspacePath]);
 
     const reopenPanel = useCallback(() => {
         setState(prev => applyReopenPanel(prev));

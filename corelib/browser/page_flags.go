@@ -69,8 +69,9 @@ const browserPageFlagsCollectJS = `
   const classCaptcha = __capBox();
   const genericCaptchaIframe = __capFrame(/captcha/);
   const captchaWidget = widgetIframe || slider || classCaptcha;
+  const orderSuccess = /支付成功|付款成功|下单成功|订单提交成功|等待发货|待发货|payment successful|payment succeeded|order placed|order confirmed/i.test(fullText) || /paySuccess|orderSuccess|order-success/i.test(String(location.href || ''));
   const qrLogin = /扫码登录|扫描二维码|扫一扫登录|请用.{0,8}扫码|scan (the )?qr code|qr code to (log in|sign in)/i.test(fullText);
-  const signedInChrome = /退出登录|已登录/.test(fullText);
+  const signedInChrome = /退出登录|已登录/.test(fullText) || orderSuccess;
   const phoneEntry = anySelector('input[type=tel], input[autocomplete="tel"], input[name*="phone" i], input[name*="mobile" i], input[id*="phone" i], input[id*="mobile" i]');
   // The first screen of a sign-in is often only an email or mobile field
   // (Amazon "Sign in or create account"). A password field is not required.
@@ -90,9 +91,10 @@ const browserPageFlagsCollectJS = `
     captcha: /captcha|verify you are human|unusual traffic|安全验证|人机验证/.test(lower) || genericCaptchaIframe || classCaptcha,
     login_wall: !signedInChrome && typeableLogin,
     login_qr: !signedInChrome && qrLogin && !typeableLogin,
-    mfa: /verification code|2fa|one-time|otp|authenticator|验证码/.test(lower),
+    mfa: !orderSuccess && /verification code|2fa|one-time|otp|authenticator|验证码/.test(lower),
     canvas: anySelector('canvas'),
-    payment_confirm: anySelector('input[autocomplete="cc-number"], input[name*="cardnumber" i], input[id*="cardnumber" i], input[autocomplete="cc-exp"]') || anyIframeSrc('checkout', true) || anyIframeSrc('js.stripe.com', true) || anyIframeSrc('paypal.com', true),
+    payment_confirm: !orderSuccess && (anySelector('input[autocomplete="cc-number"], input[name*="cardnumber" i], input[id*="cardnumber" i], input[autocomplete="cc-exp"]') || anyIframeSrc('checkout', true) || anyIframeSrc('js.stripe.com', true) || anyIframeSrc('paypal.com', true)),
+    order_success: orderSuccess,
     consent_dialog: anySelector('[role="dialog"], [aria-modal="true"]') && /consent|隐私政策|privacy policy|同意并继续/.test(fullText) && !(anySelector('[class*="cookie"], [id*="cookie"]') && /accept cookies|接受.*cookie|同意.*cookie/.test(lower))
   };
 `

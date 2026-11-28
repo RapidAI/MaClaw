@@ -585,7 +585,12 @@
   `toggleNavRailCollapsed`) and threads it down `SidebarAiPane` →
   `SidebarTasksPane` → `SidebarTaskManagement` as ONE object — keep the
   object shape, do not split it back into flat props (SidebarAiPane sits at
-  its 385-line file-size guard). When the pane collapses the search row goes
+  its 385-line file-size guard). Button order matches the columns
+  left-to-right — nav-rail toggle FIRST, task-pane toggle SECOND (order
+  pinned by a compareDocumentPosition test) — and the icons are concrete
+  glyphs (checklist = 任务列表, function grid = 功能栏,
+  `SidebarToggleIcons.tsx`); collapsed state rides the aria-pressed color,
+  not icon geometry. When the pane collapses the search row goes
   with it, so the AI headers (welcome `AssistantTitleBar`, execution
   `.mc-task-execution-header`) render the cluster as a restore-only fallback
   gated on `sidebarToggles.paneCollapsed` — expanded headers show NO
@@ -699,6 +704,14 @@
   scripts\goheavy.cmd go test ./...
   scripts\goheavy.cmd go build -tags production -o dist/MaClaw_amd64.exe ./cmd/maclaw-gui/
   ```
+
+  Cross-compiles for the server (`GOOS=linux GOARCH=amd64`) must NOT go
+  through the powershell chain: `$env:GOOS` set in the invoking powershell
+  does not reach the compiler through `goheavy.cmd`, producing a Windows PE
+  binary that kills the service with `Exec format error` on deploy
+  (2026-11-28). Use git-bash prefix syntax instead, and verify the output
+  starts with `ELF` (not `MZ`) before uploading:
+  `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags ... -o dist/deploy/maclawsrv ./MaClawSrv`.
 
   Works from git-bash too (`scripts/goheavy.cmd ...`). The wrapper
   (`scripts/goheavy.ps1`) admits at most `MACLAW_HEAVY_SLOTS` (default 2)

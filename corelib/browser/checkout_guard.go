@@ -119,18 +119,38 @@ func stripSecretPhrases(label string) string {
 // pageScriptNamesCheckout reports a script that would click a checkout
 // control: it names one of the labels or a cashier host.
 func pageScriptNamesCheckout(script string) bool {
-	// Same label rules as a click. 立即 elsewhere in the script must not
-	// keep 支付方式, and "提交 订单" still matches with the space removed.
-	if labelHasCheckoutMarker(prepareCheckoutLabel(script)) {
-		return true
-	}
-	s := normalizeCheckoutText(script)
-	for _, h := range []string{"alipay.com", "tenpay.com", "pay.weixin", "cashier.", "/gp/buy/", "placeyourorder", "place-order", "submitorder", "buy-now", "buynow"} {
-		if strings.Contains(s, h) {
+	// Judge the action statements, not the whole script text. A script may
+	// read innerText or compare a status string containing 提交订单/支付;
+	// that is observation, not a purchase click. Only the click/submit
+	// statement's own target is evidence.
+	for _, action := range checkoutScriptActionSnippets(script) {
+		if labelHasCheckoutMarker(prepareCheckoutLabel(action)) {
+			return true
+		}
+		if selectorHasCheckout(normalizeCheckoutText(action)) {
 			return true
 		}
 	}
-	return selectorHasCheckout(s)
+	return false
+}
+
+// checkoutScriptActionSnippets splits a page script into the statements that
+// can activate something. State reads and comparisons are deliberately left
+// out; a later unrelated click must not inherit their text.
+func checkoutScriptActionSnippets(script string) []string {
+	parts := strings.FieldsFunc(script, func(r rune) bool { return r == '\n' || r == '\r' || r == ';' })
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		lower := strings.ToLower(part)
+		if part == "" {
+			continue
+		}
+		if strings.Contains(lower, ".click") || strings.Contains(lower, "click(") || strings.Contains(lower, ".submit") || strings.Contains(lower, "requestsubmit") {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // prepareCheckoutLabel removes password wording and safe phrases. A pay

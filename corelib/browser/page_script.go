@@ -60,6 +60,7 @@ type pageScriptFlagSet struct {
 	CaptchaWidget  bool   `json:"captcha_widget"`
 	PaymentConfirm bool   `json:"payment_confirm"`
 	ConsentDialog  bool   `json:"consent_dialog"`
+	OrderSuccess   bool   `json:"order_success"`
 	BlockingNotice string `json:"blocking_notice"`
 }
 
@@ -71,6 +72,7 @@ func (f pageScriptFlagSet) browserFlags() BrowserPageFlags {
 		CaptchaWidget:  f.CaptchaWidget,
 		PaymentConfirm: f.PaymentConfirm,
 		ConsentDialog:  f.ConsentDialog,
+		OrderSuccess:   f.OrderSuccess,
 		BlockingNotice: f.BlockingNotice,
 	}
 }
@@ -661,7 +663,8 @@ func wrapPageScript(script, siteHost string) string {
     }
     const frameSrc = srcs.join(' ');
     const payFrameSrc = srcs.filter(u => !/js\.stripe\.com\/v3\/(m-outer|m-inner|controller|metrics)/.test(String(u).toLowerCase())).join(' ');
-    const signedIn = text.indexOf('退出登录') >= 0 || text.indexOf('已登录') >= 0;
+    const orderSuccess = /支付成功|付款成功|下单成功|订单提交成功|等待发货|待发货|payment successful|payment succeeded|order placed|order confirmed/i.test(text) || /paySuccess|orderSuccess|order-success/i.test(String(location.href || ''));
+    const signedIn = orderSuccess || text.indexOf('退出登录') >= 0 || text.indexOf('已登录') >= 0;
     const qr = /扫码登录|扫描二维码|扫一扫登录|qr code/.test(text);
     const phone = nodes.some(el => {
       const type = String((el.getAttribute && (el.getAttribute('type') || el.type)) || '').toLowerCase();
@@ -679,10 +682,11 @@ func wrapPageScript(script, siteHost string) string {
     return {
       login_wall: !signedIn && typeable,
       login_qr: !signedIn && qr && !typeable,
-      mfa: /verification code|2fa|one-time|otp|authenticator|验证码/.test(text),
+      mfa: !orderSuccess && /verification code|2fa|one-time|otp|authenticator|验证码/.test(text),
       captcha_widget: text.indexOf('拖动滑块') >= 0 || /recaptcha|hcaptcha|funcaptcha/.test(capSrcs.join(' ')) || (captchaEl && capSrcs.join(' ').indexOf('captcha') >= 0),
       blocking_notice: (function () { try { return ` + blockingNoticeFnJS + `().join(' | '); } catch (e) { return ''; } })(),
-      payment_confirm: card || /js\.stripe\.com|paypal\.com/.test(payFrameSrc) || payFrameSrc.indexOf('checkout') >= 0,
+      payment_confirm: !orderSuccess && (card || /js\.stripe\.com|paypal\.com/.test(payFrameSrc) || payFrameSrc.indexOf('checkout') >= 0),
+      order_success: orderSuccess,
       consent_dialog: dialog && /consent|隐私政策|privacy policy|同意并继续/.test(text) && !cookieAccept
     };
   }

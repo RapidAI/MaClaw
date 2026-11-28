@@ -23,6 +23,12 @@ interface SidebarToggleClusterProps {
 /**
  * The collapse/expand button pair for the task pane and the nav rail.
  *
+ * Button order mirrors the on-screen columns left-to-right: the nav rail
+ * (leftmost icon column) toggle renders FIRST, the task pane toggle SECOND.
+ * The icons are concrete glyphs for the same reason (checklist = 任务列表,
+ * function grid = 功能栏); do not collapse them back into look-alike panel
+ * rectangles.
+ *
  * Home while the pane is mounted: the right end of the task pane's search row
  * (SidebarTaskManagement). When the pane collapses, its search row goes with
  * it, so the AI-workbench headers (assistant title bar, task execution
@@ -45,6 +51,19 @@ export function SidebarToggleCluster({ showPaneToggle = true, paneCollapsed, rai
     };
     return (
         <div className="sb-toggle-cluster" data-testid="sidebar-toggle-cluster" role="group" aria-label={localizeText(lang, 'Sidebar display', '侧栏显示', '側欄顯示')} data-window-no-drag>
+            <button
+                type="button"
+                className="sb-toggle-btn"
+                data-testid="nav-rail-toggle"
+                aria-pressed={!railCollapsed}
+                aria-label={railLabel}
+                title={`${railLabel} (Ctrl+Shift+B)`}
+                onMouseDown={keepHeaderBehavior}
+                onDoubleClick={keepHeaderBehavior}
+                onClick={(event) => { event.stopPropagation(); onToggleRail?.(); }}
+            >
+                <NavRailToggleIcon />
+            </button>
             {showPaneToggle && (
                 <button
                     type="button"
@@ -57,22 +76,9 @@ export function SidebarToggleCluster({ showPaneToggle = true, paneCollapsed, rai
                     onDoubleClick={keepHeaderBehavior}
                     onClick={(event) => { event.stopPropagation(); onTogglePane?.(); }}
                 >
-                    <TaskPaneToggleIcon collapsed={paneCollapsed} />
+                    <TaskPaneToggleIcon />
                 </button>
             )}
-            <button
-                type="button"
-                className="sb-toggle-btn"
-                data-testid="nav-rail-toggle"
-                aria-pressed={!railCollapsed}
-                aria-label={railLabel}
-                title={`${railLabel} (Ctrl+Shift+B)`}
-                onMouseDown={keepHeaderBehavior}
-                onDoubleClick={keepHeaderBehavior}
-                onClick={(event) => { event.stopPropagation(); onToggleRail?.(); }}
-            >
-                <NavRailToggleIcon collapsed={railCollapsed} />
-            </button>
         </div>
     );
 }

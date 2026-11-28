@@ -1233,7 +1233,7 @@ function copy(lang: string) {
             takeover: 'Take over',
             takeComputer: 'Take over the computer',
             takeComputerHint: 'Take the keyboard and finish the login or check on this computer.',
-            exitTakeover: 'Release',
+            exitTakeover: 'Exit keyboard control',
             demoSkill: 'Demo → skill',
             demoStart: 'Start recording',
             demoStop: 'Stop recording',
@@ -1494,7 +1494,7 @@ function copy(lang: string) {
             takeover: '人類接管',
             takeComputer: '接管電腦',
             takeComputerHint: '接管這台電腦，用鍵盤和滑鼠完成登入或驗證。',
-            exitTakeover: '退出接管',
+            exitTakeover: '退出鍵盤控制',
             demoSkill: '演示錄成技能',
             demoStart: '開始錄製',
             demoStop: '結束錄製',
@@ -1512,7 +1512,7 @@ function copy(lang: string) {
             botDrivingNote: 'Bot 正在操作桌面，需要的話可以先停止它。',
             stopBot: '停止',
             stopWork: '停下',
-            takeoverActive: '你已接管桌面。完成後退出接管，把鍵盤交還。',
+            takeoverActive: '你已接管桌面。完成後退出鍵盤控制；若要 Bot 繼續任務，請按「交還給 bot」。',
             controlHeldElsewhere: '另一台裝置正在操作這塊螢幕，這裡只能看。',
             myDesktop: '我的桌面',
             sharedScreen: '共享',
@@ -1753,7 +1753,7 @@ function copy(lang: string) {
         takeover: '人类接管',
         takeComputer: '接管电脑',
         takeComputerHint: '接管这台电脑，用键盘和鼠标完成登录或验证。',
-        exitTakeover: '退出接管',
+        exitTakeover: '退出键盘控制',
         demoSkill: '演示录成技能',
         demoStart: '开始录制',
         demoStop: '结束录制',
@@ -1771,7 +1771,7 @@ function copy(lang: string) {
         botDrivingNote: 'Bot 正在操作桌面，需要的话可以先停止它。',
         stopBot: '停止',
         stopWork: '停下',
-            takeoverActive: '你已接管桌面。完成后退出接管，把键盘交回。',
+            takeoverActive: '你已接管桌面。完成后退出键盘控制；若要 Bot 继续任务，请点“交还给 bot”。',
             controlHeldElsewhere: '另一台设备正在操作这块屏幕，这里只能看。',
         myDesktop: '我的桌面',
         sharedScreen: '共享',
@@ -2889,6 +2889,18 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [pcNotice, setPcNotice] = useState('');
     const [pcNoticeTone, setPcNoticeTone] = useState<'success' | 'error'>('error');
     const [messagesByBot, setMessagesByBot] = useState<Record<string, DesktopBotMessage[]>>({});
+    const messagesByBotRef = useRef<Record<string, DesktopBotMessage[]>>({});
+    const updateMessagesByBot = (update: Record<string, DesktopBotMessage[]> | ((prev: Record<string, DesktopBotMessage[]>) => Record<string, DesktopBotMessage[]>)) => {
+        setMessagesByBot(prev => {
+            const next = typeof update === 'function' ? update(prev) : update;
+            messagesByBotRef.current = next;
+            return next;
+        });
+    };
+    // The live mirror wins over durable storage. Storage can lag or fail under
+    // WebView quota pressure, but it must never erase a bubble this client just
+    // put on screen. When this client has not loaded a bot yet, storage is the fallback.
+    const transcriptForBot = (owner: string, botId: string) => messagesByBotRef.current[botId] ?? messagesForBot(owner, botId);
     const [command, setCommand] = useState('');
     const [listNotice, setListNotice] = useState('');
     const [askingByBot, setAskingByBot] = useState<Record<string, string>>({});
@@ -3258,7 +3270,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const turnLive = (botId: string) =>
         [...pendingRef.current.values()].some(value => value.botId === botId && !value.settled);
     const botPending = (botId: string) => {
-        const phase = busyPhase(botId, messagesByBot[botId] || messagesForBot(userId, botId));
+        const phase = busyPhase(botId, messagesByBot[botId] || transcriptForBot(userId, botId));
         return phase === 'plan' || phase === 'execute';
     };
     // Every final-reply path ends the busy row (papers 11-12 06:28, Bot 4's
@@ -3345,7 +3357,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // A handoff on that bubble means the person has the keys. A live flag
     // left from an older poll does not: the bubble is the turn.
     const botDrivingDesktop = (botId: string) => {
-        const items = messagesByBot[botId] || messagesForBot(userId, botId);
+        const items = messagesByBot[botId] || transcriptForBot(userId, botId);
         const liveTurn = turnLive(botId);
         const view = liveDesktop[botId];
         const liveHandoff = view?.userControl === true || (view?.attentionReason || '') !== '';
@@ -3369,7 +3381,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // The latest assistant turn, skipping a stale pending bubble left from a
     // reload. An older login further up the transcript is not this turn.
     const latestAssistantTurn = (botId: string) => {
-        const items = messagesByBot[botId] || messagesForBot(userId, botId);
+        const items = messagesByBot[botId] || transcriptForBot(userId, botId);
         const liveTurn = turnLive(botId);
         for (let i = items.length - 1; i >= 0; i--) {
             const message = items[i];
@@ -3491,7 +3503,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (handoffNotice?.botId === botId) return true;
         const view = liveDesktop[botId];
         if (view?.userControl || view?.attentionReason) return true;
-        return messagesForBot(userId, botId).some(item => item.userControl || !!item.attentionReason);
+        return transcriptForBot(userId, botId).some(item => item.userControl || !!item.attentionReason);
     };
     // The chat bot's keyboard belongs to the screen this chat is holding.
     // Another isolated display is its own keyboard, so a login there accepts
@@ -3515,7 +3527,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const returnedHandoffFor = (botId: string): ReturnedHandoff | undefined => {
         const closed = botId ? handoffClosedRef.current[botId] : undefined;
         if (!closed) return undefined;
-        const alive = (desktopRunByBotRef.current[botId] || 0) > 0 || messagesForBot(userId, botId).some(item => (
+        const alive = (desktopRunByBotRef.current[botId] || 0) > 0 || transcriptForBot(userId, botId).some(item => (
             item.role === 'assistant' && item.pending === true && !pendingReplyIsStale(item) && botMessageStartedAt(item.id) >= closed.at
         ));
         return returnedHandoffLive(closed, Date.now(), alive) ? closed : undefined;
@@ -3977,7 +3989,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     useEffect(() => {
         if (!userId || !selectedId) return;
         const runIds = new Set<string>();
-        for (const item of messagesForBot(userId, selectedId)) {
+        for (const item of transcriptForBot(userId, selectedId)) {
             if (!item.supplementId || item.supplementOutcome) continue;
             const runId = String(item.supplementRunId || '').trim();
             if (runId !== '') runIds.add(runId);
@@ -4025,7 +4037,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
 
     const rememberMessages = (botId: string, next: DesktopBotMessage[]) => {
         saveBotMessages(userId, botId, next);
-        setMessagesByBot(prev => ({ ...prev, [botId]: next }));
+        // Persistence can fail when the transcript exceeds WebView's storage
+        // quota. The in-memory mirror is still authoritative for a bubble the
+        // person has just sent; storage is only the durable copy.
+        messagesByBotRef.current = { ...messagesByBotRef.current, [botId]: next };
+        updateMessagesByBot(prev => ({ ...prev, [botId]: next }));
     };
     // Storage is written synchronously on every mutation, so reads always come
     // from the store; state is just the mirror. Never mutate first and save
@@ -4059,7 +4075,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         })().then(line => {
             if (userIdRef.current !== ownerId) return;
             const text = String(line || '').trim() || fallback;
-            const stored = messagesForBot(ownerId, botId);
+            const stored = transcriptForBot(ownerId, botId);
             if (!stored.some(item => item.id === messageId)) {
                 commit(botId, [...stored, { id: messageId, role: 'assistant', content: text, ack: true }]);
                 return;
@@ -4069,7 +4085,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
     noteQueuedRef.current = (botId: string) => {
         const owner = userIdRef.current;
-        const stored = messagesForBot(owner, botId);
+        const stored = transcriptForBot(owner, botId);
         // One wait line per message: Hub may report the same refusal more
         // than once while it retries.
         for (let i = stored.length - 1; i >= 0; i--) {
@@ -4104,7 +4120,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // Another job of this bot is still running after the keyboard was handed
     // over. A quiet desktop poll from that job is not the login ending.
     const handoffHeldBesideSibling = (botId: string) => {
-        if (!messagesForBot(userId, botId).some(item => item.userControl || !!item.attentionReason)) return false;
+        if (!transcriptForBot(userId, botId).some(item => item.userControl || !!item.attentionReason)) return false;
         let live = 0;
         for (const value of pendingRef.current.values()) {
             if (value.botId === botId && !value.settled && value.admitted) live += 1;
@@ -4112,7 +4128,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         return live > 1;
     };
     const clearStoredHandoff = (botId: string) => {
-        const stored = messagesForBot(userId, botId);
+        const stored = transcriptForBot(userId, botId);
         if (!stored.some(item => item.userControl || item.attentionReason)) return;
         commit(botId, stored.map(item => (
             item.userControl || item.attentionReason ? { ...item, userControl: false, attentionReason: '' } : item
@@ -4164,7 +4180,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const turnStartOf = (botId: string, requestId: string, messageId = '') => {
         if (messageId) return botMessageStartedAt(messageId);
         if (!requestId) return 0;
-        const item = messagesForBot(userId, botId).find(message => message.requestId === requestId);
+        const item = transcriptForBot(userId, botId).find(message => message.requestId === requestId);
         return item ? botMessageStartedAt(item.id) : 0;
     };
     const suppressReturnedHandoff = (botId: string, report: HandoffReport) => {
@@ -4184,7 +4200,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (!botId || returnedHandoffFor(botId)) return false;
         let reason = String(liveRef.current[botId]?.attentionReason || '').trim();
         if (!reason) {
-            const items = messagesForBot(userId, botId);
+            const items = transcriptForBot(userId, botId);
             for (let i = items.length - 1; i >= 0; i--) {
                 const itemReason = String(items[i]?.attentionReason || '').trim();
                 if (itemReason || items[i]?.userControl) {
@@ -4408,7 +4424,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 // every live bubble is newer is the report the previous keyboard.
                 // An older job beside a newer one keeps the login this poll saw.
                 if (userControl || reason !== '') {
-                    const stored = messagesForBot(userId, botId);
+                    const stored = transcriptForBot(userId, botId);
                     let newerThanPoll = false;
                     let covered = false;
                     for (let i = stored.length - 1; i >= 0; i--) {
@@ -4891,7 +4907,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setEditBot(null);
         setEditSaving(false);
         setEditNotice('');
-        setMessagesByBot({});
+        updateMessagesByBot({});
         setPersonaByBot(personasForUser(userId));
         setCommand('');
         setDesktopPanels({});
@@ -4949,17 +4965,17 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const recovered: string[] = [];
             for (const bot of merged) {
                 if (queueRef.current.has(bot.id)) continue;
-                const queued = messagesForBot(userId, bot.id).filter(item => item.role === 'user' && item.queued).map(item => ({ text: item.content, phase: storedQueuePhase(item) }));
+                const queued = transcriptForBot(userId, bot.id).filter(item => item.role === 'user' && item.queued).map(item => ({ text: item.content, phase: storedQueuePhase(item) }));
                 if (queued.length === 0) continue;
                 queueRef.current.set(bot.id, queued);
                 recovered.push(bot.id);
             }
-            setMessagesByBot(prev => {
+            updateMessagesByBot(prev => {
                 let changed = false;
                 const next = { ...prev };
                 for (const bot of merged) {
                     if (next[bot.id]) continue;
-                    next[bot.id] = messagesForBot(userId, bot.id);
+                    next[bot.id] = transcriptForBot(userId, bot.id);
                     changed = true;
                 }
                 return changed ? next : prev;
@@ -4984,7 +5000,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const screenIsStale = (sessionKey: string, requestId: string, inFlight?: PendingSend) => {
         const botId = sessionBotId(sessionKey, userId);
         if (!botId || !requestId) return false;
-        const owner = [...messagesForBot(userId, botId)].reverse().find(item => item.requestId === requestId);
+        const owner = [...transcriptForBot(userId, botId)].reverse().find(item => item.requestId === requestId);
         if (!owner) return false;
         if (inFlight && !inFlight.settled && inFlight.messageId === owner.id) return false;
         if (owner.pending && !pendingReplyIsStale(owner)) return false;
@@ -5056,7 +5072,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 const shots = result.failed ? undefined : shotPathsFrom(data);
                 const attachmentIds = result.failed ? undefined : attachmentIdsFrom(data);
                 const images = result.failed || shots || attachmentIds ? undefined : imagesFrom(data);
-                const stored = messagesForBot(userId, botId);
+                const stored = transcriptForBot(userId, botId);
                 // The result's own sentence is a new ask. A screen that still
                 // carries the captcha the person just finished is not.
                 const said = sentenceForTurn(result, ask);
@@ -5104,7 +5120,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (!staleScreen && !heldScreen) {
                 if (screen.userControl || screen.reason || screen.cleared || (screen.reported && latchRef.current[botId])) applyScreen(botId, screen, requestId, pending?.messageId || '');
             }
-            setMessagesByBot(prev => ({ ...prev, [botId]: messagesForBot(userId, botId) }));
+            updateMessagesByBot(prev => ({ ...prev, [botId]: transcriptForBot(userId, botId) }));
             drainIfIdle(botId);
         };
         const off = EventsOn('ai-assistant-response', handler);
@@ -5127,11 +5143,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 if (!requestId.startsWith('desktop-bot-')) return;
                 if (attention) handleDesktopBotView(data);
                 if (!botId) return;
-                setMessagesByBot(prev => ({ ...prev, [botId]: messagesForBot(userId, botId) }));
+                updateMessagesByBot(prev => ({ ...prev, [botId]: transcriptForBot(userId, botId) }));
                 return;
             }
             if (!attention) return;
-            const stored = messagesForBot(userId, pending.botId);
+            const stored = transcriptForBot(userId, pending.botId);
             const next = stored.map(item => item.id === pending.messageId && item.pending ? {
                 ...item,
                 handoffUrl: screen.url || item.handoffUrl,
@@ -5166,7 +5182,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             // queue/hold that arrived with nothing to say.
             if ((data.queued === true || data.held === true) && (!ack || desktopBotIsPlaceholderAck(ack, lang))) noteQueuedRef.current(botId);
             if (!ack || desktopBotIsPlaceholderAck(ack, lang)) return;
-            const stored = messagesForBot(userId, botId);
+            const stored = transcriptForBot(userId, botId);
             const keys = bindAckCommand(ackCommandsRef.current, botId, firstAckCommandKeys(stored, requestId));
             if (keys.length === 0) return;
             const next = landFirstAck(stored, keys, ack, lang, messageID);
@@ -5196,7 +5212,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             }
             const screen = screenOf(data);
             if (screen.userControl || screen.reason) applyScreen(botId, screen);
-            setMessagesByBot(prev => ({ ...prev, [botId]: messagesForBot(userId, botId) }));
+            updateMessagesByBot(prev => ({ ...prev, [botId]: transcriptForBot(userId, botId) }));
         };
         const off = EventsOn('desktop-bot-report', handler);
         return () => { if (typeof off === 'function') off(); };
@@ -5209,7 +5225,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const detail = (event as CustomEvent<{ userId?: string; botId?: string }>).detail || {};
             const botId = String(detail.botId || '');
             if (!botId || String(detail.userId || '') !== userId) return;
-            setMessagesByBot(prev => ({ ...prev, [botId]: messagesForBot(userId, botId) }));
+            updateMessagesByBot(prev => ({ ...prev, [botId]: transcriptForBot(userId, botId) }));
         };
         window.addEventListener(BOT_SYNCED_EVENT, onSynced);
         return () => window.removeEventListener(BOT_SYNCED_EVENT, onSynced);
@@ -5333,7 +5349,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 const runs = Array.isArray(list) ? list as DesktopBotActiveRunRow[] : [];
                 setActiveRunsByBot(prev => ({ ...prev, [botId]: runs }));
                 setHubReachableByBot(prev => ({ ...prev, [botId]: true }));
-                const stored = messagesForBot(userId, botId);
+                const stored = transcriptForBot(userId, botId);
                 const attached = reattachStalePending(stored, runs);
                 if (attached !== stored) commit(botId, attached);
                 if (!activeRunsOccupy(runs)) drainDeskRef.current(botId);
@@ -5421,7 +5437,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setScreenPickTouched(false);
         setHandBackError('');
         setModeError('');
-        setMessagesByBot(prev => prev[bot.id] ? prev : { ...prev, [bot.id]: messagesForBot(userId, bot.id) });
+        updateMessagesByBot(prev => prev[bot.id] ? prev : { ...prev, [bot.id]: transcriptForBot(userId, bot.id) });
     };
 
     const chooseScreen = (pick: string) => {
@@ -5446,7 +5462,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const bot = bots.find(item => item.id === notice.botId);
         if (bot) {
             setSelectedId(bot.id);
-            setMessagesByBot(prev => prev[bot.id] ? prev : { ...prev, [bot.id]: messagesForBot(userId, bot.id) });
+            updateMessagesByBot(prev => prev[bot.id] ? prev : { ...prev, [bot.id]: transcriptForBot(userId, bot.id) });
         }
         if (notice.url) {
             setScreenByBot(prev => ({
@@ -5475,7 +5491,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const joined = !!handed?.joined;
             const messageId = !joined && handed?.accepted && requestId ? messageID() : '';
             if (messageId) pendingRef.current.set(requestId, { botId, messageId, settled: false, admitted: true });
-            const stored = messagesForBot(userId, botId).map(item => (
+            const stored = transcriptForBot(userId, botId).map(item => (
                 item.userControl || item.attentionReason ? { ...item, userControl: false, attentionReason: '' } : item
             ));
             if (messageId) stored.push({ id: messageId, role: 'assistant', content: '', pending: true, phase: 'execute', requestId });
@@ -5501,7 +5517,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const rows = timedOut ? null : await withinBudget(ListDesktopBotActiveRuns(botId) as Promise<DesktopBotActiveRunRow[] | null>, 2500);
             const handedOnHub = !!rows && rows.some(row => row && row.status === 'running' && !row.stale);
             if (timedOut || handedOnHub) {
-                const stored = messagesForBot(userId, botId).map(item => (
+                const stored = transcriptForBot(userId, botId).map(item => (
                     item.userControl || item.attentionReason ? { ...item, userControl: false, attentionReason: '' } : item
                 ));
                 commit(botId, stored);
@@ -6105,7 +6121,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             });
             if (editBot?.id === botId) setEditBot(null);
             setSelectedId(current => current === botId ? '' : current);
-            setMessagesByBot(prev => {
+            updateMessagesByBot(prev => {
                 const copy = { ...prev };
                 delete copy[botId];
                 return copy;
@@ -6151,7 +6167,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         // This turn failed before it had a desktop. Another job already on
         // screen, or a login the person is still using, keeps the picture.
         const sibling = [...pendingRef.current.values()].some(value => value.botId === botId && !value.settled);
-        const personHolds = messagesForBot(userId, botId).some(item => item.userControl || !!item.attentionReason);
+        const personHolds = transcriptForBot(userId, botId).some(item => item.userControl || !!item.attentionReason);
         if (sibling || personHolds || latchRef.current[botId]) return;
         setDesktopPanels(prev => prev[botId] === 'user' ? prev : { ...prev, [botId]: 'off' });
         setLiveDesktop(prev => prev[botId] ? { ...prev, [botId]: undefined } : prev);
@@ -6165,7 +6181,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // failed and this person has chosen to send what they typed, that choice
     // is the order.
     const personHoldReason = (botId: string) => {
-        const items = messagesForBot(userId, botId);
+        const items = transcriptForBot(userId, botId);
         for (let i = items.length - 1; i >= 0; i--) {
             const reason = String(items[i]?.attentionReason || '').trim();
             if (reason) return reason;
@@ -6324,7 +6340,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             desktopRunByBotRef.current = next;
             setDesktopRunByBot(next);
         }
-        return messagesForBot(ownerId, botId).map(item => {
+        return transcriptForBot(ownerId, botId).map(item => {
             if (item.role !== 'assistant' || !item.pending) return item;
             const ticket = item.requestId || '';
             const slot = ticket ? pendingRef.current.get(ticket) : undefined;
@@ -6369,7 +6385,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 commit(botId, releaseStoppedTurns(ownerId, botId));
                 const line = await confirmedStopSentence(titles, hadNext, kind, ownerId, botId);
                 if (userIdRef.current !== ownerId) return;
-                commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'assistant', content: line, chat: true }]);
+                commit(botId, [...transcriptForBot(ownerId, botId), { id: messageID(), role: 'assistant', content: line, chat: true }]);
             })();
         }, 150);
         stopWatchRef.current.set(botId, timer);
@@ -6407,7 +6423,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             }
         }
         if (mode === 'now') {
-            const prior = messagesForBot(userId, botId);
+            const prior = transcriptForBot(userId, botId);
             commit(botId, [...prior, { id: messageID(), role: 'user', content }]);
         }
         const ownerId = userId;
@@ -6422,7 +6438,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 ? await stopSpokenRun(ownerId, botId, held, control === 'pause' ? 'pause' : 'stop', source !== 'takeover', content)
                 : await statusSpokenRun(ownerId, botId);
             if (userIdRef.current !== ownerId || !answer) return;
-            const stored = messagesForBot(ownerId, botId);
+            const stored = transcriptForBot(ownerId, botId);
             commit(botId, [...stored, { id: messageID(), role: 'assistant', content: answer, chat: true }]);
           } finally {
             if (control === 'stop' || control === 'pause') stopInFlightRef.current.delete(botId);
@@ -6464,7 +6480,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
 
     const sayTypedConfirm = (botId: string) => {
-        const prior = messagesForBot(userId, botId);
+        const prior = transcriptForBot(userId, botId);
         commit(botId, [...prior, { id: messageID(), role: 'assistant', content: desktopBotTypedConfirmSentence(lang), chat: true }]);
     };
     const startTask = (botId: string, content: string, phase: BotPhase, mode: 'now' | 'fromQueue', verbatim = false, prepared?: PreparedTurn, literal = false, continueSession = '', wirePhase?: BotPhase | '', askRun = '') => {
@@ -6499,7 +6515,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
         const hubRuns = activeRunsByBot[botId] || [];
         const hubKnown = hubReachableByBot[botId] === true;
-        let prior = reattachStalePending(messagesForBot(userId, botId), hubKnown ? hubRuns : []);
+        let prior = reattachStalePending(transcriptForBot(userId, botId), hubKnown ? hubRuns : []);
         prior = prior.map(item => {
             // A turn this page already admitted stays live, however old the
             // bubble looks. Clearing it here would cancel the other job on
@@ -6543,7 +6559,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             pending.settled = true;
             pendingRef.current.delete(ticket);
             clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-            const stored = messagesForBot(ownerId, botId);
+            const stored = transcriptForBot(ownerId, botId);
             // Nothing was sent. Without a phase this stays a side note, so a
             // confirmation that is still waiting keeps its button.
             commit(botId, stored.map(item => item.id === assistantMessage.id ? { ...item, content: '', pending: true, failed: true, phase: undefined } : item));
@@ -6559,7 +6575,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             pending.settled = true;
             pendingRef.current.delete(ticket);
             clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-            const stored = messagesForBot(ownerId, botId);
+            const stored = transcriptForBot(ownerId, botId);
             commit(botId, stored.map(item => item.id === assistantMessage.id
                 ? { ...item, ...noReadingReply(kind, text, content, turnPhase), pending: false }
                 : item));
@@ -6575,7 +6591,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             pending.settled = true;
             pendingRef.current.delete(ticket);
             clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-            const stored = messagesForBot(ownerId, botId);
+            const stored = transcriptForBot(ownerId, botId);
             commit(botId, stored.map(item => item.id === assistantMessage.id ? {
                 ...item,
                 content: reason,
@@ -6594,12 +6610,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             pending.settled = true;
             pendingRef.current.delete(ticket);
             clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-            const stored = messagesForBot(ownerId, botId);
+            const stored = transcriptForBot(ownerId, botId);
             saveBotMessages(ownerId, botId, stored.map(item => item.id === assistantMessage.id ? { ...item, content: text.accountChanged, pending: false, failed: true, phase: undefined } : item));
         };
         const bubbleGone = () => {
             if (pending.settled) return true;
-            if (messagesForBot(ownerId, botId).some(item => item.id === assistantMessage.id && item.pending)) return false;
+            const visible = messagesByBotRef.current[botId] ?? transcriptForBot(ownerId, botId);
+            if (visible.some(item => item.id === assistantMessage.id && item.pending)) return false;
+            sendDiag('bubble_gone');
             pending.settled = true;
             pendingRef.current.delete(ticket);
             clearLiveBotTurn(ownerId, botId, assistantMessage.id);
@@ -6647,12 +6665,16 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             void desktopBotAck({ ...ctx, late: true }, undefined, DESKTOP_BOT_LATE_ACK_BUDGET_MS).then(line => {
                 endUnderstanding();
                 if (userIdRef.current !== ownerId) return;
-                const stored = messagesForBot(ownerId, botId);
+                const stored = transcriptForBot(ownerId, botId);
                 const next = putAckLine(stored, line, chips, anchorId);
                 if (next !== stored) commit(botId, next);
             });
         };
+        const sendDiag = (stage: string, extra: Record<string, unknown> = {}) => {
+            void Promise.resolve(LogFrontendDiagnostic({ tag: 'desktop-bot-send', ev: stage, bot: botId, ...extra })).catch(() => undefined);
+        };
         void (async () => {
+            sendDiag('async_enter');
             let instruction = '';
             let told = '';
             let options: string[] = [];
@@ -6679,7 +6701,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     void PersistDesktopBotPreference(botId, prepared.persona).catch(() => undefined);
                 }
                 if (prepared.pace === 'direct' && turnPhase !== 'execute') {
-                    const stored = messagesForBot(ownerId, botId);
+                    const stored = transcriptForBot(ownerId, botId);
                     commit(botId, stored.map(item => item.id === assistantMessage.id ? { ...item, phase: 'execute' as const } : item));
                 }
                 sendPhase = prepared.pace === 'direct' ? 'execute' : turnPhase;
@@ -6688,6 +6710,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 instruction = content.trim();
             }
             if (ownerLeft()) {
+                sendDiag('owner_left');
                 leaveAccount();
                 return;
             }
@@ -6723,10 +6746,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             // accept line is held back until that decision.
             let liveRuns: Array<{ run_id?: string; task_text?: string; waiting_for_user?: boolean }> = [];
             try {
+                sendDiag('probe_begin');
                 // This probe is only a fold hint. A Wails bridge call that never
                 // settles must not hold the person's words back from Hub.
                 liveRuns = (await withinBudget(GetActiveDesktopRuns(botId) as Promise<typeof liveRuns>, 800)) || [];
+                sendDiag('probe_end', { runs: liveRuns.length });
             } catch {
+                sendDiag('probe_error');
                 liveRuns = [];
             }
             const foldCandidates = liveRuns.filter(item => item && !item.waiting_for_user && String(item.run_id || '').trim() !== '');
@@ -6756,7 +6782,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             }
             if (sentence && sentence !== content.trim() && !deferFirst) {
                 ackSaid = true;
-                const stored = messagesForBot(ownerId, botId);
+                const stored = transcriptForBot(ownerId, botId);
                 commit(botId, putAckLine(stored, sentence, options.length >= 2 ? options : undefined, assistantMessage.id));
             }
             if (ownerLeft() || bubbleGone()) {
@@ -6798,7 +6824,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 const running = String(foldCandidates[0]?.task_text || '');
                 if (sentence && sentence !== content.trim()) {
                     ackSaid = true;
-                    commit(botId, putAckLine(messagesForBot(ownerId, botId), sentence, options.length >= 2 ? options : undefined, assistantMessage.id));
+                    commit(botId, putAckLine(transcriptForBot(ownerId, botId), sentence, options.length >= 2 ? options : undefined, assistantMessage.id));
                     endUnderstanding();
                 } else {
                     postLaterAck(botId, assistantMessage.id, { ...acceptAckCtx, kind: 'accept', running_task: running || undefined, files: ackFiles.map(item => item.split('/').pop() || item) }, options.length >= 2 ? options : undefined);
@@ -6813,20 +6839,22 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             {
                 // From here the order is MaClawSrv's. A restart before this
                 // line leaves an orphan the next session offers to resend.
-                const marked = messagesForBot(ownerId, botId).map(item => item.id === assistantMessage.id ? { ...item, dispatched: true } : item);
+                const marked = transcriptForBot(ownerId, botId).map(item => item.id === assistantMessage.id ? { ...item, dispatched: true } : item);
                 if (ownerLeft()) saveBotMessages(ownerId, botId, marked);
                 else commit(botId, marked);
             }
             try {
                 // A nil Go struct serializes to null; treat it as an empty result
                 // instead of crashing the send path reading fields off it.
+                sendDiag('send_invoke', { phase: sendPhase || phase, instruction_len: instruction.length });
                 const response = (await SendDesktopBotTaskTo(botId, instruction, sendPhase, continueSession, askRun) ?? {}) as { request_id?: string; RequestID?: string; deferred?: boolean; Deferred?: boolean; text?: string; Text?: string; error?: string; Error?: string; send_to_user?: string; SendToUser?: string };
+                sendDiag('send_returned');
                 if (ownerLeft()) {
                     pending.settled = true;
                     pendingRef.current.delete(ticket);
                     const requestId = String(response?.request_id || response?.RequestID || '');
                     const deferred = response?.deferred === true || response?.Deferred === true;
-                    const stored = messagesForBot(ownerId, botId);
+                    const stored = transcriptForBot(ownerId, botId);
                     const inline = response as Record<string, unknown>;
                     const ask = askFrom(inline);
                     if (!deferred && (response?.text || response?.Text || response?.error || response?.Error || response?.send_to_user || response?.SendToUser || askKeepsTurn(ask))) {
@@ -6858,7 +6886,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     pendingRef.current.delete(ticket);
                     clearLiveBotTurn(userId, botId, assistantMessage.id);
                     const result = responseText(inline);
-                    const stored = messagesForBot(userId, botId);
+                    const stored = transcriptForBot(userId, botId);
                     if (!turnHasVisibleResult(result, ask, undefined, undefined, {})) {
                         commit(botId, stored.filter(item => item.id !== assistantMessage.id));
                         drainIfIdle(botId);
@@ -6888,7 +6916,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     bindAckCommand(ackCommandsRef.current, botId, [assistantMessage.id, ticket, requestId]);
                     pendingRef.current.delete(ticket);
                     pendingRef.current.set(requestId, pending);
-                    const stored = messagesForBot(userId, botId);
+                    const stored = transcriptForBot(userId, botId);
                     const keyed = stored.map(item => item.id === assistantMessage.id ? { ...item, requestId } : item);
                     commit(botId, keyed);
                     // This job is admitted. The next one already read can start
@@ -6905,7 +6933,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 pendingRef.current.delete(ticket);
                 clearLiveBotTurn(ownerId, botId, assistantMessage.id);
                 const raw = friendlyFailure(failureMessage(error), lang) || text.unavailable;
-                const stored = messagesForBot(ownerId, botId);
+                const stored = transcriptForBot(ownerId, botId);
                 const failed = stored.map(item => item.id === assistantMessage.id ? { ...item, content: ownerLeft() ? raw : '', pending: !ownerLeft(), failed: true } : item);
                 if (ownerLeft()) {
                     saveBotMessages(ownerId, botId, failed);
@@ -6916,7 +6944,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 dropAutoPanel(botId);
                 drainIfIdle(botId);
             }
-        })();
+        })().catch(error => {
+            sendDiag('async_error', { error: failureMessage(error) });
+            failPending(friendlyFailure(failureMessage(error), lang) || text.unavailable);
+        });
     };
 
     // A handoff reply has settled the HTTP turn, but the person still has the
@@ -6930,7 +6961,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const takeNextQueued = (botId: string, queue: QueuedSend[]) => {
         const resumeAt = queue.findIndex(continuationQueued);
         if (resumeAt >= 0) return queue.splice(resumeAt, 1)[0];
-        if (messagesForBot(userId, botId).some(item => item.userControl || item.attentionReason)) return undefined;
+        if (transcriptForBot(userId, botId).some(item => item.userControl || item.attentionReason)) return undefined;
         return queue.shift();
     };
     // A live desktop run holds the next execute. A line that is still being
@@ -6942,7 +6973,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // left from a reload is: its run is still the one on screen, and the
     // lines parked behind it wait until that reply arrives.
     const pendingBubbleHoldsQueue = (botId: string) =>
-        messagesForBot(userId, botId).some(message => {
+        transcriptForBot(userId, botId).some(message => {
             if (message.role !== 'assistant' || !message.pending || pendingReplyIsStale(message)) return false;
             const id = message.requestId || '';
             const slot = id ? pendingRef.current.get(id) : undefined;
@@ -6955,7 +6986,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // and the lines parked behind it go out.
     const recoverOrphanedTurns = async (botId: string) => {
         const liveIds = new Set([...pendingRef.current.values()].filter(value => value.botId === botId && !value.settled).map(value => value.messageId));
-        const orphans = messagesForBot(userId, botId).filter(message => orphanedPendingReply(message, liveIds));
+        const orphans = transcriptForBot(userId, botId).filter(message => orphanedPendingReply(message, liveIds));
         if (orphans.length === 0) return;
         try {
             const runs = (await GetActiveDesktopRuns(botId) as Array<{ run_id?: string }>) || [];
@@ -6964,7 +6995,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             return;
         }
         const ids = new Set(orphans.map(message => message.id));
-        const stored = messagesForBot(userId, botId);
+        const stored = transcriptForBot(userId, botId);
         const fixed = stored.map((item, index) => {
             if (!ids.has(item.id) || !orphanedPendingReply(item, liveIds)) return item;
             let words = '';
@@ -6989,7 +7020,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // queued copy of the same order is no longer shown as waiting.
     const showHubStartedDelegate = (botId: string, noteId: string, order: string, runId: string) => {
         const words = (order || '').trim();
-        const stored = messagesForBot(userId, botId);
+        const stored = transcriptForBot(userId, botId);
         const next = stored.map(item => (item.queued && (item.crossNoteId === noteId || (words !== '' && item.content === words)) ? { ...item, queued: false } : item));
         if (next.some((item, i) => item !== stored[i])) commit(botId, next);
         appendDesktopBotReport(userId, botId, {
@@ -6998,7 +7029,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             requestId: `${noteId}:hub`,
             chat: true,
         });
-        setMessagesByBot(prev => ({ ...prev, [botId]: messagesForBot(userId, botId) }));
+        updateMessagesByBot(prev => ({ ...prev, [botId]: transcriptForBot(userId, botId) }));
     };
     const drainIfIdle = (botId: string, fromList = false) => {
         if (stopHoldRef.current.has(botId)) return;
@@ -7011,7 +7042,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (!nextSend) return;
         queueRef.current.set(botId, queue);
         const dispatchQueued = (item: QueuedSend) => {
-            const stored = messagesForBot(userId, botId);
+            const stored = transcriptForBot(userId, botId);
             let cleared = false;
             // Dispatching the continuation means the person already finished this
             // handoff. A late reply can have written the prompt back; leave it
@@ -7105,7 +7136,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         if (!desktopBotNoticeSeen(userId, key)) {
                             appendDesktopBotReport(userId, botId, { content: desktopBotServerRunText(kind, runId, out.text || '', out.error || '', out.status), failed: out.status === 'failed', requestId: key, chat: true });
                             markDesktopBotNotice(userId, key);
-                            setMessagesByBot(prev => ({ ...prev, [botId]: messagesForBot(userId, botId) }));
+                            updateMessagesByBot(prev => ({ ...prev, [botId]: transcriptForBot(userId, botId) }));
                         }
                         break;
                     }
@@ -7228,9 +7259,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             show(target);
         }
         if (touched.size === 0) return;
-        setMessagesByBot(prev => {
+        updateMessagesByBot(prev => {
             const next = { ...prev };
-            for (const id of touched) next[id] = messagesForBot(userId, id);
+            for (const id of touched) next[id] = transcriptForBot(userId, id);
             return next;
         });
     };
@@ -7321,12 +7352,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (!selected) return;
         const botId = selected.id;
         const ownerId = userId;
-        const hide = () => commit(botId, messagesForBot(ownerId, botId).map(item => item.id === messageId ? { ...item, optionsUsed: true } : item));
+        const hide = () => commit(botId, transcriptForBot(ownerId, botId).map(item => item.id === messageId ? { ...item, optionsUsed: true } : item));
         hide();
         const langNow = langRef.current;
         // A typed "Other" line goes in as written, like any typed supplement.
         const order = typed ? option : localizeText(langNow, 'Change of plan: do "{name}" instead.', '改成：{name}').replace('{name}', option);
-        commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'user', content: shown }]);
+        commit(botId, [...transcriptForBot(ownerId, botId), { id: messageID(), role: 'user', content: shown }]);
         try {
             const activeRuns = (await GetActiveDesktopRuns(botId) as Array<{ run_id?: string; waiting_for_user?: boolean }>) || [];
             const live = activeRuns.filter(item => item && String(item.run_id || '').trim() !== '');
@@ -7344,9 +7375,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (userIdRef.current !== ownerId) return;
             const noteId = messageID();
             const wrote = !!line && !desktopBotIsPlaceholderAck(line, langNow);
-            commit(botId, [...messagesForBot(ownerId, botId), { id: noteId, role: 'assistant', content: wrote ? line : (receipt?.stage === 'queued' ? desktopBotFoldFallback(optionCtx.kind, langNow, option) : (line || desktopBotNeutralAck(optionCtx))), ack: true, supplementId: supplementId || undefined, supplementRunId: runId || undefined }]);
+            commit(botId, [...transcriptForBot(ownerId, botId), { id: noteId, role: 'assistant', content: wrote ? line : (receipt?.stage === 'queued' ? desktopBotFoldFallback(optionCtx.kind, langNow, option) : (line || desktopBotNeutralAck(optionCtx))), ack: true, supplementId: supplementId || undefined, supplementRunId: runId || undefined }]);
         } catch {
-            commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'assistant', content: localizeText(langNow, "Couldn't pass that on. Type it and I'll adjust.", '没能转给正在做的任务，你直接打一句，我按你说的改。'), ack: true }]);
+            commit(botId, [...transcriptForBot(ownerId, botId), { id: messageID(), role: 'assistant', content: localizeText(langNow, "Couldn't pass that on. Type it and I'll adjust.", '没能转给正在做的任务，你直接打一句，我按你说的改。'), ack: true }]);
         }
     };
 
@@ -7356,7 +7387,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const thread = desktopThreadOf(botId, session);
         if (!botId || !requestId || !thread || (via !== 'content' && via !== 'sticky')) return;
         const id = messageId || pendingRef.current.get(requestId)?.messageId;
-        const stored = messagesForBot(userId, botId);
+        const stored = transcriptForBot(userId, botId);
         const at = stored.findIndex(item => (id && item.id === id) || item.requestId === requestId);
         if (at < 0) return;
         for (let i = at - 1; i >= 0; i--) {
@@ -7371,7 +7402,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // running, and the same words go again as a new matter in main.
     const undoFollowUpRoute = async (botId: string, message: DesktopBotMessage) => {
         const ownerId = userId;
-        const stored = messagesForBot(ownerId, botId);
+        const stored = transcriptForBot(ownerId, botId);
         const at = stored.findIndex(item => item.id === message.id);
         if (at < 0) return;
         const reply = stored.slice(at + 1).find(item => item.role === 'assistant' && !item.ack);
@@ -7411,7 +7442,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (!literal && !preset && isDesktopBotClearCommand(content)) {
             setCommand('');
             noteDesktopBotCleared(userId, botId);
-            commit(botId, clearedBotMessages(messagesForBot(userId, botId)));
+            commit(botId, clearedBotMessages(transcriptForBot(userId, botId)));
             return;
         }
         // Typing the old approval sentence is not an approval and not a task.
@@ -7431,7 +7462,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
 
     const markAskResolved = (botId: string, messageId: string) => {
-        const stored = messagesForBot(userId, botId);
+        const stored = transcriptForBot(userId, botId);
         commit(botId, stored.map(item => item.id === messageId ? { ...item, askResolved: true } : item));
     };
 
@@ -7439,12 +7470,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // away with it: the choice has been made, and a second click would send
     // the same words to the desktop a second time.
     const consumeNoReading = (botId: string, messageId: string) => {
-        const stored = messagesForBot(userId, botId);
+        const stored = transcriptForBot(userId, botId);
         commit(botId, stored.map(item => item.id === messageId && item.noReading ? { ...item, noReading: undefined } : item));
     };
 
     const appendNote = (botId: string, content: string) => {
-        const stored = messagesForBot(userId, botId);
+        const stored = transcriptForBot(userId, botId);
         commit(botId, [...stored, { id: messageID(), role: 'assistant', content, ack: true }]);
     };
 
@@ -7492,7 +7523,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         closePanel(botId);
         clearLiveFlags(botId);
         latchRef.current[botId] = true;
-        const stored = messagesForBot(userId, botId).map(item => (
+        const stored = transcriptForBot(userId, botId).map(item => (
             item.userControl || item.attentionReason ? { ...item, userControl: false, attentionReason: '' } : item
         ));
         commit(botId, stored);
@@ -7503,7 +7534,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const openForPerson = (botId: string) => {
         openPanel(botId, 'user');
         setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
-        const items = messagesByBot[botId] || messagesForBot(userId, botId);
+        const items = messagesByBot[botId] || transcriptForBot(userId, botId);
         const liveTurn = turnLive(botId);
         let handoff: DesktopBotMessage | undefined;
         for (let i = items.length - 1; i >= 0; i--) {
@@ -7687,7 +7718,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (!confirmMessage) return;
 
             if (!selected || confirmMessage.disabled) return;
-            const stored = messagesForBot(userId, selected.id);
+            const stored = transcriptForBot(userId, selected.id);
             const plan = stored.find(item => item.id === confirmMessage.id);
             const order = (plan?.workOrder || plan?.content || '').trim();
             if (!order || order === CONFIRM_COMMAND) return;
@@ -7696,7 +7727,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const queueOrder = (claimed: boolean) => {
                 const queued = queueRef.current.get(botId) || [];
                 queueRef.current.set(botId, [...queued, { text: order, phase: 'execute', verbatim: true, crossNoteId: noteId || undefined, claimed }]);
-                const current = messagesForBot(userId, botId);
+                const current = transcriptForBot(userId, botId);
                 const qid = messageID();
                 const qline = desktopBotQueuedSentence(lang);
                 upgradeLine(userId, botId, qid, 'queued', qline, order);
@@ -8072,7 +8103,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     <ul className="desktop-bot-workspace__list">
                         {bots.map(bot => {
                             const description = bot.description || text.defaultDescription;
-                            const rowPhase = busyPhase(bot.id, messagesByBot[bot.id] || messagesForBot(userId, bot.id));
+                            const rowPhase = busyPhase(bot.id, messagesByBot[bot.id] || transcriptForBot(userId, bot.id));
                             const modeKind = desktopModeOf(bot.desktopMode);
                             const modeLabel = modeKind === 'none' ? text.modeNone : modeKind === 'isolated' ? text.modeIsolated : text.modeShared;
                             return (
@@ -8155,7 +8186,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 </svg>
                             </button>
                         </header>
-                        {collab.features.assignments ? <BotCollabStatus assignments={collab.assignments} bots={bots} lang={lang} busy={bots.flatMap(bot => { const phase = busyPhase(bot.id, messagesByBot[bot.id] || messagesForBot(userId, bot.id)); return phase === 'execute' || phase === 'plan' ? [{ bot: bot.id, phase, task: shownDesktopBotActivity(activityByBot[bot.id]) }] : []; })} /> : null}
+                        {collab.features.assignments ? <BotCollabStatus assignments={collab.assignments} bots={bots} lang={lang} busy={bots.flatMap(bot => { const phase = busyPhase(bot.id, messagesByBot[bot.id] || transcriptForBot(userId, bot.id)); return phase === 'execute' || phase === 'plan' ? [{ bot: bot.id, phase, task: shownDesktopBotActivity(activityByBot[bot.id]) }] : []; })} /> : null}
                         <div
                             ref={logRef}
                             className="desktop-bot-chat__log"
@@ -8641,7 +8672,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                                         {handingBack === handBackTarget ? text.handBackBusy : text.handBack}
                                                     </button>
                                                 ) : null}
-                                                {takeover ? (
+                                                {takeover && !showHandBack ? (
                                                     <button type="button" data-testid="desktop-bot-exit-takeover" onClick={() => releaseTakeover(selected.id)}>{text.exitTakeover}</button>
                                                 ) : null}
                                             </div>

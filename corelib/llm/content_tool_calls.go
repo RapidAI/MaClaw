@@ -1037,6 +1037,10 @@ type contentToolCallDeltaFilter struct {
 	allowCompactName func(string) bool
 	pending          strings.Builder
 	suppressed       bool
+	// hostReplayAnswer is set once a free-channel chunk showed prose. A later
+	// host-replay suffix then stays visible, because the full message is an
+	// answer that only mentions the call.
+	hostReplayAnswer bool
 }
 
 func newContentToolCallDeltaFilter(downstream TokenCallback) *contentToolCallDeltaFilter {
@@ -1090,9 +1094,12 @@ func (f *contentToolCallDeltaFilter) drain(force bool) {
 			return
 		}
 	}
-	visible, hold, suppress := holdContentToolCallStreamMatching(s, force, f.allowCompactName)
+	visible, hold, suppress := holdContentToolCallStreamMatching(s, force, f.allowCompactName, f.hostReplayAnswer)
 	if visible != "" {
 		f.downstream(visible)
+		if f.allowCompactName != nil && !f.hostReplayAnswer && !openCodeFreeReplayResidue(visible) {
+			f.hostReplayAnswer = true
+		}
 	}
 	if suppress {
 		f.suppressed = true
@@ -1138,10 +1145,22 @@ func ContentToolCallMarkerSuffixLen(s string) int {
 // a tool-call body and must not reach the chat. On flush, a partial DSML
 // fence is dropped instead of leaked.
 func HoldContentToolCallStream(s string, force bool) (visible, hold string, suppress bool) {
-	return holdContentToolCallStreamMatching(s, force, nil)
+	return holdContentToolCallStreamMatching(s, force, nil, false)
 }
 
-func holdContentToolCallStreamMatching(s string, force bool, allowCompactName func(string) bool) (visible, hold string, suppress bool) {
+func holdContentToolCallStreamMatching(s string, force bool, allowCompactName func(string) bool, hostReplayAnswer bool) (visible, hold string, suppress bool) {
+	// The free channel replays host extras as "execute return MACLAW_CALL(...)".
+	// Hold that sentence until flush on the same path that already holds
+	// official compact names. A marker that starts earlier is that other call.
+	if allowCompactName != nil {
+		if visible, hold, suppress, ok := openCodeFreeHostReplayStreamHold(s, force, hostReplayAnswer); ok {
+			marker := firstContentToolCallMarkerIndexMatching(s, allowCompactName)
+			ourStart := len(visible)
+			if marker < 0 || markerIsOpenBareToolName(s, marker) || marker >= ourStart {
+				return visible, hold, suppress
+			}
+		}
+	}
 	if idx := firstContentToolCallMarkerIndexMatching(s, allowCompactName); idx >= 0 && !markerIsOpenBareToolName(s, idx) {
 		if idx > 0 {
 			visible = s[:idx]

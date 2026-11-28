@@ -609,7 +609,7 @@ func snapshotCachedSlideWindow(deck string, slideOffset int) (names []string, bl
 	if err != nil || info.IsDir() {
 		return nil, nil, 0, "", false
 	}
-	cached := cachedPptxPreview(deck, pptx.DefaultPreviewDir(deck), info.ModTime())
+	cached := cachedPptxPreview(deck, pptxPreviewOutputDir(deck), info.ModTime())
 	if cached == nil {
 		return nil, nil, 0, "", false
 	}

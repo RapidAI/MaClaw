@@ -169,6 +169,45 @@ type desktopBotUnderstandRequest struct {
 	maxOut int
 }
 
+// desktopBotSpecifiedRoleOverride is the foreground model explicitly saved
+// for desktop bots. It is deliberately separate from ResolveMaclawLLMRole:
+// the interactive assistant may be a different provider, but a desktop-bot
+// model choice is a direct choice for these desktop-bot calls.
+func (a *App) desktopBotSpecifiedRoleOverride(role string) *corelib.MaclawLLMConfig {
+	if a == nil {
+		return nil
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil
+	}
+	choice, ok := a.desktopBotLLMChoiceFromConfig(strings.TrimSpace(cfg.RemoteUserID), cfg)
+	if !ok {
+		return nil
+	}
+	mode := strings.TrimSpace(choice.Choice)
+	if mode == "" {
+		mode = strings.TrimSpace(choice.Mode)
+	}
+	if mode != "custom" {
+		return nil
+	}
+	spec, explicit := explicitDesktopBotRole(choice, role)
+	if !explicit && role == maclawLLMRoleForeground && strings.TrimSpace(choice.Name) != "" && strings.TrimSpace(choice.Model) != "" {
+		spec = DesktopBotLLMRole{Name: choice.Name, Model: choice.Model}
+		explicit = true
+	}
+	if !explicit {
+		return nil
+	}
+	state := a.maclawLLMProvidersFromConfig(&cfg)
+	resolved, err := a.materializeDesktopHubRole(role, spec, state.Providers)
+	if err != nil || strings.TrimSpace(resolved.Model) == "" || strings.TrimSpace(resolved.URL) == "" {
+		return nil
+	}
+	return &resolved
+}
+
 // desktopBotUnderstandFunc is the no-tool model call. Tests replace it.
 // The desktop worker is a different call and is not used here.
 type desktopBotUnderstandFunc func(ctx context.Context, app *App, req desktopBotUnderstandRequest) (string, error)
@@ -177,7 +216,7 @@ var desktopBotUnderstandLLM desktopBotUnderstandFunc = callDesktopBotUnderstandL
 
 const desktopBotUnderstandSystem = `You are the foreground agent for one cloud-desktop bot. You do not touch the desktop and you have no tools. Read the latest message, the earlier user messages, the persona already kept, and the phase. Return one JSON object and nothing else. The object has four string fields: told, instruction, pace, and persona. When pace is schedule, it also has one object field, schedule.
 
-told is the sentence this person sees at once. Write it in the language named below, in your own words for this message. For direct, told is your first reply as their working partner who has just taken the job, sent while the work starts: in your own words, show you understood it. Say what they want to end up with, the one or two requirements that matter (for example the source, the form of the result, where it goes), and briefly how you will go about it. Write it the way a colleague who got the point would say it back, not a copy or reordering of their words, and not a step list or a plan narration (no "I will now go check..."). Do not claim any part is done, found, or written yet, and do not add goals, sites, or steps they did not ask for or clearly imply. For example, for 把这个表格整理成周报发给老王, a fitting told is 我把表格里的数据理成一份周报，整理好发给老王，发出去跟你说。; write your own sentence for each message. For ask, told is the question, or the real choices, in one short sentence. For reply, told is the answer itself, not a plan of what happens next. For schedule, told says the timed work is set or stopped, and does not do that work. One or two sentences. Do not ask them to confirm work you are already doing. Write told wholly in that language: do not leave English words such as today inside a Chinese sentence, and in Chinese address the person as 你, not 您.
+told is the sentence this person sees at once. Write it in the language named below, in your own words for this message. For direct, told is your first reply as their working partner who has just taken the job, sent while the work starts: in your own words, show you understood it. Say what they want to end up with, the one or two requirements that matter (for example the source, the form of the result, where it goes), and briefly how you will go about it. Write it the way a colleague who got the point would say it back, not a copy or reordering of their words, and not a step list or a plan narration (no "I will now go check..."). Do not claim any part is done, found, or written yet, and do not add goals, sites, or steps they did not ask for or clearly imply. For example, for 把这个表格整理成周报发给老王, a fitting told is 我把表格里的数据理成一份周报，整理好发给老王，发出去跟你说。; write your own sentence for each message. For ask, told is the question, or the real choices, in one short sentence. For reply, told is the answer itself, not a plan of what happens next. For schedule, told says the timed work is set or stopped, and does not do that work. One or two sentences. Do not ask them to confirm work you are already doing, and do not ask for more information in a direct told: use the reasonable default or the assumption field instead. Write told wholly in that language: do not leave English words such as today inside a Chinese sentence, and in Chinese address the person as 你, not 您.
 
 instruction is a card for the computer helper, not a driving script. The helper follows this card and does not see the kept persona except through this card. The card has three parts in this order: goal, constraints, and success criteria. goal is the outcome in one sentence. constraints are what must not be done. success criteria say how the three-line report is checked. Do not name click, type, or computer. Do not say what the chat reply must contain. The foreground agent sends the chat reply. Write the card in the same language as told. Leave it an empty string when there is no desktop work. For schedule, the card is the order for one later run. A repeated greeting is still a card: the goal is that greeting.
 When the message ends with a [素材] list, those are files the person uploaded; they are already on the desktop at the listed ~/素材/ paths. The card names every listed path exactly and says to use them as the materials (in a file picker, type or paste the full path). Do not ask for files that are listed. told names the files in 《》 and says in a few words what you will use them for.
@@ -258,7 +297,7 @@ func desktopBotUnderstandClassifyRequest(req desktopBotUnderstandRequest) LLMCla
 		out.Override = req.override
 		out.HubOnly = false
 		out.PreferLightweight = false
-		out.NoThinking = true
+		out.NoThinking = !req.fallback
 	}
 	if req.maxOut > 0 {
 		out.NoThinking = true
@@ -343,6 +382,7 @@ func (a *App) understandDesktopBotTask(content, phase, lang string, earlier []st
 	}
 	started := time.Now()
 	deadline := started.Add(desktopBotReadBudget)
+	specified := a.desktopBotSpecifiedRoleOverride(maclawLLMRoleForeground)
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 	// useFallback switches the next attempt to the other model. It is set by
@@ -373,12 +413,17 @@ func (a *App) understandDesktopBotTask(content, phase, lang string, earlier []st
 			timeoutSec = desktopBotHubReadCapSec
 			callCtx, callCancel = context.WithTimeout(ctx, time.Duration(desktopBotHubReadCapSec)*time.Second)
 		}
+		override := specified
+		if useHub {
+			override = nil
+		}
 		raw, err := desktopBotUnderstandLLM(callCtx, a, desktopBotUnderstandRequest{
 			systemPrompt: systemPrompt,
 			userPrompt:   userPrompt,
 			timeoutSec:   timeoutSec,
 			fallback:     useFallback && !useHub,
 			hub:          useHub,
+			override:     override,
 		})
 		callCancel()
 		if err != nil {
@@ -1111,12 +1156,18 @@ func (a *App) raceDesktopTaskSupplement(userPrompt, newMessage string) *DesktopT
 	ctx, cancel := context.WithTimeout(context.Background(), desktopTaskSupplementBudget)
 	defer cancel()
 	_, fast := desktopBotAckModels(a)
-	reqs := []desktopBotUnderstandRequest{
-		{systemPrompt: desktopTaskSupplementSystem, userPrompt: userPrompt, tag: "desktop-bot-eval-supplement", maxOut: 400},
-		{systemPrompt: desktopTaskSupplementSystem, userPrompt: userPrompt, tag: "desktop-bot-eval-supplement", hub: true, maxOut: 400},
-	}
-	if fast != nil {
-		reqs = append(reqs, desktopBotUnderstandRequest{systemPrompt: desktopTaskSupplementSystem, userPrompt: userPrompt, tag: "desktop-bot-eval-supplement", override: fast, maxOut: 400})
+	specified := a.desktopBotSpecifiedRoleOverride(maclawLLMRoleForeground)
+	var reqs []desktopBotUnderstandRequest
+	if specified != nil {
+		reqs = []desktopBotUnderstandRequest{{systemPrompt: desktopTaskSupplementSystem, userPrompt: userPrompt, tag: "desktop-bot-eval-supplement", override: specified, maxOut: 400}}
+	} else {
+		reqs = []desktopBotUnderstandRequest{
+			{systemPrompt: desktopTaskSupplementSystem, userPrompt: userPrompt, tag: "desktop-bot-eval-supplement", maxOut: 400},
+			{systemPrompt: desktopTaskSupplementSystem, userPrompt: userPrompt, tag: "desktop-bot-eval-supplement", hub: true, maxOut: 400},
+		}
+		if fast != nil {
+			reqs = append(reqs, desktopBotUnderstandRequest{systemPrompt: desktopTaskSupplementSystem, userPrompt: userPrompt, tag: "desktop-bot-eval-supplement", override: fast, maxOut: 400})
+		}
 	}
 	timeoutSec := int(desktopTaskSupplementBudget / time.Second)
 	out := make(chan *DesktopTaskSupplementEval, len(reqs))
@@ -1220,8 +1271,29 @@ func desktopBotAcceptTold(u *DesktopBotUnderstanding, text, lang string) string 
 	if names := desktopBotMaterialNames(text); len(names) > 0 && !desktopBotMentionsAny(told, names) {
 		return ""
 	}
+	if desktopBotRunningLineAsksForInput(told) {
+		return ""
+	}
 	return told
 }
+
+// desktopBotRunningLineAsksForInput reports a sentence that behaves like an
+// intake question after the work has already been accepted. This is a
+// protocol violation, not a style issue: a direct job must proceed with the
+// defaults in its work card, so a question-like first reply is discarded and
+// the ack composer gets another chance. The rule is task/site independent.
+func desktopBotRunningLineAsksForInput(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	if strings.HasSuffix(line, "?") || strings.HasSuffix(line, "？") {
+		return true
+	}
+	return desktopBotRunningInputAsk.MatchString(line)
+}
+
+var desktopBotRunningInputAsk = regexp.MustCompile(`(?i)(先|需要|要我|我先)?确认一下[^。！？!?,，]*(谁|哪里|哪些|什么|怎么|多长|多少|是否)|请确认|需要你(告诉|补充|确认)|请你(告诉|补充|确认)|请补充|发给谁|发到哪里|发在哪里|please confirm|need (you|more info)|who should|where should|what (length|format|destination)`)
 
 // desktopBotOptions keeps 2 to 4 distinct, short, non-empty choices, or none.
 func desktopBotOptions(in []string) []string {

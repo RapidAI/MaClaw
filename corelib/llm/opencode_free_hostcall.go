@@ -18,7 +18,8 @@ import (
 // failed execute is a short tool result, not a second copy of the note. A
 // host-only call already in the transcript is shown back as execute plus
 // MACLAW_CALL, so the next turn repeats the channel instead of a direct
-// host name. Calls that were adapted only for local execution cross the
+// host name. That same sentence is an execute delivery on the way back.
+// Calls that were adapted only for local execution cross the
 // bridge in the opposite direction and reappear under their official names.
 //
 // The goal example follows the host continuation phase of the latest user
@@ -110,14 +111,632 @@ func openCodeFreeCallerHostNote(caller []byte) string {
 	return strings.TrimSuffix(note, "</system-reminder>") + extra + "</system-reminder>"
 }
 
-// parseOpenCodeFreeContentToolCalls recognizes the same compact serialization
-// openCodeFreeConversation writes back into the transcript, in addition to the
-// generic leaked-call formats. That serialization is context for the model,
-// but it also becomes an imitation surface. This is scoped to the OpenCode
-// free boundary because names such as read/write are too generic for the
-// cross-provider leaked-call parser.
+// parseOpenCodeFreeContentToolCalls recognizes the serializations
+// openCodeFreeConversation writes back into the transcript. Official tools
+// come back as "websearch {...}". Host extras come back as
+// "execute return MACLAW_CALL(...)". Both are context for the model and
+// both are imitation surfaces. A copied host replay is the execute delivery
+// this channel already accepts; leaving it as assistant text is how the
+// call becomes the answer. A sentence that only mentions the form stays
+// text. Names such as read/write stay on this boundary because they are
+// too generic for the cross-provider parser.
 func parseOpenCodeFreeContentToolCalls(content string) ([]ToolCall, bool) {
+	call, adopted, parsed := adoptOpenCodeFreeHostReplay(content)
+	if adopted {
+		return []ToolCall{call}, false
+	}
+	if !parsed && openCodeFreeBrokenHostSyntax(content) {
+		return nil, true
+	}
 	return parseContentToolCallsDetailed(content, openCodeFreeCompactToolName)
+}
+
+// adoptOpenCodeFreeHostReplay accepts a transcript replay of one or more
+// host extras. The recovered call is execute with {"code": sentence}, the
+// envelope a real execute call carries, so the stream assembler keeps it
+// and expandOpenCodeFreeHostCalls reads the code. parsed is false when that
+// syntax did not close. Placeholder dots are not a delivery. A residue that
+// is a real sentence is not a replay.
+func adoptOpenCodeFreeHostReplay(content string) (call ToolCall, adopted, parsed bool) {
+	adopted, parsed = classifyOpenCodeFreeHostReplay(content)
+	if !adopted {
+		return ToolCall{}, false, parsed
+	}
+	encoded, err := json.Marshal(map[string]string{"code": content})
+	if err != nil {
+		return ToolCall{}, false, true
+	}
+	return makeContentToolCall("execute", string(encoded)), true, true
+}
+
+// classifyOpenCodeFreeHostReplay reports whether content is a host replay.
+// The stream filter calls this on the way to flush, so it does not build
+// the execute envelope until a caller actually adopts the call.
+func classifyOpenCodeFreeHostReplay(content string) (adopted, parsed bool) {
+	found, residue, ok := splitOpenCodeFreeHostReplay(content)
+	if !ok {
+		return false, false
+	}
+	if !openCodeFreeHostCallsDeliver(found, "") || !openCodeFreeReplayResidue(residue) {
+		return false, true
+	}
+	return true, true
+}
+
+// openCodeFreeBrokenHostSyntax is a replay whose host call never closed.
+// Call it only after adoptOpenCodeFreeHostReplay reports parsed=false: a
+// call that parsed is a delivery or an example, not this case.
+func openCodeFreeBrokenHostSyntax(content string) bool {
+	token := openCodeFreeHostCallToken
+	for _, at := range indexOpenCodeFreeHostCalls(content) {
+		if at < 0 || at >= len(content) || !openCodeFreeReplayResidue(content[:at]) {
+			continue
+		}
+		tail := content[at:]
+		if strings.HasPrefix(tail, token) {
+			if openCodeFreeBrokenCallTail(tail) {
+				return true
+			}
+			continue
+		}
+		if openCodeFreeBrokenToolsTail(tail) {
+			return true
+		}
+	}
+	return false
+}
+
+// openCodeFreeBrokenCallTail reports that everything after a MACLAW_CALL
+// token is an unclosed call plus replay residue. A later word is an answer.
+func openCodeFreeBrokenCallTail(src string) bool {
+	token := openCodeFreeHostCallToken
+	if !strings.HasPrefix(src, token) {
+		return false
+	}
+	i := len(token)
+	if i < len(src) && isJSIdentCont(src[i]) {
+		return false
+	}
+	i = skipASCIISpace(src, i)
+	if i >= len(src) || src[i] != '(' {
+		return false
+	}
+	return openCodeFreeBrokenAfterOpen(src, i)
+}
+
+// openCodeFreeBrokenToolsTail is the tools.name( form of the same cutoff.
+// Official names are not hits, so tools.shell( stays text.
+func openCodeFreeBrokenToolsTail(src string) bool {
+	if _, _, ok := matchToolsHostCall(src, 0); !ok {
+		return false
+	}
+	open := strings.IndexByte(src, '(')
+	if open < 0 {
+		return false
+	}
+	return openCodeFreeBrokenAfterOpen(src, open)
+}
+
+// openCodeFreeBrokenAfterOpen reports that the argument list opened at open
+// never finishes, and the bytes after it are only replay residue.
+func openCodeFreeBrokenAfterOpen(src string, open int) bool {
+	i := open + 1
+	for i < len(src) {
+		if src[i] == '"' || src[i] == '\'' || src[i] == '`' {
+			next, closed := openCodeFreeQuotedSpan(src, i)
+			// An unclosed quote that runs onto the next line is the answer
+			// continuing, not a cut-off call.
+			if !closed && strings.IndexByte(src[i:], '\n') >= 0 {
+				return false
+			}
+			if next <= i {
+				i++
+				continue
+			}
+			i = next
+			continue
+		}
+		if next, ok := skipJSCodeNoise(src, i); ok {
+			if next <= i {
+				i++
+				continue
+			}
+			i = next
+			continue
+		}
+		c := src[i]
+		if isJSIdentStart(c) {
+			ident, n, ok := readJSIdent(src[i:])
+			if !ok {
+				break
+			}
+			switch ident {
+			case "true", "false", "null":
+				i += n
+				continue
+			default:
+			}
+			break
+		}
+		if (c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' || isASCIISpaceByte(c) || openCodeFreeHostCallPunct(c) {
+			i++
+			continue
+		}
+		break
+	}
+	return openCodeFreeReplayResidue(src[i:])
+}
+
+func openCodeFreeHostCallPunct(c byte) bool {
+	switch c {
+	case '(', ')', '{', '}', '[', ']', ',', ':', ';':
+		return true
+	default:
+		return false
+	}
+}
+
+func openCodeFreeQuotedSpan(src string, i int) (int, bool) {
+	if i >= len(src) {
+		return i, true
+	}
+	var next int
+	switch src[i] {
+	case '`':
+		next = skipJSTemplate(src, i)
+	case '"', '\'':
+		next = skipJSString(src, i)
+	default:
+		return i, true
+	}
+	if next <= i {
+		return i + 1, false
+	}
+	return next, src[next-1] == src[i]
+}
+
+// openCodeFreeReplayResidue is the wrapper openCodeFreeConversation puts
+// around a host call: the words execute and return, separators, whitespace,
+// and a trailing tag the model sometimes appends. A tag or one of those
+// words that is still unfinished at the end counts too, because the next
+// byte can finish the wrapper. Any other byte is an answer.
+func openCodeFreeReplayResidue(s string) bool {
+	for i := 0; i < len(s); {
+		c := s[i]
+		switch c {
+		case ' ', '\n', '\r', '\t', ';', ',':
+			i++
+			continue
+		case '<':
+			n := openCodeFreeReplayTagLen(s[i:])
+			if n > 0 {
+				i += n
+				continue
+			}
+			return openCodeFreeReplayTagOpen(s[i:])
+		}
+		if isJSIdentStart(c) {
+			j := i + 1
+			for j < len(s) && isJSIdentCont(s[j]) {
+				j++
+			}
+			word := s[i:j]
+			if strings.EqualFold(word, "execute") || strings.EqualFold(word, "return") {
+				i = j
+				continue
+			}
+			return j == len(s) && openCodeFreeReplayWordOpen(word)
+		}
+		return false
+	}
+	return true
+}
+
+func openCodeFreeReplayTagLen(s string) int {
+	if len(s) < 3 || s[0] != '<' {
+		return 0
+	}
+	i := 1
+	if s[i] == '/' {
+		i++
+	}
+	if i >= len(s) || !isJSIdentStart(s[i]) {
+		return 0
+	}
+	i++
+	for i < len(s) {
+		c := s[i]
+		if isJSIdentCont(c) || c == ':' || c == '-' {
+			i++
+			continue
+		}
+		break
+	}
+	if i >= len(s) || s[i] != '>' {
+		return 0
+	}
+	return i + 1
+}
+
+// openCodeFreeReplayTagOpen reports that s is the start of a tag that has
+// not closed. A byte that cannot appear in a tag is text.
+func openCodeFreeReplayTagOpen(s string) bool {
+	if s == "" || s[0] != '<' {
+		return false
+	}
+	i := 1
+	if i < len(s) && s[i] == '/' {
+		i++
+	}
+	if i >= len(s) {
+		return true
+	}
+	if !isJSIdentStart(s[i]) {
+		return false
+	}
+	for i < len(s) {
+		c := s[i]
+		if isJSIdentCont(c) || c == ':' || c == '-' {
+			i++
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// openCodeFreeReplayWordOpen reports that word can still grow into execute
+// or return. A finished different word is text.
+func openCodeFreeReplayWordOpen(word string) bool {
+	return openCodeFreeFoldPrefix("execute", word) || openCodeFreeFoldPrefix("return", word)
+}
+
+func openCodeFreeFoldPrefix(lowerTarget, word string) bool {
+	if word == "" || len(word) >= len(lowerTarget) {
+		return false
+	}
+	return asciiFoldEqual(word, lowerTarget[:len(word)])
+}
+
+const (
+	openCodeFreeReplayNone = iota
+	openCodeFreeReplayPending
+	openCodeFreeReplayCall
+)
+
+// openCodeFreeHostReplayStreamHold keeps a host-extra replay off the chat
+// until flush. answerStarted means an earlier chunk already showed prose, so
+// this buffer is part of that answer and is released as it arrives. A finished
+// mention is released before flush: more tokens cannot turn it into a replay.
+// Suppress waits for flush so a later sentence is not dropped while the
+// buffer still holds it. The free stream is the only caller.
+func openCodeFreeHostReplayStreamHold(s string, force, answerStarted bool) (visible, hold string, suppress, ok bool) {
+	// Prose already reached the chat, so this buffer cannot be a pure replay.
+	// Holding it would delay the rest of the answer until the stream ends.
+	if answerStarted {
+		return "", "", false, false
+	}
+	kind, start := openCodeFreeHostReplayHoldSpan(s)
+	if kind == openCodeFreeReplayNone {
+		return "", "", false, false
+	}
+	if start < 0 || start > len(s) {
+		start = 0
+	}
+	if !force {
+		if kind == openCodeFreeReplayCall && strings.ContainsAny(s, ")}]") {
+			if adopted, parsed := classifyOpenCodeFreeHostReplay(s); parsed && !adopted {
+				return "", "", false, false
+			}
+		}
+		return s[:start], s[start:], false, true
+	}
+	if adopted, parsed := classifyOpenCodeFreeHostReplay(s); adopted || (!parsed && openCodeFreeBrokenHostSyntax(s)) {
+		return "", "", true, true
+	}
+	return "", "", false, false
+}
+
+func openCodeFreeReplayHint(s string) bool {
+	if strings.Contains(s, "MAC") || strings.Contains(s, "tools") {
+		return true
+	}
+	// A Chinese answer has no ASCII letter, so the word scan can stop here.
+	if !openCodeFreeHasASCIILetter(s) {
+		return false
+	}
+	return openCodeFreeContainsFold(s, "return") || openCodeFreeContainsFold(s, "execute")
+}
+
+func openCodeFreeHasASCIILetter(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+			return true
+		}
+	}
+	return false
+}
+
+func openCodeFreeContainsFold(s, lower string) bool {
+	n := len(lower)
+	if n == 0 || len(s) < n {
+		return false
+	}
+	for i := 0; i+n <= len(s); i++ {
+		if asciiFoldEqual(s[i:i+n], lower) {
+			return true
+		}
+	}
+	return false
+}
+
+func openCodeFreeHostReplayHoldSpan(s string) (int, int) {
+	// A chunk that is only the replay wrapper (a tag, "execute", "return",
+	// whitespace) can still grow into the call. Hold it so it is not emitted
+	// before the next chunk arrives.
+	if s != "" && openCodeFreeReplayResidue(s) {
+		return openCodeFreeReplayPending, 0
+	}
+	if !openCodeFreeReplayHint(s) {
+		return openCodeFreeReplayNone, 0
+	}
+	token := openCodeFreeHostCallToken
+	for i := 0; i < len(s); {
+		if next, ok := skipJSCodeNoise(s, i); ok {
+			if next <= i {
+				i++
+				continue
+			}
+			i = next
+			continue
+		}
+		atBoundary := i == 0 || !isJSIdentCont(s[i-1])
+		if atBoundary && strings.HasPrefix(s[i:], token) {
+			end := i + len(token)
+			if end < len(s) && isJSIdentCont(s[end]) {
+				i++
+				continue
+			}
+			j := skipASCIISpace(s, end)
+			if j >= len(s) || s[j] == '(' {
+				kind := openCodeFreeReplayPending
+				if j < len(s) && s[j] == '(' {
+					kind = openCodeFreeReplayCall
+				}
+				start := openCodeFreeReplayHoldStart(s, openCodeFreeHostCallPreambleStart(s, i))
+				return kind, start
+			}
+			i = end
+			continue
+		}
+		// tools.memory_recall( is the other transcript shape. Hold the call
+		// once the parenthesis is present, and hold an unfinished head
+		// (tools / tools.memory_recall) so the name does not flash first.
+		if atBoundary && s[i] == 't' {
+			if at, _, ok := matchToolsHostCall(s, i); ok {
+				start := openCodeFreeReplayHoldStart(s, openCodeFreeHostCallPreambleStart(s, at))
+				return openCodeFreeReplayCall, start
+			}
+			if openCodeFreeOpenToolsHead(s[i:]) && openCodeFreeReplayResidue(s[:i]) {
+				return openCodeFreeReplayPending, openCodeFreeReplayHoldStart(s, i)
+			}
+		}
+		i++
+	}
+	if n, at, ok := openCodeFreeHostTokenPrefix(s); ok {
+		start := openCodeFreeHostCallPreambleStart(s, at)
+		// Hold MACLAW, an execute/return preamble, or a prefix that is itself
+		// only replay noise. "The server MAC" is ordinary text.
+		if n >= 6 || start < at || openCodeFreeReplayResidue(s[:at]) {
+			return openCodeFreeReplayPending, openCodeFreeReplayHoldStart(s, start)
+		}
+	}
+	if start, ok := openCodeFreeExecuteReturnTail(s); ok {
+		return openCodeFreeReplayPending, openCodeFreeReplayHoldStart(s, start)
+	}
+	return openCodeFreeReplayNone, 0
+}
+
+func openCodeFreeHostTokenPrefix(s string) (int, int, bool) {
+	token := openCodeFreeHostCallToken
+	max := len(token) - 1
+	if len(s) < max {
+		max = len(s)
+	}
+	for n := max; n >= 1; n-- {
+		at := len(s) - n
+		if !strings.HasPrefix(token, s[at:]) {
+			continue
+		}
+		if at > 0 && isJSIdentCont(s[at-1]) {
+			continue
+		}
+		if !openCodeFreeAtCode(s, at) {
+			continue
+		}
+		return n, at, true
+	}
+	return 0, 0, false
+}
+
+// openCodeFreeHostCallPreambleStart walks back from the token across
+// "return" and then "execute". The word boundary has to be whitespace, so
+// executereturn stays one word.
+func openCodeFreeHostCallPreambleStart(s string, tokenAt int) int {
+	if tokenAt <= 0 || tokenAt > len(s) {
+		return tokenAt
+	}
+	retEnd := skipASCIISpaceBack(s, tokenAt)
+	if retEnd == tokenAt {
+		return tokenAt
+	}
+	retStart := trimBackWord(s, retEnd, "return")
+	if retStart < 0 {
+		return tokenAt
+	}
+	execEnd := skipASCIISpaceBack(s, retStart)
+	if execEnd == retStart {
+		return retStart
+	}
+	execStart := trimBackWord(s, execEnd, "execute")
+	if execStart < 0 {
+		return retStart
+	}
+	return execStart
+}
+
+// openCodeFreeExecuteReturnTail holds a finished "execute return" that
+// follows other text, including its trailing space. The word has to be its
+// own identifier, so "please return" stays visible. A leading "return" is
+// replay residue and is held before this check.
+func openCodeFreeExecuteReturnTail(s string) (int, bool) {
+	end := len(s)
+	for end > 0 && isASCIISpaceByte(s[end-1]) {
+		end--
+	}
+	start := trimBackWord(s, end, "return")
+	if start < 0 || !openCodeFreeAtCode(s, start) {
+		return 0, false
+	}
+	before := skipASCIISpaceBack(s, start)
+	if before == start {
+		return 0, false
+	}
+	execStart := trimBackWord(s, before, "execute")
+	if execStart < 0 {
+		return 0, false
+	}
+	return execStart, true
+}
+
+// openCodeFreeOpenToolsHead reports that s is an unfinished tools.name or
+// tools["name"] head running to the end of the buffer. A parenthesis is a
+// call, handled by matchToolsHostCall, so this stops before one.
+func openCodeFreeOpenToolsHead(s string) bool {
+	const token = "tools"
+	if !strings.HasPrefix(s, token) {
+		return false
+	}
+	if len(s) > len(token) && isJSIdentCont(s[len(token)]) {
+		return false
+	}
+	i := skipASCIISpace(s, len(token))
+	if i >= len(s) {
+		return true
+	}
+	switch {
+	case s[i] == '.':
+		i++
+	case s[i] == '?' && i+1 < len(s) && s[i+1] == '.':
+		i += 2
+	case s[i] == '?' && i+1 == len(s):
+		return true
+	case s[i] == '[':
+		return openCodeFreeOpenToolsBracket(s[i:])
+	default:
+		return false
+	}
+	i = skipASCIISpace(s, i)
+	if i >= len(s) {
+		return true
+	}
+	if !isJSIdentStart(s[i]) {
+		return false
+	}
+	i++
+	for i < len(s) && isJSIdentCont(s[i]) {
+		i++
+	}
+	i = skipASCIISpace(s, i)
+	return i >= len(s)
+}
+
+func openCodeFreeOpenToolsBracket(s string) bool {
+	if s == "" || s[0] != '[' {
+		return false
+	}
+	i := skipASCIISpace(s, 1)
+	if i >= len(s) {
+		return true
+	}
+	if s[i] != '"' && s[i] != '\'' {
+		return false
+	}
+	next, closed := openCodeFreeQuotedSpan(s, i)
+	if !closed {
+		return next >= len(s)
+	}
+	i = skipASCIISpace(s, next)
+	if i >= len(s) {
+		return true
+	}
+	if s[i] != ']' {
+		return false
+	}
+	i = skipASCIISpace(s, i+1)
+	return i >= len(s)
+}
+
+func openCodeFreeReplayHoldStart(s string, start int) int {
+	if start <= 0 || start > len(s) {
+		return 0
+	}
+	// A leading tag or "execute return" is part of the replay. Leaving it
+	// visible would mark the answer as started and force the call to stream.
+	if openCodeFreeReplayResidue(s[:start]) {
+		return 0
+	}
+	return start
+}
+
+func trimBackWord(s string, end int, word string) int {
+	n := len(word)
+	if end < n || end > len(s) {
+		return -1
+	}
+	start := end - n
+	if !strings.EqualFold(s[start:end], word) {
+		return -1
+	}
+	if start > 0 && isJSIdentCont(s[start-1]) {
+		return -1
+	}
+	return start
+}
+
+func skipASCIISpaceBack(s string, i int) int {
+	for i > 0 && isASCIISpaceByte(s[i-1]) {
+		i--
+	}
+	return i
+}
+
+func isASCIISpaceByte(c byte) bool {
+	return c == ' ' || c == '\n' || c == '\r' || c == '\t'
+}
+
+// openCodeFreeAtCode reports whether index at sits outside a string,
+// template, or comment.
+func openCodeFreeAtCode(s string, at int) bool {
+	if at < 0 || at > len(s) {
+		return false
+	}
+	for i := 0; i < at; {
+		if next, ok := skipJSCodeNoise(s, i); ok {
+			if next <= i {
+				i++
+				continue
+			}
+			if at < next {
+				return false
+			}
+			i = next
+			continue
+		}
+		i++
+	}
+	return true
 }
 
 func openCodeFreeCompactToolName(name string) bool {
@@ -705,19 +1324,46 @@ func openCodeFreeParamList(props map[string]interface{}, required []string) stri
 }
 
 func parseOpenCodeFreeHostCalls(code string) ([]openCodeFreeHostCall, bool) {
+	calls, _, ok := splitOpenCodeFreeHostReplay(code)
+	return calls, ok
+}
+
+// splitOpenCodeFreeHostReplay parses each host-extra hit once. residue is
+// the text outside those spans. A hit that does not parse fails the whole
+// sentence. A later hit inside an earlier span stays in the call list and
+// is left out of the residue.
+func splitOpenCodeFreeHostReplay(code string) ([]openCodeFreeHostCall, string, bool) {
 	hits := indexOpenCodeFreeHostCalls(code)
 	if len(hits) == 0 {
-		return nil, false
+		return nil, "", false
 	}
-	out := make([]openCodeFreeHostCall, 0, len(hits))
-	for _, at := range hits {
-		call, ok := parseOneOpenCodeFreeHostCall(code[at:])
-		if !ok {
-			return nil, false
+	calls := make([]openCodeFreeHostCall, len(hits))
+	ends := make([]int, len(hits))
+	for i, at := range hits {
+		if at < 0 || at > len(code) {
+			return nil, "", false
 		}
-		out = append(out, call)
+		call, end, parsed := parseOneOpenCodeFreeHostCallSpan(code[at:])
+		if !parsed || end <= 0 || at+end > len(code) {
+			return nil, "", false
+		}
+		calls[i] = call
+		ends[i] = at + end
 	}
-	return out, true
+	var b strings.Builder
+	b.Grow(len(code))
+	prev := 0
+	for i, at := range hits {
+		if at < prev {
+			continue
+		}
+		b.WriteString(code[prev:at])
+		prev = ends[i]
+	}
+	if prev < len(code) {
+		b.WriteString(code[prev:])
+	}
+	return calls, b.String(), true
 }
 
 func indexOpenCodeFreeHostCalls(code string) []int {
@@ -725,6 +1371,10 @@ func indexOpenCodeFreeHostCalls(code string) []int {
 	token := openCodeFreeHostCallToken
 	for i := 0; i < len(code); {
 		if next, ok := skipJSCodeNoise(code, i); ok {
+			if next <= i {
+				i++
+				continue
+			}
 			i = next
 			continue
 		}
@@ -842,28 +1492,59 @@ func skipASCIISpace(src string, i int) int {
 	return i
 }
 
-func parseOneOpenCodeFreeHostCall(src string) (openCodeFreeHostCall, bool) {
+// parseOneOpenCodeFreeHostCallSpan returns the call and how many leading
+// bytes it consumed, including the optional closing parenthesis. Residue
+// stripping uses that end, so it stays the same span this parser accepts.
+func parseOneOpenCodeFreeHostCallSpan(src string) (openCodeFreeHostCall, int, bool) {
 	if strings.HasPrefix(src, openCodeFreeHostCallToken) {
-		rest := trimLeftSpace(strings.TrimPrefix(src, openCodeFreeHostCallToken))
-		if rest == "" || !strings.HasPrefix(rest, "(") {
-			return openCodeFreeHostCall{}, false
+		endTok := len(openCodeFreeHostCallToken)
+		if endTok < len(src) && isJSIdentCont(src[endTok]) {
+			return openCodeFreeHostCall{}, 0, false
 		}
-		rest = trimLeftSpace(rest[1:])
-		name, rest, ok := parseHostCallName(rest)
+		j := skipASCIISpace(src, endTok)
+		if j >= len(src) || src[j] != '(' {
+			return openCodeFreeHostCall{}, 0, false
+		}
+		j = skipASCIISpace(src, j+1)
+		name, rest, ok := parseHostCallName(src[j:])
 		if !ok || !validOpenCodeFreeHostToolName(name) {
-			return openCodeFreeHostCall{}, false
+			return openCodeFreeHostCall{}, 0, false
 		}
-		rest = trimLeftSpace(rest)
-		if !strings.HasPrefix(rest, ",") {
-			return openCodeFreeHostCall{}, false
+		j += len(src[j:]) - len(rest)
+		j = skipASCIISpace(src, j)
+		if j >= len(src) || src[j] != ',' {
+			return openCodeFreeHostCall{}, 0, false
 		}
-		return finishHostCallArgs(name, trimLeftSpace(rest[1:]))
+		j = skipASCIISpace(src, j+1)
+		call, n, ok := finishHostCallArgsSpan(name, src[j:])
+		if !ok {
+			return openCodeFreeHostCall{}, 0, false
+		}
+		j += n
+		j = skipASCIISpace(src, j)
+		if j < len(src) && src[j] == ')' {
+			j++
+		}
+		return call, j, true
 	}
 	name, rest, ok := splitToolsHostCall(src)
 	if !ok || !openCodeFreeHostExtraName(name) {
-		return openCodeFreeHostCall{}, false
+		return openCodeFreeHostCall{}, 0, false
 	}
-	return finishHostCallArgs(name, rest)
+	if len(rest) > len(src) || !strings.HasSuffix(src, rest) {
+		return openCodeFreeHostCall{}, 0, false
+	}
+	j := len(src) - len(rest)
+	call, n, ok := finishHostCallArgsSpan(name, rest)
+	if !ok {
+		return openCodeFreeHostCall{}, 0, false
+	}
+	j += n
+	j = skipASCIISpace(src, j)
+	if j < len(src) && src[j] == ')' {
+		j++
+	}
+	return call, j, true
 }
 
 func splitToolsHostCall(src string) (string, string, bool) {
@@ -903,19 +1584,19 @@ func splitToolsHostCall(src string) (string, string, bool) {
 	return name, trimLeftSpace(rest[1:]), true
 }
 
-func finishHostCallArgs(name, rest string) (openCodeFreeHostCall, bool) {
+func finishHostCallArgsSpan(name, rest string) (openCodeFreeHostCall, int, bool) {
 	if rest == "" || (rest[0] != '{' && rest[0] != '[') {
-		return openCodeFreeHostCall{}, false
+		return openCodeFreeHostCall{}, 0, false
 	}
 	raw, ok := extractBalancedJSON(rest)
 	if !ok {
-		return openCodeFreeHostCall{}, false
+		return openCodeFreeHostCall{}, 0, false
 	}
 	args, ok := jsValueToJSON(raw)
 	if !ok {
-		return openCodeFreeHostCall{}, false
+		return openCodeFreeHostCall{}, 0, false
 	}
-	return openCodeFreeHostCall{Name: name, Args: args}, true
+	return openCodeFreeHostCall{Name: name, Args: args}, len(raw), true
 }
 
 func parseHostCallName(src string) (string, string, bool) {

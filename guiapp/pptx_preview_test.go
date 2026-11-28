@@ -221,6 +221,66 @@ func TestDeckForSlideImageUsesSiblingDeck(t *testing.T) {
 	}
 }
 
+func TestPptxPreviewOutputDirLeavesCloudWorkspaceMount(t *testing.T) {
+	roots := []string{"cloud-workspaces", "cloud-workspaces-readonly"}
+	for _, rootName := range roots {
+		root := filepath.Join(t.TempDir(), rootName, "tenant", "cws_live")
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		deck := filepath.Join(root, "deck.pptx")
+		if err := os.WriteFile(deck, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dir := pptxPreviewOutputDir(deck)
+		if dir == pptx.DefaultPreviewDir(deck) {
+			t.Fatalf("%s preview stayed beside the deck", rootName)
+		}
+		if cloudWorkspacePreviewMountPath(dir) {
+			t.Fatalf("preview dir is inside the mount: %s", dir)
+		}
+		got, ok := deckForSlideImage(filepath.Join(dir, "slide_001.png"))
+		if !ok || !strings.EqualFold(got, deck) {
+			t.Fatalf("deck = %q ok=%v", got, ok)
+		}
+	}
+	local := filepath.Join(t.TempDir(), "proj", "deck.pptx")
+	if pptxPreviewOutputDir(local) != pptx.DefaultPreviewDir(local) {
+		t.Fatal("a local deck left its preview folder")
+	}
+}
+
+func TestPptxPreviewEnsureDoesNotWriteCloudWorkspaceSlideImages(t *testing.T) {
+	source, _ := renderTestDeck(t)
+	root := filepath.Join(t.TempDir(), "cloud-workspaces", "tenant", "cws_live")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deck := filepath.Join(root, "deck.pptx")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(deck, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&App{}).PptxPreviewEnsure(deck)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(result.OutputDir) })
+	if _, statErr := os.Stat(pptx.DefaultPreviewDir(deck)); !os.IsNotExist(statErr) {
+		t.Fatalf("slide images were written beside the deck: %v", statErr)
+	}
+	if cloudWorkspacePreviewMountPath(result.OutputDir) || len(result.Images) == 0 {
+		t.Fatalf("output = %q images = %d", result.OutputDir, len(result.Images))
+	}
+	got, ok := deckForSlideImage(result.Images[0])
+	if !ok || !strings.EqualFold(got, deck) {
+		t.Fatalf("deck = %q ok=%v", got, ok)
+	}
+}
+
 func TestPptxPreviewEnsureRendersWhenCacheIsStale(t *testing.T) {
 	deck, outDir := renderTestDeck(t)
 	old := time.Now().Add(-time.Hour)

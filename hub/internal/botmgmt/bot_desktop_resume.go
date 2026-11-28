@@ -34,6 +34,7 @@ type desktopResumeWatch struct {
 	resumed map[string]time.Time // tenant/desktop user/since -> admitted
 }
 
+
 var desktopResumeWatches = desktopResumeWatch{running: map[string]bool{}, resumed: map[string]time.Time{}}
 
 // NoteDesktopCtl is told about each desktop control request Hub relayed

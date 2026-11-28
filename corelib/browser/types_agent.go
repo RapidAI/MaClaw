@@ -119,7 +119,12 @@ type BrowserPageFlags struct {
 	Canvas         bool `json:"canvas,omitempty"`
 	PaymentConfirm bool `json:"payment_confirm,omitempty"`
 	ConsentDialog  bool `json:"consent_dialog,omitempty"`
-	VisionUsed     bool `json:"vision_used,omitempty"`
+	// OrderSuccess is a positive terminal shopping state (payment success,
+	// order accepted, waiting for shipment). It outranks incidental login,
+	// phone, or payment text left on the page, so those noisy signals must
+	// not hand the desktop back after the order already went through.
+	OrderSuccess bool `json:"order_success,omitempty"`
+	VisionUsed   bool `json:"vision_used,omitempty"`
 	// BlockingNotice: visible lines saying the account may not act yet
 	// ("…才能发布"), read in every same-origin frame.
 	BlockingNotice string `json:"blocking_notice,omitempty"`

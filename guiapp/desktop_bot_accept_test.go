@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -27,6 +28,8 @@ func TestDesktopBotAcceptToldKeepsOnlyTheModelsOwnSentence(t *testing.T) {
 		{"stop kept", DesktopBotUnderstanding{Told: "STOP_WORK"}, "停", "STOP_WORK"},
 		{"files not named cleared", DesktopBotUnderstanding{Told: "好的，开始写摘要。"}, ackPDF, ""},
 		{"files named kept", DesktopBotUnderstanding{Told: "拿《2608.06216-回答.pdf》做素材，这就写。"}, ackPDF, "拿《2608.06216-回答.pdf》做素材，这就写。"},
+		{"generic clarification cleared", DesktopBotUnderstanding{Told: "我先确认一下这篇综述要发给谁、发在哪里，以及希望覆盖哪些内容"}, "找一篇最近的热门论文，发到技术社区做图文综述。", ""},
+		{"question cleared", DesktopBotUnderstanding{Told: "你希望写成多长？"}, "找一篇最近的热门论文，发到技术社区做图文综述。", ""},
 	}
 	for _, c := range cases {
 		if got := desktopBotAcceptTold(&c.u, c.text, "zh"); got != c.want {
@@ -133,5 +136,60 @@ func TestDesktopBotAckLineCleansAnswers(t *testing.T) {
 		if got := desktopBotAckLine(in, req); got != want {
 			t.Errorf("%q -> %q want %q", in, got, want)
 		}
+	}
+}
+
+func TestDesktopBotAckUsesSpecifiedBotModelWithoutFastRace(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		RemoteUserID:             "alice",
+		MaclawLLMCurrentProvider: "WorkBuddy",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "hub", Name: hubServiceProviderName, IsHubService: true, URL: "https://hub.example/api/llm/v1", Key: "viewer", Model: "auto", Protocol: "openai"},
+			{ID: "wb", Name: "WorkBuddy", URL: "https://copilot.example/v2", Key: "wb-key", Model: "hy4flash-free", Protocol: "openai"},
+			{ID: "zp", Name: "智谱编程", URL: "https://open.bigmodel.cn/api/paas/v4", Key: "zp-key", Model: "glm-5.3-flash", Protocol: "openai"},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "wb", Model: "hy4flash-free"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	app.rememberDesktopBotLLM("alice", DesktopBotLLM{
+		Mode: "custom", Choice: "custom", Stored: true,
+		Roles: &DesktopBotLLMRoles{Foreground: DesktopBotLLMRole{Name: "智谱编程", Model: "glm-5.3-flash"}},
+	})
+
+	prev, prevModels := desktopBotUnderstandLLM, desktopBotAckModels
+	defer func() { desktopBotUnderstandLLM, desktopBotAckModels = prev, prevModels }()
+	desktopBotAckModels = func(*App) (corelib.MaclawLLMConfig, *corelib.MaclawLLMConfig) {
+		fast := corelib.MaclawLLMConfig{URL: "https://hub.example/api/llm/v1", Key: "viewer", Model: "official-low", Protocol: "openai"}
+		return corelib.MaclawLLMConfig{URL: "https://copilot.example/v2", Key: "wb-key", Model: "hy4flash-free", Protocol: "openai"}, &fast
+	}
+	var mu sync.Mutex
+	var seen []desktopBotUnderstandRequest
+	desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
+		mu.Lock()
+		seen = append(seen, req)
+		mu.Unlock()
+		// Give incorrect concurrent racers time to start too; the specified
+		// model must be the only call, not merely the fastest one.
+		time.Sleep(20 * time.Millisecond)
+		return "我先打开页面处理。", nil
+	}
+	line, err := app.writeDesktopBotAck(context.Background(), DesktopBotAckRequest{Kind: "accept", Message: "打开 example.com", Lang: "zh-Hans"})
+	if err != nil || line == "" {
+		t.Fatalf("line %q err %v", line, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 1 {
+		t.Fatalf("specified model must be the only racer, got %+v", seen)
+	}
+	req := seen[0]
+	if req.override == nil || req.override.Model != "glm-5.3-flash" || req.override.ProviderName != "智谱编程" {
+		t.Fatalf("override %+v", req.override)
+	}
+	if req.hub {
+		t.Fatalf("specified model must not be replaced by hub: %+v", req)
 	}
 }

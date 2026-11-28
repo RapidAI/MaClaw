@@ -67,3 +67,33 @@ func TestCompareOffers(t *testing.T) {
 		t.Fatal(out)
 	}
 }
+
+func TestParseShopPagePaymentSuccess(t *testing.T) {
+	text := "支付成功\n送至: 北京海淀区上地街道上地东路上 马勇 170****4628\n商品: 共1件\n订单号: 3696476003659609\n实付: ¥45.80\n等待发货\n"
+	rb := ParseShopPage("https://trade.jd.com/shopping/orderSuccess?orderId=3696476003659609&channelCode=x", text)
+	if rb.Kind != "orders" || rb.PaymentStatus != "支付成功" {
+		t.Fatalf("%+v", rb)
+	}
+	if len(rb.OrderIDs) != 1 || rb.OrderIDs[0] != "3696476003659609" {
+		t.Fatalf("order ids %+v", rb.OrderIDs)
+	}
+	if rb.Address == "" || rb.ItemCount != 1 || rb.Total != "¥45.80" {
+		t.Fatalf("%+v", rb)
+	}
+}
+
+func TestOrderSuccessSuppressesPersonWallFlagsInScripts(t *testing.T) {
+	for _, script := range []string{browserPageFlagsCollectJS, wrapPageScript("return true", "jd.com")} {
+		for _, marker := range []string{"order_success: orderSuccess", "mfa: !orderSuccess", "payment_confirm: !orderSuccess"} {
+			if !strings.Contains(script, marker) {
+				t.Fatalf("script missing %q", marker)
+			}
+		}
+	}
+	if !strings.Contains(browserPageFlagsCollectJS, "signedInChrome = /退出登录|已登录/.test(fullText) || orderSuccess") {
+		t.Fatal("peek flags do not treat order success as a terminal signed-in state")
+	}
+	if !strings.Contains(wrapPageScript("return true", "jd.com"), "const signedIn = orderSuccess") {
+		t.Fatal("page-script flags do not treat order success as a terminal signed-in state")
+	}
+}

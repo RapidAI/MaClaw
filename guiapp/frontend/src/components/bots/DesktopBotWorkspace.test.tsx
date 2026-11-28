@@ -5666,6 +5666,35 @@ describe('DesktopBotWorkspace', () => {
         await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '打开 example.com', ''));
     });
 
+
+    it('still dispatches when transcript persistence is over quota', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '', instance_id: 'inst_1' }]);
+        listActiveRuns.mockResolvedValue([]);
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-quota', deferred: true, session_key: 'alice:bot_1' });
+        const proto = Object.getPrototypeOf(window.localStorage) as Storage;
+        const originalSetItem = proto.setItem;
+        proto.setItem = function (key: string, value: string) {
+            if (key === 'maclaw.desktopBotMessages.v1') {
+                throw new DOMException("Failed to execute 'setItem' on 'Storage': quota exceeded", 'QuotaExceededError');
+            }
+            return originalSetItem.call(this, key, value);
+        };
+        try {
+            renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            const row = await screen.findByTestId('desktop-bot-bot_1');
+            const open = row.querySelector('button.desktop-bot-workspace__open');
+            if (!open) throw new Error('missing row button');
+            fireEvent.click(open);
+            const box = await screen.findByTestId('desktop-bot-command');
+            fireEvent.change(box, { target: { value: '打开 example.com' } });
+            fireEvent.keyDown(box, { key: 'Enter' });
+            await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '打开 example.com', ''));
+            await waitFor(() => expect(screen.getByText('打开 example.com')).toBeTruthy());
+        } finally {
+            proto.setItem = originalSetItem;
+        }
+    });
+
     it('keeps the chat and composer on the left and opens the profile from the identity chip', async () => {
         const listedAt = '2024-01-15T00:30:00Z';
         listBots.mockResolvedValue([
