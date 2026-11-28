@@ -128,14 +128,14 @@ kind:
 A line under "timers already armed" is a timer that already runs. When the new message only adds a fact or a delivery form for that timer — a city, a place, or a file type such as PDF — kind is schedule, mode is create, and name is that timer's name. instruction is the whole order for one later run: what the timer already does, the place it covers, and the file form. A place is the subject of the report, not a field inside a sample file. A file form is how that later run is delivered. Do not make the file on this turn. ack says the timer now uses that place and that form, and does not say a file was already made. This is not kind new, not kind reply, and not kind ask. A different repeating job gets its own name. Leave a clock field out to keep the armed timer's value. Set interval_minutes, or hour and minute, only when the message changes the time. Omit day_of_week to keep the armed weekday.
 
 When no task is running, do not use supplement, change, stop, pause, or continue.
-A clear request is direct work. Do not ask only for permission to proceed. While spec is true and the spec is not settled, this sentence does not apply: kind stays ask.
+A clear request is direct work. Do not ask only for permission to proceed. Prefer a reasonable default over a question whenever the missing detail can be inferred or checked during execution: an account default such as the default shipping address means use it, an unspecified article/product means choose the most relevant first result, and login state is checked on the desktop instead of asking in advance. kind is ask only for a fact that cannot be inferred or observed there and without which the work cannot start, such as a required recipient, credential choice, payment approval, or a genuinely ambiguous target. While spec is true and the spec is not settled, this sentence does not apply: kind stays ask.
 If you are unsure which running task a message belongs to, kind is new and run is 0.
 Do not match the message against a list of phrases.
 
 While spec is true and the person has not settled it: kind is ask, phase is plan, and instruction is the whole spec so far (the goal, the constraints already named, and the open point). The person does not see instruction. ack is one short question, or the one detail you still need, in ordinary words. Do not say 规划模式, 規劃模式, plan mode, or that any mode started.
-When the person has confirmed that spec, or the spec is complete and they told you to go ahead: spec stays true, kind is new, phase is execute, and instruction is the whole settled spec the desktop helper should carry out. ack says you are starting that work, in ordinary words, and does not name a mode. A phase of plan does not keep the work waiting once the order carries the missing fact and 还缺 is empty. The words of 还缺 themselves are not that fact. A different job sets spec false and is judged on its own.
+An answer that leaves a point to you — 你自己决定, 你看着办, 随便, up to you — settles that point: choose the reasonable form yourself, write that choice into the spec, and never ask that point again. When the person has confirmed that spec, or the spec is complete and they told you to go ahead: spec stays true, kind is new, phase is execute, and instruction is the whole settled spec the desktop helper should carry out. ack says you are starting that work, in ordinary words, and does not name a mode. A phase of plan does not keep the work waiting once the order carries the missing fact and 还缺 is empty. The words of 还缺 themselves are not that fact. A different job sets spec false and is judged on its own.
 
-phase is execute or plan. execute is the default. Use plan when spec is true and not yet settled, and when this message itself orders something destructive or irreversible: deleting the person's own data, paying, wiping a machine, or sending a message to many other people. Destructive work stays spec false and kind new. Fetching, writing, publishing, and continuing work already arranged are execute when spec is false. A follow-up that continues a running task, or answers a question that is not about an armed timer, is kind continue or reply and phase execute. A follow-up that only fills in an armed timer stays kind schedule. If you are unsure and spec is false, phase is execute.`
+phase is execute or plan. execute is the default. Use plan when spec is true and not yet settled, and when this message itself orders something destructive or irreversible that has no later confirmation step: deleting the person's own data, wiping a machine, or sending a message to many other people. Buying, ordering, and paying are execute, never plan: the payment click itself is confirmed with the person at the checkout gate, so a purchase order is already the approval for every step up to that click. Destructive work stays spec false and kind new. Fetching, writing, publishing, and continuing work already arranged are execute when spec is false. A follow-up that continues a running task, or answers a question that is not about an armed timer, is kind continue or reply and phase execute. A follow-up that only fills in an armed timer stays kind schedule. If you are unsure and spec is false, phase is execute.`
 
 // botIntakeNoDesktopClause tells the decision what a computerless bot can
 // run. In the shared prompt "the desktop helper" and "desktop work" name
@@ -424,6 +424,24 @@ func specGapAnswered(card, gap, content string) bool {
 	return true
 }
 
+// specContentDelegates reports that this sentence hands the open point back
+// to the assistant — 你自己决定, 你看着办, up to you. That answer settles any
+// open point by definition: there is nothing left to ask. The exact words are
+// still folded onto 这次补充, so the run reads how the person delegated.
+func specContentDelegates(content string) bool {
+	flat := strings.Join(strings.Fields(strings.ToLower(content)), "")
+	for _, mark := range []string{
+		"你自己决定", "你们自己决定", "你决定", "你来定", "你看着办", "你拿主意",
+		"听你的", "随便你", "都可以你定", "你定吧", "自己定", "自行决定",
+		"uptoyou", "yourchoice", "youdecide", "decideyourself",
+	} {
+		if strings.Contains(flat, mark) {
+			return true
+		}
+	}
+	return false
+}
+
 // specAlreadyOnCard reports that folding this sentence would not add a fact.
 // The open point's own words are already on the card. A shorter fact that
 // appears only inside that point is not, so it can still be kept.
@@ -633,6 +651,9 @@ func applyOpenSpec(card, content string, out BotIntake) BotIntake {
 	gap := specGapOpen(card)
 	instructionGap := specGapOpen(out.Instruction)
 	closes := gap != "" && specRunMayCloseGap(card, content, out.Instruction) && instructionGap == ""
+	if !closes && gap != "" && specContentDelegates(content) {
+		closes = true
+	}
 	if gap != "" && !closes {
 		force := strings.EqualFold(out.Phase, "execute") || !specGapAnswered(card, gap, content)
 		return specAsk(card, content, out, force)

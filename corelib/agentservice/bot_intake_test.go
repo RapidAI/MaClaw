@@ -684,6 +684,25 @@ func TestAnsweredGapStartsEvenOnAPlanPhase(t *testing.T) {
 	}
 }
 
+func TestDelegatedAnswerClosesTheGap(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：图文综述发到 CSDN\n完成标准：帖子发布成功\n还缺：篇幅与目标读者；发布方式")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "你自己决定长度，公开给网友，直接发布。"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"目标：图文综述发到 CSDN\n完成标准：帖子发布成功\n还缺：篇幅与目标读者；发布方式","ack":"综述的篇幅与目标读者未定？","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "new" || got.Phase != "execute" {
+		t.Fatalf("delegated answer stayed a question: %+v %v", got, err)
+	}
+	if !strings.Contains(got.Instruction, "你自己决定长度") {
+		t.Fatalf("the delegation did not reach the run order: %q", got.Instruction)
+	}
+	if desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p") != "" {
+		t.Fatal("the settled spec stayed open")
+	}
+}
 func TestPlanOrderThatStillHasAGapDoesNotStart(t *testing.T) {
 	desktopbot.ResetSpecMemory()
 	t.Cleanup(desktopbot.ResetSpecMemory)
