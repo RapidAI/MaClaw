@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -235,6 +237,13 @@ func desktopComposeRunFinish(runID string, msg agentservice.Message, outcome, wh
 
 func desktopRunMeasuredResults(runID string) []string {
 	var out []string
+	if browser.RunHasCheckoutCommit(runID) {
+		if sum := desktopOrderSummaryFor(runID); sum != "" {
+			out = append(out, sum)
+		} else {
+			out = append(out, "本次任务完成了一笔支付，但订单明细未能回读到；请在购物网站的「我的订单」里核对订单号、商品、地址与金额。")
+		}
+	}
 	for _, r := range desktopPublishRunRecords(runID) {
 		if !r.posted() {
 			continue

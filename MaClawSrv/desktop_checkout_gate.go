@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"strconv"
+	"sync"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -267,3 +269,71 @@ func desktopCheckoutOCR(ctx context.Context, scope agentruntime.Scope, display s
 	}
 	return "", ""
 }
+// desktopOrderSnapshots keeps the freshest order-page readback of a run that
+// committed a payment itself, captured mechanically while the run was still
+// operating the desktop. The finish path renders it even when the model never
+// thought of summarizing: paying is a fact of the run, not of the model's
+// memory. Site-agnostic: whatever ShopReadback could parse is what renders.
+var desktopOrderSnapshots sync.Map // run id -> browser.ShopReadback
+
+func desktopNoteOrderSnapshot(scope agentruntime.Scope, session *browser.BrowserAgentSession, text string) {
+	if !browser.RunHasCheckoutCommit(scope.RunID) || session == nil {
+		return
+	}
+	if !strings.Contains(text, "order_success") {
+		return
+	}
+	rb, err := session.ShopReadback()
+	if err != nil {
+		return
+	}
+	desktopOrderSnapshots.Store(strings.TrimSpace(scope.RunID), rb)
+}
+
+func desktopOrderSnapshotClear(runID string) {
+	desktopOrderSnapshots.Delete(strings.TrimSpace(runID))
+}
+
+// desktopOrderSummaryFor renders the captured readback as a compact Markdown
+// table for the person. Empty when nothing was captured.
+func desktopOrderSummaryFor(runID string) string {
+	v, ok := desktopOrderSnapshots.Load(strings.TrimSpace(runID))
+	if !ok {
+		return ""
+	}
+	rb := v.(browser.ShopReadback)
+	var b strings.Builder
+	b.WriteString("\n订单核对：\n| 项目 | 内容 |\n| --- | --- |\n")
+	if len(rb.OrderIDs) > 0 {
+		b.WriteString("| 订单号 | " + strings.Join(rb.OrderIDs, "、") + " |\n")
+	}
+	if strings.TrimSpace(rb.PaymentStatus) != "" {
+		b.WriteString("| 状态 | " + strings.TrimSpace(rb.PaymentStatus) + " |\n")
+	}
+	if strings.TrimSpace(rb.Address) != "" {
+		b.WriteString("| 收货地址 | " + strings.TrimSpace(rb.Address) + " |\n")
+	}
+	for _, line := range rb.Lines {
+		row := strings.TrimSpace(line.Title)
+		if row == "" {
+			continue
+		}
+		if line.Qty > 0 {
+			row += " ×" + strconv.Itoa(line.Qty)
+		}
+		if line.Price != "" {
+			row += " " + line.Price
+		}
+		b.WriteString("| 商品 | " + row + " |\n")
+	}
+	if strings.TrimSpace(rb.Total) != "" {
+		b.WriteString("| 总额 | " + strings.TrimSpace(rb.Total) + " |\n")
+	}
+	for _, tr := range rb.Tracking {
+		if strings.TrimSpace(tr.Number) != "" {
+			b.WriteString("| 物流 | " + strings.TrimSpace(tr.Number) + " |\n")
+		}
+	}
+	return b.String()
+}
+

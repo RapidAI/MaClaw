@@ -1421,6 +1421,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	if specNote != "" && err == nil {
 		text = strings.TrimRight(specNote, "\n") + "\n" + strings.TrimLeft(text, "\n")
 	}
+	if err == nil {
+		desktopNoteOrderSnapshot(scope, session, text)
+	}
 	return finishDesktopActionPhase(scope, text, err, phase)
 }
 
@@ -3014,6 +3017,7 @@ func finishDesktopRound(tenantID, userID, runID string) {
 	}
 	browser.ClearRunCart(runID)
 	browser.ClearRunCheckoutCommit(runID)
+	desktopOrderSnapshotClear(runID)
 	dropDesktopToolResults(runID)
 	forgetDesktopOutage(runID)
 	desktopScreenLeaseEndRun(runID, "round_end")
