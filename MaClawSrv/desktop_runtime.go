@@ -3944,7 +3944,7 @@ func deliverHeldBytes(ctx context.Context, scope agentruntime.Scope, name, mime 
 	if base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
 		text, err = desktopSayFile(ctx, scope, name, raw)
 		if err == nil {
-			desktopNoteFileClaim(scope.RunID, itemID, raw)
+			desktopNoteFileClaim(scope.RunID, itemID, raw, name)
 		}
 	} else if err = noteDesktopFileItem(ctx, name, mime, raw, itemID); err != nil {
 		return "", err
@@ -4116,7 +4116,7 @@ func deliverFileOnItsOwn(ctx context.Context, scope agentruntime.Scope, name str
 			return "", deliverOwnError(sayErr)
 		}
 		desktopNoteScheduleDelivered(ctx, scope, name, raw)
-		desktopNoteFileClaim(scope.RunID, itemID, raw)
+		desktopNoteFileClaim(scope.RunID, itemID, raw, name)
 		return desktopAppendDeliverEvidence(deliverOwnText(text), name, raw), nil
 	}
 	if !saidFileFitsInbox(name, desktopDeliverMIME(name), len(raw)) {
@@ -4126,7 +4126,7 @@ func deliverFileOnItsOwn(ctx context.Context, scope agentruntime.Scope, name str
 		return "", deliverOwnError(sayErr)
 	}
 	desktopNoteScheduleDelivered(ctx, scope, name, raw)
-	desktopNoteFileClaim(scope.RunID, itemID, raw)
+	desktopNoteFileClaim(scope.RunID, itemID, raw, name)
 	return desktopAppendDeliverEvidence(deliverOwnText(fmt.Sprintf("Delivered %s (%d bytes) as its own chat message. The person's MaClaw app has the file. Say that it was sent as a separate message.", name, len(raw))), name, raw), nil
 }
 

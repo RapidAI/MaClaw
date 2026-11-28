@@ -314,3 +314,16 @@ func TestDesktopFileRefClaimAttributesAStoreDelivery(t *testing.T) {
 		t.Fatalf("outcome=%q why=%q", outcome, why)
 	}
 }
+
+func TestDesktopFileRefClaimNamesAnOtherwiseEmptyReceipt(t *testing.T) {
+	runID := "run-file-ref-receipt-name"
+	desktopFileClaimMu.Lock()
+	delete(desktopFileClaimsByRun, runID)
+	desktopFileClaimMu.Unlock()
+	desktopNoteFileRefClaim(runID, "", "bf_receipt", "report.pdf")
+	msg := &agentservice.Message{}
+	noteDeliveredFiles(runID, msg, 1)
+	if !strings.Contains(msg.Content, "report.pdf") {
+		t.Fatalf("receipt content %q", msg.Content)
+	}
+}

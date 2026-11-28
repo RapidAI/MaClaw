@@ -141,7 +141,7 @@ func deliverDesktopLargeAtItem(ctx context.Context, scope agentruntime.Scope, re
 		return "", err
 	}
 	desktopNoteScheduleDelivered(ctx, scope, name, raw)
-	desktopNoteFileClaim(scope.RunID, itemID, raw)
+	desktopNoteFileClaim(scope.RunID, itemID, raw, name)
 	return desktopAppendDeliverEvidence(text, name, raw), nil
 }
 

@@ -781,42 +781,42 @@ func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, 
 	}
 	if resolved && contract.typed {
 		verdict, why := desktopAttributedVerdict(run.ID, msg, contract.parsed)
-		noteDeliveredFiles(msg, files)
+		noteDeliveredFiles(run.ID, msg, files)
 		rememberContractOutcome(run, msg, contract.parsed, verdict)
 		return verdict, why
 	}
 	if resolved {
 		if verdict, why := desktopContractVerdict(contract.items, contract.slots, files, complete, incomplete, other); verdict != "" {
-			noteDeliveredFiles(msg, files)
+			noteDeliveredFiles(run.ID, msg, files)
 			return verdict, why
 		}
 	}
 	if desktopExtractionUnresolved(run.ID) {
-		noteDeliveredFiles(msg, files)
+		noteDeliveredFiles(run.ID, msg, files)
 		return agentservice.TaskOutcomeUnverified, "deliverable extraction unfinished"
 	}
 	if desktopPlanTurn(run) {
 		answered := desktopVisibleAnswer(msg) != ""
-		noteDeliveredFiles(msg, files)
+		noteDeliveredFiles(run.ID, msg, files)
 		if answered {
 			return agentservice.TaskOutcomeDone, "text answer"
 		}
 		return agentservice.TaskOutcomeUnverified, "plan is not delivery"
 	}
 	if other > 0 && complete == 0 {
-		noteDeliveredFiles(msg, files)
+		noteDeliveredFiles(run.ID, msg, files)
 		return agentservice.TaskOutcomeUnverified, "publish not verified"
 	}
 	if incomplete > 0 {
-		noteDeliveredFiles(msg, files)
+		noteDeliveredFiles(run.ID, msg, files)
 		return agentservice.TaskOutcomePartial, "publish incomplete"
 	}
 	if complete > 0 {
-		noteDeliveredFiles(msg, files)
+		noteDeliveredFiles(run.ID, msg, files)
 		return agentservice.TaskOutcomeDone, "published"
 	}
 	if files > 0 {
-		noteDeliveredFiles(msg, files)
+		noteDeliveredFiles(run.ID, msg, files)
 		return agentservice.TaskOutcomeDone, "file delivered"
 	}
 	if desktopVisibleAnswer(msg) != "" && (!desktopRunTookSteps(run.ID) || resolved) {
@@ -946,11 +946,29 @@ func desktopDeliveredFileCount(runID string, msg *agentservice.Message) int {
 	return len(seen)
 }
 
-func noteDeliveredFiles(msg *agentservice.Message, files int) {
+func noteDeliveredFiles(runID string, msg *agentservice.Message, files int) {
 	if files == 0 || msg == nil || strings.TrimSpace(msg.Content) != "" {
 		return
 	}
 	names := deliveredOutputNames(msg)
+	for _, claim := range desktopFileClaims(runID) {
+		if claim.Name == "" {
+			continue
+		}
+		dup := false
+		for _, name := range names {
+			if name == claim.Name {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			names = append(names, claim.Name)
+		}
+		if len(names) >= 3 {
+			break
+		}
+	}
 	if len(names) == 0 {
 		return
 	}
@@ -1282,7 +1300,7 @@ var (
 	desktopFileClaimsByRun = map[string][]desktopFileClaim{}
 )
 
-func desktopNoteFileClaim(runID, itemID string, raw []byte) {
+func desktopNoteFileClaim(runID, itemID string, raw []byte, names ...string) {
 	runID = strings.TrimSpace(runID)
 	itemID = strings.TrimSpace(itemID)
 	if runID == "" || len(raw) == 0 {
@@ -1290,8 +1308,15 @@ func desktopNoteFileClaim(runID, itemID string, raw []byte) {
 	}
 	fp := fileFingerprint(base64.StdEncoding.EncodeToString(raw))
 	desktopFileClaimMu.Lock()
-	desktopFileClaimsByRun[runID] = append(desktopFileClaimsByRun[runID], desktopFileClaim{ItemID: itemID, Fingerprint: fp})
+	desktopFileClaimsByRun[runID] = append(desktopFileClaimsByRun[runID], desktopFileClaim{ItemID: itemID, Fingerprint: fp, Name: firstDesktopFileClaimName(names)})
 	desktopFileClaimMu.Unlock()
+}
+
+func firstDesktopFileClaimName(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(names[0])
 }
 
 func desktopNoteFileRefClaim(runID, itemID, ref, name string) {
