@@ -6723,7 +6723,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             // accept line is held back until that decision.
             let liveRuns: Array<{ run_id?: string; task_text?: string; waiting_for_user?: boolean }> = [];
             try {
-                liveRuns = (await GetActiveDesktopRuns(botId) as typeof liveRuns) || [];
+                // This probe is only a fold hint. A Wails bridge call that never
+                // settles must not hold the person's words back from Hub.
+                liveRuns = (await withinBudget(GetActiveDesktopRuns(botId) as Promise<typeof liveRuns>, 800)) || [];
             } catch {
                 liveRuns = [];
             }

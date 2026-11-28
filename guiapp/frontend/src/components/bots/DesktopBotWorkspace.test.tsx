@@ -5651,6 +5651,21 @@ describe('DesktopBotWorkspace', () => {
         expect(stored.some(item => item.role === 'assistant' && item.pending)).toBe(false);
     });
 
+    it('still dispatches when the active-run probe never settles', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '', instance_id: 'inst_1' }]);
+        listActiveRuns.mockImplementation(() => new Promise<Array<Record<string, unknown>>>(() => undefined));
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-hung-probe', deferred: true, session_key: 'alice:bot_1' });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        const row = await screen.findByTestId('desktop-bot-bot_1');
+        const open = row.querySelector('button.desktop-bot-workspace__open');
+        if (!open) throw new Error('missing row button');
+        fireEvent.click(open);
+        const box = await screen.findByTestId('desktop-bot-command');
+        fireEvent.change(box, { target: { value: '打开 example.com' } });
+        fireEvent.keyDown(box, { key: 'Enter' });
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '打开 example.com', ''));
+    });
+
     it('keeps the chat and composer on the left and opens the profile from the identity chip', async () => {
         const listedAt = '2024-01-15T00:30:00Z';
         listBots.mockResolvedValue([
