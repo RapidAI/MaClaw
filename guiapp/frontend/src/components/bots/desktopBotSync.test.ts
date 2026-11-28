@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
     appendDesktopBotReport,
     messagesForBot,
+    resetDesktopBotTranscriptMemoryForTest,
     saveBotMessages,
     type DesktopBotMessage,
 } from './desktopBots';
@@ -405,10 +406,14 @@ describe('sync through the stored transcript', () => {
     const writes: Array<{ owner: string; writes: unknown[] }> = [];
     beforeEach(() => {
         window.localStorage.clear();
+        resetDesktopBotTranscriptMemoryForTest();
         writes.length = 0;
         resetDesktopBotSyncForTest(async (owner, w) => { writes.push({ owner, writes: w }); });
     });
-    afterEach(() => resetDesktopBotSyncForTest());
+    afterEach(() => {
+        resetDesktopBotSyncForTest();
+        resetDesktopBotTranscriptMemoryForTest();
+    });
 
     it('publishes a saved transcript for a signed-in account only', async () => {
         saveBotMessages('alice', 'bot_1', [{ id: 'm-1', role: 'user', content: 'hi' }]);
@@ -420,6 +425,45 @@ describe('sync through the stored transcript', () => {
         saveBotMessages('alice', 'bot_1', messagesForBot('alice', 'bot_1'));
         await flushDesktopBotSync();
         expect(writes).toHaveLength(1);
+    });
+
+    it('still publishes and reads the transcript when localStorage is over quota', async () => {
+        const proto = Object.getPrototypeOf(window.localStorage) as Storage;
+        const originalSetItem = proto.setItem;
+        proto.setItem = function (key: string, value: string) {
+            if (key === 'maclaw.desktopBotMessages.v1') {
+                throw new DOMException("Failed to execute 'setItem' on 'Storage': quota exceeded", 'QuotaExceededError');
+            }
+            return originalSetItem.call(this, key, value);
+        };
+        try {
+            saveBotMessages('alice', 'bot_1', [{ id: 'm-quota', role: 'user', content: 'server must keep this' }]);
+            expect(messagesForBot('alice', 'bot_1').map(item => item.content)).toEqual(['server must keep this']);
+            await flushDesktopBotSync();
+            expect(writes).toHaveLength(1);
+            expect(writes[0].writes).toEqual([{ bot_id: 'bot_1', id: 'm-quota', kind: 'message', data: { role: 'user', content: 'server must keep this' } }]);
+        } finally {
+            proto.setItem = originalSetItem;
+        }
+    });
+
+    it('keeps a server replay visible when the local cache write fails', () => {
+        const proto = Object.getPrototypeOf(window.localStorage) as Storage;
+        const originalSetItem = proto.setItem;
+        proto.setItem = function (key: string, value: string) {
+            if (key === 'maclaw.desktopBotMessages.v1') {
+                throw new DOMException("Failed to execute 'setItem' on 'Storage': quota exceeded", 'QuotaExceededError');
+            }
+            return originalSetItem.call(this, key, value);
+        };
+        try {
+            applyDesktopBotSync({ owner_id: 'alice', head: 2, entries: [
+                { bot_id: 'bot_1', id: 'm-remote', seq: 2, created_seq: 2, origin: 'B', data: { role: 'assistant', content: 'server replay' } },
+            ] });
+            expect(messagesForBot('alice', 'bot_1').map(item => item.content)).toEqual(['server replay']);
+        } finally {
+            proto.setItem = originalSetItem;
+        }
     });
 
     it('merges another client per user and per bot, without echo', async () => {

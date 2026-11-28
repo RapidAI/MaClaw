@@ -353,6 +353,24 @@ func (s *Service) WriteConversation(ctx context.Context, tenantID, userID, origi
 	return saved.Head, err
 }
 
+func convBotIdentityExists(rec *record, botID string) bool {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return false
+	}
+	for _, bot := range rec.Bots {
+		if bot.ID == botID || bot.InstanceID == botID {
+			return true
+		}
+	}
+	for _, bot := range rec.LocalBots {
+		if bot.ID == botID {
+			return true
+		}
+	}
+	return false
+}
+
 // SaveConversation is WriteConversation plus the sequence of each message,
 // so the writing GUI can place its own bubble without waiting for another
 // client to echo it.
@@ -372,14 +390,36 @@ func (s *Service) SaveConversation(ctx context.Context, tenantID, userID, origin
 	if err != nil {
 		return ConversationSave{}, err
 	}
+	valid := make([]ConversationWrite, 0, len(writes))
+	foreign := false
 	for i := range writes {
 		if err := validConvWrite(&writes[i]); err != nil {
 			return ConversationSave{}, err
 		}
-		if !s.ownedBot(&rec, userID, writes[i].BotID) {
-			return ConversationSave{}, ErrNotFound
+		canonical, ok := s.resolveOwnedBot(&rec, userID, writes[i].BotID)
+		if ok {
+			writes[i].BotID = canonical
+			valid = append(valid, writes[i])
+			continue
 		}
+		if convBotIdentityExists(&rec, writes[i].BotID) {
+			// A bot that exists but belongs to somebody else is never a
+			// cache-cleanup case. Reject the batch before anything is written.
+			foreign = true
+		}
+		// Otherwise this is a transcript left by a deleted or local-only bot.
+		// It must not poison the valid entries in the same sync batch: the
+		// server journal is authoritative for current bots, while stale local
+		// history simply has no server destination.
 	}
+	if foreign {
+		return ConversationSave{}, ErrNotFound
+	}
+	if len(valid) == 0 {
+		head, err := s.conversationHead(ctx, tenantID, userID)
+		return ConversationSave{Head: head}, err
+	}
+	writes = valid
 	origin = convOrigin(origin)
 	h := s.conv()
 	h.mu.Lock()
@@ -496,8 +536,12 @@ func (s *Service) ReadConversation(ctx context.Context, tenantID, userID, botID 
 	if err != nil {
 		return ConversationPage{}, err
 	}
-	if botID != "" && !s.ownedBot(&rec, userID, botID) {
-		return ConversationPage{}, ErrNotFound
+	if botID != "" {
+		canonical, ok := s.resolveOwnedBot(&rec, userID, botID)
+		if !ok {
+			return ConversationPage{}, ErrNotFound
+		}
+		botID = canonical
 	}
 	if limit <= 0 || limit > convPageMax {
 		limit = convPageMax

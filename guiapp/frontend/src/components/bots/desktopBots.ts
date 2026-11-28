@@ -563,10 +563,11 @@ function botTurnIsLive(userId: string, botId: string, messageId: string): boolea
     return liveBotTurns.has(liveBotTurnKey(userId, botId, messageId));
 }
 
-// Successful transcript writes. The monitor compares this instead of copying
-// the stored JSON on every poll. A failed setItem leaves storage unchanged
-// and does not advance the counter. The event lets bot-task and seen-reply
-// listeners see the same write, including one that lands while this page is closed.
+// Transcript writes. The monitor compares this instead of copying the stored
+// JSON on every poll. localStorage is only a cache here: a failed setItem does
+// not undo the in-memory transcript or the server sync write, so the counter
+// still advances. The event lets bot-task and seen-reply listeners see the
+// same write, including one that lands while this page is closed.
 export const BOT_TRANSCRIPT_EVENT = 'maclaw-bot-transcript';
 
 let transcriptGeneration = 0;
@@ -587,12 +588,21 @@ function noteTranscriptWrite(userId: string, botId: string) {
 // with an id and a user or assistant role.
 export function eachDesktopBotTranscript(visit: (userKey: string, botId: string, messages: DesktopBotMessage[]) => void) {
     const all = readMessages();
+    const seen = new Set<string>();
     for (const userKey of Object.keys(all)) {
         const bots = all[userKey];
         if (!bots || typeof bots !== 'object') continue;
         for (const botId of Object.keys(bots)) {
-            visit(userKey, botId, transcriptMessages(bots[botId]));
+            const key = transcriptMemoryKey(userKey, botId);
+            seen.add(key);
+            visit(userKey, botId, transcriptMessages(failedTranscriptMemory.get(key) || bots[botId]));
         }
+    }
+    for (const [key, messages] of failedTranscriptMemory) {
+        if (seen.has(key)) continue;
+        const split = key.indexOf('\u0000');
+        if (split < 0) continue;
+        visit(key.slice(0, split), key.slice(split + 1), transcriptMessages(messages));
     }
 }
 
@@ -1199,6 +1209,21 @@ export function deleteDesktopBot(userId: string, botId: string): DesktopBot[] {
 
 type StoredMessages = Record<string, Record<string, DesktopBotMessage[]>>;
 
+// localStorage is only the reload cache. When WebView refuses a write (the
+// transcript budget is easy to hit with screenshots), the current process
+// still has to read and publish the transcript it just accepted. These are
+// therefore only the transcripts whose durable write failed; a successful
+// write drops the fallback and storage becomes the cache again.
+const failedTranscriptMemory = new Map<string, DesktopBotMessage[]>();
+
+function transcriptMemoryKey(userKey: string, botId: string): string {
+    return `${userKey}\u0000${botId}`;
+}
+
+export function resetDesktopBotTranscriptMemoryForTest(): void {
+    failedTranscriptMemory.clear();
+}
+
 function readMessages(): StoredMessages {
     const store = storage();
     if (!store) return {};
@@ -1223,7 +1248,9 @@ export function clearedBotMessages(messages: DesktopBotMessage[]): DesktopBotMes
 }
 
 export function messagesForBot(userId: string, botId: string): DesktopBotMessage[] {
-    const items = readMessages()[desktopUserKey(userId)]?.[botId];
+    const userKey = desktopUserKey(userId);
+    const memory = failedTranscriptMemory.get(transcriptMemoryKey(userKey, botId));
+    const items = memory || readMessages()[userKey]?.[botId];
     if (!Array.isArray(items)) return [];
     return items.filter(item => item && item.id && (item.role === 'user' || item.role === 'assistant')).map(item => {
         const shotPaths = desktopBotLocalPaths(item.shotPaths);
@@ -1342,31 +1369,38 @@ function offerTranscriptSync(userId: string, botId: string, messages: DesktopBot
 }
 
 export function saveBotMessages(userId: string, botId: string, messages: DesktopBotMessage[]) {
-    const store = storage();
-    if (!store) return;
-    const all = readMessages();
     const key = desktopUserKey(userId);
-    const kept = messages.slice(-80).map(withoutImageBytes);
-    all[key] = { ...(all[key] || {}), [botId]: kept };
-    let payload = JSON.stringify(all);
-    while (payload.length > MESSAGE_BUDGET && dropOldestShot(all, key, botId)) {
-        payload = JSON.stringify(all);
-    }
-    try {
-        store.setItem(MESSAGE_KEY, payload);
-        noteTranscriptWrite(userId, botId);
-        offerTranscriptSync(userId, botId, messages);
-    } catch {
-        dropEveryShot(all[key]);
+    const memoryKey = transcriptMemoryKey(key, botId);
+    failedTranscriptMemory.set(memoryKey, messages);
+    let persisted = false;
+    const store = storage();
+    if (store) {
+        const all = readMessages();
+        const kept = messages.slice(-80).map(withoutImageBytes);
+        all[key] = { ...(all[key] || {}), [botId]: kept };
+        let payload = JSON.stringify(all);
+        while (payload.length > MESSAGE_BUDGET && dropOldestShot(all, key, botId)) {
+            payload = JSON.stringify(all);
+        }
         try {
-            store.setItem(MESSAGE_KEY, JSON.stringify(all));
-            noteTranscriptWrite(userId, botId);
-            offerTranscriptSync(userId, botId, messages);
+            store.setItem(MESSAGE_KEY, payload);
+            persisted = true;
         } catch {
-            // The previous transcript stays. A screenshot that does not fit
-            // is better lost than the whole conversation.
+            dropEveryShot(all[key]);
+            try {
+                store.setItem(MESSAGE_KEY, JSON.stringify(all));
+                persisted = true;
+            } catch {
+                // The previous cache stays. The in-memory transcript above is
+                // still this process's truth, and Hub is the durable copy.
+            }
         }
     }
+    if (persisted) failedTranscriptMemory.delete(memoryKey);
+    // The transcript changed even when the cache write failed. Sync must not
+    // inherit localStorage's quota failure: Hub is the authoritative copy.
+    noteTranscriptWrite(userId, botId);
+    offerTranscriptSync(userId, botId, messages);
 }
 
 // notePendingBotDesktop keeps the live desktop on the pending reply.
@@ -1688,10 +1722,11 @@ export function appendDesktopBotReport(userId: string, botId: string, patch: { c
 }
 
 function clearBotMessages(userId: string, botId: string) {
+    const key = desktopUserKey(userId);
+    failedTranscriptMemory.delete(transcriptMemoryKey(key, botId));
     const store = storage();
     if (!store) return;
     const all = readMessages();
-    const key = desktopUserKey(userId);
     if (!all[key]) return;
     delete all[key][botId];
     store.setItem(MESSAGE_KEY, JSON.stringify(all));

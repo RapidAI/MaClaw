@@ -60,16 +60,25 @@ func botStyleEnabled() bool {
 }
 
 func (s *Service) ownedBot(rec *record, userID, botID string) bool {
-	i := indexOf(rec.Bots, botID)
-	if i >= 0 && rec.Bots[i].OwnerUserID == userID {
-		return true
+	_, ok := s.resolveOwnedBot(rec, userID, botID)
+	return ok
+}
+
+// resolveOwnedBot returns the bot under its canonical Hub registry id. A bot
+// has two stable identities in the system: Hub's registry id and the
+// MaClawSrv instance id. Message send and desktop routing already accept
+// both through ownedBot; durable state such as the conversation journal must
+// store only the canonical id, or one bot splits into two histories.
+func (s *Service) resolveOwnedBot(rec *record, userID, botID string) (string, bool) {
+	if bot, ok := ownedBot(*rec, userID, botID); ok {
+		return bot.ID, true
 	}
 	for _, lb := range rec.LocalBots {
 		if lb.ID == botID && lb.Owner == userID {
-			return true
+			return lb.ID, true
 		}
 	}
-	return false
+	return "", false
 }
 
 func botStyleView(botID string, r *botStyleRecord) BotStyleView {

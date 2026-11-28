@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
-import { addDesktopBot, desktopAckOwedOnDispatch, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, clearedBotMessages, isDesktopBotClearCommand, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotNoteConfirm, desktopBotWirePhase, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotPauseAskSentence, desktopBotStopIntent, desktopBotStoppedSentence, desktopFalseStopClaim, desktopReplyClaimsStopped, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
+import { addDesktopBot, desktopAckOwedOnDispatch, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, clearedBotMessages, isDesktopBotClearCommand, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotNoteConfirm, desktopBotWirePhase, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotPauseAskSentence, desktopBotStopIntent, desktopBotStoppedSentence, desktopFalseStopClaim, desktopReplyClaimsStopped, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, resetDesktopBotTranscriptMemoryForTest, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
 import type { DesktopBotMessage } from './desktopBots';
 
 beforeEach(() => {
     localStorage.clear();
+    resetDesktopBotTranscriptMemoryForTest();
 });
 
 describe('desktop bots', () => {
@@ -515,7 +516,7 @@ describe('desktop bots', () => {
         expect(inProgressBotTasks('alice', now)).toEqual([]);
     });
 
-    it('advances the transcript generation only after storage accepts the write', () => {
+    it('advances the transcript generation even when only memory and Hub can keep the write', () => {
         const before = botTranscriptGeneration();
         saveBotMessages('alice', 'bot_gen', [
             { id: 'm-1-user', role: 'user', content: '你好' },
@@ -533,11 +534,11 @@ describe('desktop bots', () => {
         } finally {
             proto.setItem = setItem;
         }
-        expect(botTranscriptGeneration()).toBe(before + 1);
-        expect(messagesForBot('alice', 'bot_gen').map(item => item.id)).toEqual(['m-1-user']);
+        expect(botTranscriptGeneration()).toBe(before + 2);
+        expect(messagesForBot('alice', 'bot_gen').map(item => item.id)).toEqual(['m-1-user', 'm-2-shot']);
 
         deleteDesktopBot('alice', 'bot_gen');
-        expect(botTranscriptGeneration()).toBe(before + 2);
+        expect(botTranscriptGeneration()).toBe(before + 3);
         expect(messagesForBot('alice', 'bot_gen')).toEqual([]);
     });
 

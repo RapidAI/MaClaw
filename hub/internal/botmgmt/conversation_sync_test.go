@@ -41,6 +41,77 @@ func TestEarlierDesktopLinesOmitsTheMessageJustSent(t *testing.T) {
 	}
 }
 
+func TestConversationAcceptsBotInstanceID(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := convService(t)
+	if _, err := svc.WriteConversation(ctx, "t", "alice", "A", []ConversationWrite{
+		convMsg("i", "m-instance", `{"role":"user","content":"instance id"}`),
+	}); err != nil {
+		t.Fatalf("instance id write: %v", err)
+	}
+	page, err := svc.ReadConversation(ctx, "t", "alice", "i", 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range page.Entries {
+		if e.ID == "m-instance" && e.BotID == "bot_a" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("instance write was not canonicalized: %+v", page.Entries)
+	}
+}
+
+func TestConversationStaleBotDoesNotPoisonSyncBatch(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := convService(t)
+	saved, err := svc.SaveConversation(ctx, "t", "alice", "A", []ConversationWrite{
+		convMsg("bot_deleted_local", "old-1", `{"role":"user","content":"old"}`),
+		convMsg("bot_a", "new-1", `{"role":"user","content":"new"}`),
+	})
+	if err != nil {
+		t.Fatalf("mixed stale/current batch: %v", err)
+	}
+	if len(saved.Assigned) != 1 || saved.Assigned[0].BotID != "bot_a" || saved.Assigned[0].ID != "new-1" {
+		t.Fatalf("assigned %+v", saved.Assigned)
+	}
+	page, err := svc.ReadConversation(ctx, "t", "alice", "bot_a", 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := convIDs(page.Entries); got != "bot_a/new-1@A" {
+		t.Fatalf("valid entry missing after stale skip: %s", got)
+	}
+
+	// A batch made only of stale local entries is a successful no-op. This
+	// lets an old GUI mark that cache as offered instead of retrying it forever.
+	if _, err := svc.SaveConversation(ctx, "t", "alice", "A", []ConversationWrite{
+		convMsg("bot_deleted_local", "old-1", `{"role":"user","content":"old"}`),
+	}); err != nil {
+		t.Fatalf("stale-only batch: %v", err)
+	}
+}
+
+func TestConversationForeignBotStillRejectsWholeBatch(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := convService(t)
+	if _, err := svc.SaveConversation(ctx, "t", "alice", "A", []ConversationWrite{
+		convMsg("bot_a", "new-1", `{"role":"user","content":"new"}`),
+		convMsg("bot_c", "foreign-1", `{"role":"user","content":"foreign"}`),
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("foreign mixed batch: %v", err)
+	}
+	page, err := svc.ReadConversation(ctx, "t", "alice", "bot_a", 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 0 {
+		t.Fatalf("valid write was applied before foreign rejection: %+v", page.Entries)
+	}
+}
+
 func TestConversationSaveKeepsCreatedSeq(t *testing.T) {
 	svc, _ := convService(t)
 	ctx := context.Background()
