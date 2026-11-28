@@ -229,6 +229,44 @@ describe('useAssistantPreviewOpenEvents latex document', () => {
         expect(openPreviewPane).toHaveBeenLastCalledWith(true);
     });
 
+    it('sends a task result to the cloud opener and leaves a paper on the local one', async () => {
+        vi.mocked(getWailsAppModule).mockResolvedValue({
+            PreviewTaskResultFile: vi.fn().mockResolvedValue({ path: 'D:/cloud/README.md', content: 'hi', language: 'markdown' }),
+        } as never);
+        const openWorkspaceFile = vi.fn();
+        const openTaskResultFile = vi.fn();
+        const openPreviewPane = vi.fn();
+        const openTaskResultPane = vi.fn();
+        renderHook(() => useAssistantPreviewOpenEvents({
+            allowed: true,
+            sessionKey: 'tab-local',
+            lang: 'zh-Hans',
+            openWorkspaceFile,
+            openTaskResultFile,
+            openTaskResultPane,
+            focusOpenedFile: () => {},
+            generationRef: { current: 0 },
+            openPreviewPane,
+        }));
+
+        dispatchPreviewTaskResult('D:/cloud/README.md');
+        await waitFor(() => expect(openTaskResultFile).toHaveBeenCalledTimes(1));
+        expect(openWorkspaceFile).not.toHaveBeenCalled();
+        expect(openTaskResultPane).toHaveBeenCalledWith(true);
+        expect(openPreviewPane).not.toHaveBeenCalled();
+
+        dispatchOpenLatexDocument({
+            projectPath: 'D:/tasks/latex',
+            relativePath: 'main.tex',
+            content: '\\documentclass{article}\n',
+        });
+        await waitFor(() => expect(openWorkspaceFile).toHaveBeenCalledTimes(1));
+        expect(openTaskResultFile).toHaveBeenCalledTimes(1);
+        expect(openPreviewPane).toHaveBeenCalledWith(true);
+        expect(openTaskResultPane).toHaveBeenCalledTimes(1);
+        expect(openWorkspaceFile.mock.calls[0][0].latexWorkbench).toBe(true);
+    });
+
     it('closes the pane when the current task refuses a result file', async () => {
         const openWorkspaceFile = vi.fn().mockReturnValue(false);
         const openPreviewPane = vi.fn();

@@ -1,10 +1,11 @@
 /// Voice engine orchestration — settings (engine/voice prefs), lazy native
 /// loads, synthesis + playback, local transcription. Heavy FFI calls run on
-/// worker isolates so the UI thread never blocks on a 2–8s inference.
+/// one resident worker isolate ([VoiceWorker]) so the UI thread never blocks
+/// on a 2–8s inference and a turn does not pay Isolate.run spawn plus a
+/// fresh dlopen.
 library;
 
 import 'dart:async';
-import 'dart:isolate';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,6 +15,7 @@ import 'package:speech_to_text/speech_to_text.dart' show LocaleName;
 import 'locale.dart';
 import 'native_voice.dart';
 import 'voice_assets.dart';
+import 'voice_worker.dart';
 
 enum TtsEngine { system, kokoro }
 
@@ -156,6 +158,10 @@ class VoiceEngine {
     // false again. Callers that must force a re-probe (an explicit retry)
     // call `NativeVoice.resetProbe()` first.
     if (!NativeVoice.usable) return;
+    // Overlap isolate spawn with the model check. The common case is that
+    // the files are already on disk, and that used to return before any
+    // worker existed, so the first utterance still paid the spawn.
+    unawaited(VoiceWorker.warm());
     if (await kokoroReady() && await localAsrReady()) return;
     try {
       await assets.ensureAll(
@@ -179,9 +185,8 @@ class VoiceEngine {
   }
 
   // In-flight engine loads, shared by concurrent callers so two speaks (or
-  // two transcribes) started together do not each spawn an Isolate.run that
-  // reloads the same Go-side manager. Cleared in `finally` so a failure can
-  // be retried by the next call.
+  // two transcribes) started together do not each reload the same Go-side
+  // manager. Cleared in `finally` so a failure can be retried by the next call.
   Future<String?>? _ttsLoading;
   Future<String?>? _asrLoading;
   int _ttsVoiceGen = 0;
@@ -193,8 +198,8 @@ class VoiceEngine {
     if (inFlight != null) return inFlight;
     final gen = _ttsVoiceGen;
     final voice = ttsVoice;
-    // Read the snapshots into locals: the Isolate.run closure must not
-    // capture `this` (the engine holds an AudioPlayer, which is not sendable).
+    // Read the snapshots into locals. The worker call must not close over
+    // `this` (the engine holds an AudioPlayer, which is not sendable).
     final model = _modelPathSnapshot!;
     final voiceDir = _voiceDirSnapshot!;
     final future = () async {
@@ -211,17 +216,17 @@ class VoiceEngine {
     return future;
   }
 
-  // Static so the Isolate.run closure cannot pick up an implicit `this`
-  // context — an instance method touching fields would send the engine (and
-  // its AudioPlayer) to the worker, and the send fails as unsendable.
+  // Static, and only the path strings cross to the worker. An instance
+  // closure sent with the engine (it holds an AudioPlayer) fails in release
+  // builds as an unsendable object.
   static Future<String?> _runTtsLoad(
     String model,
     String voiceDir,
     String voice,
-  ) => Isolate.run(() => NativeVoice.loadTts(model, voiceDir, voice));
+  ) => VoiceWorker.loadTts(model, voiceDir, voice);
 
   static Future<Uint8List> _runTts(String text, double speed) =>
-      Isolate.run(() => NativeVoice.tts(text, speed: speed));
+      VoiceWorker.tts(text, speed: speed);
 
   // Paths are looked up once and snapshotted for the worker isolate (the
   // isolate can't call path_provider).
@@ -474,13 +479,12 @@ class VoiceEngine {
     return future;
   }
 
-  // Static, like _runTtsLoad: an instance method here would give the closure
-  // an implicit `this` context again.
+  // Static, like _runTtsLoad: the worker receives the path or the PCM, not
+  // the engine.
   static Future<String?> _runAsrLoad(String model) =>
-      Isolate.run(() => NativeVoice.loadAsr(model));
+      VoiceWorker.loadAsr(model);
 
-  static Future<String> _runAsr(Uint8List pcm16) =>
-      Isolate.run(() => NativeVoice.asr(pcm16));
+  static Future<String> _runAsr(Uint8List pcm16) => VoiceWorker.asr(pcm16);
 
   /// Report each transcription step, so a silent microphone and a model that
   /// never finishes inference do not both look like "nothing happened".

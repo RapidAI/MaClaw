@@ -429,6 +429,23 @@ describe('CodingAgentProgressStatus', () => {
         });
     });
 
+    it('keeps created and deleted only when the event says they are true', () => {
+        const raw = 'Coding Agent Event: {"version":1,"agent":"coding","event":"diff_summary","phase":"result","file_changes":[{"path":"snake.cpp","added":12,"removed":0,"created":true},{"path":"old.cpp","added":0,"removed":3,"deleted":true},{"path":"keep.go","added":1,"removed":1,"created":false,"deleted":false}]}';
+        expect(parseCodingAgentEventProgress(raw)?.fileChanges).toEqual([
+            { path: 'snake.cpp', added: 12, removed: 0, created: true },
+            { path: 'old.cpp', added: 0, removed: 3, deleted: true },
+            { path: 'keep.go', added: 1, removed: 1 },
+        ]);
+        const write = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","detail":"write_file","outcome":"success","files":["snake.cpp"],"created":true,"added":12,"removed":0}';
+        expect(parseCodingAgentEventProgress(write)).toMatchObject({
+            event: 'tool_finished',
+            created: true,
+            added: 12,
+            removed: 0,
+            files: ['snake.cpp'],
+        });
+    });
+
     it('parses and displays bash commands on blocked or failed tool rows with full tooltip text', () => {
         const command = 'Remove-Item -Path "D:\\testdriver\\tests\\_parse_check.ps1" -Force; Write-Output done';
         const escapedCommand = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');

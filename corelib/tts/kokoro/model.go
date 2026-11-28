@@ -18,6 +18,13 @@ type Model struct {
 
 	gpuOnce sync.Once
 	gpu     *kokoroGPU // Metal generator resblocks (darwin; nil when off)
+
+	// PL-BERT text encoder on an NNAPI accelerator. The vocoder stays on CPU.
+	albertOnce      sync.Once
+	albertNPUBypass bool
+	albert          *albertNPU
+	albertNPUReason string
+	weightsPath     string
 }
 
 type Assets struct {
@@ -35,7 +42,7 @@ func LoadModel(assets Assets) (*Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Model{Config: cfg, Weights: weights, wCache: make(map[string][]float32)}, nil
+	return &Model{Config: cfg, Weights: weights, wCache: make(map[string][]float32), weightsPath: assets.WeightsPath}, nil
 }
 
 func (m *Model) cachedFloat32(key string, build func() ([]float32, error)) ([]float32, error) {

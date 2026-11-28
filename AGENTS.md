@@ -521,6 +521,54 @@
   does). No test renders the whole `App`, so the poller only starts where a
   consumer is actually mounted.
 
+## 云端 Agent model row in 大模型配置 (guiapp)
+
+- The cloud default model moved from the 云端 Agent settings tab into the
+  LLM page's assignment card: `LLMProfileAssignments` renders a 云端 Agent row
+  below Caption ONLY when its `showCloudAgent` prop is true
+  (`LLMConfigPanel.cloudAgentAvailable` ← `SettingsActiveContent` ← the
+  availability store above). Storage is `MaclawLLMProfiles.Cloud`
+  (*MaclawLLMProfile, corelib/app_config.go) — the POINTER is the tri-state:
+  nil = never configured ⇒ FOLLOWS the assistant profile live (the default);
+  `inherit_assistant` ⇒ explicit follow; false + empty provider = MaClaw
+  官方 pin; false + provider = custom push. The legacy
+  `cloud_agent_llm_provider/model` keys are read-only seeds now (only read
+  when Cloud is nil; `PatchConfigFields` still accepts them).
+- `seedCloudAgentLegacyDefault` (app_maclaw_llm.go) is deliberately STRICT: a
+  legacy pick materializes only when it satisfies the assignment contract
+  (resolves by stable ID then display name, non-hub-service, url+key, passed
+  connection test or is the current provider; empty model fills from
+  provider.Model). A stale pick stays nil — the follow default applies and an
+  invisible row can never fail save validation (a lenient seed once made the
+  whole LLM page unsaveable for name-based/empty-model picks). Runtime
+  `cloudAgentLLMDefaultSelection` (cloud_agent_client.go) stays lenient about
+  the test flag so a saved row keeps working when OAuth refresh clears it.
+- Live follow: `SaveMaclawLLMProfiles` fingerprints the cloud default
+  (official vs provider+model, follow resolved through the assistant) on the
+  pre-save config and on a next-view cfg with the incoming profiles swapped
+  in (legacy keys must still seed there); a changed fingerprint spawns
+  `applyCloudAgentLLMDefaultAfterProfilesChange` → ListCloudAgents →
+  SetCloudAgentLLM for every instance (skipping rows already on
+  label+model) / ResetCloudAgentLLM for custom rows only when the default is
+  unusable. Failures are logged, never fatal; empty `RemoteMachineID`
+  short-circuits before any network. Tests stub the
+  `applyCloudAgentLLMDefaultAfterProfilesChangeFn` var for synchronous runs.
+- Frontend invariants: `cloneProfiles` must preserve cloud's null-ness
+  (`cloud ? {...cloud} : undefined`) so an untouched row is never saved as an
+  explicit official pin (JSON.stringify dirty-compare relies on it); the
+  cloud provider select filters `is_hub_service` rows and labels "" as
+  MaClaw 官方; unchecking follow seeds the draft from the assistant EXCEPT
+  when the assistant provider is hub-service (then the official pin); the
+  row has no 测试连接 probe. The cloud panel's 默认模型 editor and its
+  PatchConfigFields/SetCloudAgentLLM fan-out are REMOVED — the tab keeps an
+  informational 默认模型 card only: the resolved default rendered from the
+  panel state's `cloud` summary (mode chip + provider · model chip; Go side
+  `maclawLLMCloudProfileSummary` reuses `cloudAgentLLMDefaultSelection` so
+  follow shows the assistant's live pick and unusable rows degrade to
+  官方) plus a 设置 button that jumps via `openSettingsTab('llm')`; the
+  per-instance list (ListCloudAgents fetch, model chips) is gone from the
+  tab — instance state lives in the task list.
+
 ## Sidebar collapse 功能栏/任务列表折叠 (guiapp/frontend)
 
 - State home: `src/components/layout/useSidebarCollapse.ts` — two booleans
@@ -582,6 +630,44 @@
 - Double-clicking the pane resize divider (`SidebarAiPane`) also toggles the
   pane; the two resize start/stop cycles it produces leave no stuck state
   (the drag effect cleanup unconditionally resets cursor/userSelect).
+
+## Top header chrome: bot 群聊/故障报告 cluster (guiapp/frontend)
+
+- The bots tab hosts 群聊 + `BugReportButton` in `MainTopHeader` (a
+  `.mth-bot-actions` sibling of `.top-header-window-controls`, left of
+  准备就绪), NOT on the floating identity chip — the chip is drag-placement
+  UI only. 群聊 is gated by DesktopBotWorkspace through
+  `components/bots/desktopBotHeaderBridge.ts` (module store): the workspace
+  registers `{ visible: !!selected && collab.features.rooms, open }` on mount
+  and revokes (null) on unmount; the bridge emits ONLY on visibility flips so
+  bots-list refreshes (new `open` closure each run) never re-render the
+  header. MainTopHeader additionally gates on `navTab === 'bots'`.
+- Buttons living in the header chrome MUST stop mousedown + dblclick
+  propagation (the `keepHeaderBehavior` pattern — see SidebarToggleCluster,
+  MainTopHeaderActions, the `mth-bot-actions` container, and the close/
+  maximize window buttons): the top-header's `onDoubleClick` toggles maximize,
+  plain `<button>`s are excluded from drag arming but NOT from the dblclick
+  bubble. Before the guards, double-clicking 隐藏窗口 maximized the just-hidden
+  window and double-clicking 最大化窗口 left it maximized (2 mousedowns +
+  1 dblclick toggle).
+- NEVER put text buttons inside `.top-header-window-controls`: pet-store's
+  `.top-header-window-controls button { width/height: 32px !important }`
+  normalizes EVERY control there to 32×32 (it even beats the window buttons'
+  inline 36×28), which crushes a text button to a 2px content box — that is
+  why the bot cluster is a sibling of that container, and its bug-button skin
+  (`.mth-bot-actions .task-bug-report-btn`) targets the sibling instead.
+  Also remember assemble order: `20-app-shell.css` lands BEFORE
+  `90-im-channels-markdown.css`'s `.btn-secondary` base rules and before the
+  pet-store overrides, so same-specificity overrides of those from
+  `20-app-shell.css` are dead on arrival — the rooms button ships stock
+  `.btn-secondary` look on purpose.
+- Dev previews: `top-header-preview.html` exercises the header cluster
+  standalone (bridge pre-registered, maximize/hide call counters on `window`
+  for automation); `desktop-bot-preview.html` renders the same header above
+  the workspace (`?rooms=0` hides the entry). The IAB browser could not
+  deliver cua/Playwright input to a preview tab during verification — bubbling
+  `dispatchEvent` sequences (mousedown/mouseup/click ×2 + dblclick) through
+  `evaluate` are the working substitute for gesture-level assertions.
 
 ## Markdown document preview (guiapp/frontend)
 
@@ -789,6 +875,38 @@
   >128MB window growth on the Go side logs a `self-growth` line that
   points at MACLAW_HEAP_PROFILE — "which side of the webview boundary
   ballooned" is answered by the default log either way.
+- 2026-11-28 RDP black screen: under WebView2 WINDOW_TO_VISUAL
+  composition hosting the cross-origin player OOPIF was worse than
+  memory-hungry — every layout transition (CSS fullscreen expand/restore,
+  takeover flap toggling is-fullscreen) could kill its renderer, and once
+  dead, NEW iframes never spawned a renderer either (nginx showed zero
+  /h264.html and /h264 WebSocket requests while the parent kept clicking
+  happily — the iframe just held a black bitmap). Mitigations that all
+  proved insufficient: not remounting on expand/restore, postMessage
+  stream-resize width renegotiation, ping/pong watchdog remounts, OS
+  maximize→restore Hide/Show in wails3. The fix that finally landed is
+  `DesktopBotH264Player` (guiapp/frontend/src/components/bots/): the
+  ~80-line player ported out of h264.html into an in-document React
+  component — WebSocket/VideoDecoder/MSE/input all run in the main WebView
+  process, so there is no OOPIF to die and every stage transition is pure
+  CSS + React. `desktopH264.ts` holds the wire-protocol helpers
+  (h264SocketURL derives the ws URL by replacing the last path segment);
+  `streamWidth` is a prop — changing it reconnects only the video socket.
+  The iframe remains only for the `vnc` viewer fallback. Keyboard input
+  is bound on the canvas/video element (focused surface), NOT window —
+  a window-level handler would eat the app's own shortcuts.
+- 2026-11-28 follow-up: `BotDesktopPicture`/`DesktopPicture` must never hand
+  the browser the RAW address `DesktopViewState`/`PeekDesktopView` returns
+  (`live`/`novnc_url` from desktopd). For node desktops that is
+  `http://desktopd.<node>.node.invalid/...` or a loopback `publicBase` —
+  undialable from any client (GUI WebView AND mobilebot WebView alike), so
+  both h264 ws and the vnc page die at once. Always pass it through
+  `rememberDesktopView` → `desktopViewURL` (gated handoff token; also
+  retargets issued tokens' bearer on container restart) before putting it
+  in `novnc_url`. The GUI additionally swaps to the asleep view the moment
+  the stream's `hello`/`display_state` reports a stopped display
+  (`DesktopBotH264Player` `onStopped` → `asleepByBot`), so opening a
+  sleeping desktop no longer flashes a black "not running" pane first.
 
 ## MCP host LAN access (guiapp)
 
@@ -878,6 +996,46 @@
   `[file-companion]` = companion-side; `[exit-lifecycle]` = shutdown lifecycle;
   `[boot]` = early startup markers.
 - `~/.maclaw/logs/pet-companion.log`, `registration.log` for those subsystems.
+
+## CJK font detection & self-repair (corelib/docgen)
+
+- PDF generation never fails for missing fonts: `docgen` embeds a subset of
+  Noto Sans SC (GB2312 + ASCII + Latin-1/Ext-A for western text;
+  `fonts/NotoSansSCSubset.ttf`, SIL OFL — keep `fonts/OFL.txt` with it;
+  regeneration steps in `fonts/README.md`) as the last-resort candidate.
+  Detection order: font cache dir → system paths → embedded subset.
+- The detection cache holds ONLY real (system/cache-dir) fonts. The embedded
+  fallback answer is deliberately not cached, so every probe re-walks the
+  candidates and a font installed or downloaded after the first render is
+  picked up without a restart. `docgen.UsingEmbeddedFallback()` reports the
+  fallback state; tests drive it via the `candidateSource` indirection.
+  `Generator` re-resolves fonts AT RENDER TIME (`fonts()`), not just at
+  construction — it is documented as safe to share and reuse, and long-lived
+  holders (the swarm orchestrator lives as long as the app) must not pin a
+  construction-time fallback forever.
+- Font cache dir: `MACLAW_FONT_DIR` or default `~/.maclaw/fonts` — any
+  `.ttf/.ttc/.otf` dropped there joins detection (sorted, same face for
+  regular+bold). `docgen.ValidateEmbeddableCJKFont` is the provisioning-time
+  validation gate (embeddable TrueType + CJK coverage).
+- cloudagent self-repair (`MaClawSrv/cloudagent/font_provision.go`): the
+  first `generate_pdf` render on the embedded subset kicks off a background
+  download of wqy-microhei.ttc into the cache dir (validated, atomic
+  tmp+rename, 48MB cap, 10min retry cooldown). `MACLAW_FONT_DOWNLOAD=off`
+  disables, `MACLAW_CJK_FONT_URL` overrides the source. The subset covers
+  the render in the meantime, so the user never sees the "没有可用的中文字体"
+  failure. Font-source choice is constrained — do NOT "upgrade" it casually:
+  Noto Sans SC upstream is variable-only with a wght=100 default instance
+  (renders Thin) and its static cuts are unembeddable CFF; DroidSansFallback
+  lacks ASCII/digits/℃ entirely (it is a complement face, not a full font).
+  WenQuanYi MicroHei is the one widely-mirrored static TrueType face that
+  covers ASCII+Latin+GB2312. Any replacement must be verified by rendering,
+  not just by ValidateEmbeddableCJKFont passing. For the same reason
+  DroidSansFallbackFull was REMOVED from the Linux system candidates: it
+  passes detection's CJK probe, so a host with fonts-droid-fallback
+  installed would silently render every digit and Latin letter as tofu.
+  Known limitation: MicroHei is single-weight, so a provisioned host (cache
+  font pairs regular==bold) renders bold text at regular weight — full
+  glyph coverage was judged more valuable than weight contrast.
 
 ## mobilebot (Flutter client)
 
@@ -1112,6 +1270,28 @@
   limit, so the default shows up in the clients' `desktop_quota` payload
   unchanged.
 
+## Hub 邀请注册落地页 (hub/internal/httpapi)
+
+- The public invite landing (`/invite/{code}`) names the inviter by MASKED
+  contact, never the uid: `referralInviterContactDisplay` prefers a real
+  email, skips the synthesized `phone:...` account email (phone-registered
+  users keep that in `users.email`), and falls back to the verified phone
+  identity via `IdentityService.BoundPhoneNumberForUser`; no contact at all
+  degrades to `maskReferralID`. Masking (`maskReferralContact`) is
+  deliberate — the page is reachable by anyone holding the link. The JSON
+  payload exposes this as `inviter.contact` (the old `masked_id` field was
+  removed; nothing consumed it).
+- Page languages are en / zh-CN / zh-TW / mn (Cyrillic Mongolian, copy keys
+  must stay in parity across all four — a missing key silently falls back
+  to English at render time). `detect()` maps browser language `mn*` → mn,
+  `zh*` → zh-CN/zh-TW, everything else → en. Terminology follows
+  mobilebot's `app_mn.arb` (Утасны дугаар, Баталгаажуулах код, данс…).
+- Both the JSON and HTML branches render the landing in ONE request; the
+  inviter contact is resolved once before the branch. The extra
+  `GetByID` (beyond the one `resolvePublicReferral` already does) is
+  accepted: the landing is rate-limited to 60 req/h/IP, and threading the
+  inviter user out of `resolvePublicReferral` would touch every caller.
+
 ## Hub admin web (hub/web/admin)
 
 - `node hub/web/admin/validate-admin-modules.js` enforces that runtime JS
@@ -1313,6 +1493,26 @@
 - Known surface trap: existing vrepo tests assert credential names with
   `getByText('GitHub')` — the provider select's `<option>GitHub</option>`
   collides, so those queries are scoped with `{ selector: 'strong' }`.
+- The 未连接代码库 hint under the composer flips to hidden on connect through
+  TWO cooperating paths, and BOTH are load-bearing. (1) The connect dialog
+  calls `noteCloudGitConnected(instanceId, view)` with the ConnectCloudAgentGit
+  response itself, so the hint dies the moment the connect resolves (no second
+  Hub round-trip); `refreshCloudGit` still runs after it to reconcile and
+  reload history, and its catch keeps the optimistic state (only flips
+  `checked`). (2) `sessionKey()` in remoteAssistantSession.ts INCLUDES
+  `cloudGit` — a republish that changes only cloudGit must move the store key,
+  or `emit()` swallows it as unchanged and the panel keeps the stale
+  `connected:false` snapshot until an unrelated publish re-renders it (the
+  2026-11-28 bug: connect succeeded, the hint survived). Do not drop the field
+  from the key again.
+- The task header's repo chip (`task-execution-cloud-git`) is a plain `<button>`
+  when the provider is derivable: service `github` is authoritative
+  (github.com/repo — GHE is unsupported, the GitHub base is host-pinned);
+  otherwise an HTTPS `origin` root wins (self-hosted gitlab); hosted gitlab
+  without an origin falls back to gitlab.com. Non-HTTPS or unknown → the chip
+  stays a plain non-clickable label. `cloudGitWebURL` in
+  TaskExecutionHeading.tsx is the single derivation, tests live in
+  taskListTitle.test.tsx.
 
 ## Cloud-agent workspace jail (MaClawSrv/cloudagent)
 
@@ -1424,6 +1624,64 @@
   renders an 独立窗口/回到主窗口 toggle in the stage dock (fail-closed
   probe; iframe unmounts while the native h264 window streams, takeover
   heartbeats continue from the standalone page).
+- 2026-11-28 RDP black desktop: a healthy H.264 stream can arrive and decode
+  while the embedded cross-origin iframe remains black because the main
+  WebView uses WebView2 composition hosting over RDP. The durable fix is the
+  in-document `DesktopBotH264Player` (see the WebView renderer OOM section);
+  auto pop-out under `DesktopStageWindowPreferred()` was removed afterwards
+  (user asked for no extra windows) — the pop-out survives only as the manual
+  独立窗口 toggle. `OpenDesktopStageWindow`
+  takes the COMPLETE remote player URL (handoff token + view_only + w/fps),
+  rejects anything that is not an h264.html/vnc.html desktop-handoff player,
+  navigates the existing window when that URL changes without Show/Focus:
+  width renegotiation and watch/live generation changes are background
+  maintenance, and Windows Focus would unminimize/steal foreground. Only the
+  initial creation takes focus. Review binaries (`review-*` version markers)
+  include that marker in the native stage title so a stale single-instance
+  process cannot be mistaken for the package under test; formal builds keep
+  the stable title. It exposes
+  `DesktopStageWindowOpen` for direct-close synchronization. Frontend open/close
+  calls are serialized through one promise chain in invocation order. Backend
+  creation serialization alone does not prevent overlapping async callers from
+  finishing out of order; the frontend chain keeps `stagePopOutURLRef` aligned
+  with the URL actually loaded in the native window and prevents owner cleanup
+  from overtaking an in-flight open. A close increments an open generation so
+  queued or in-flight resize/URL navigations cannot reopen a window the user
+  has just deliberately closed. The pop-out also
+  reports its physical-pixel width through `DesktopStageWindowWidth` (scaled
+  by the stage window's own screen, because WebviewWindow.Size is DIP); the
+  frontend replaces the outer h264 `w=` with that native-surface width so the
+  standalone window does not upscale the narrower embedded-panel encode. While
+  popped out the existing close poll also samples that width; a resize that is
+  stable across two samples and at least 64 physical px different re-navigates
+  the player, so dragging does not restart the decoder continuously but the
+  settled window is not left upscaling either. The workspace closes
+  the window when the panel closes/unmounts; when the main WebView is hidden
+  it keeps a still-visible pop-out alive (the user can minimize the panel and
+  keep watching it), but closes a minimized/invisible pop-out via
+  `DesktopStageWindowVisible` so no ownerless decoder keeps streaming.
+  A direct close of the native window emits `desktop-stage:closed`; the poll
+  of `DesktopStageWindowOpen` is only a fallback. Geometry is captured from
+  `WindowDidResize`, not inside `WindowClosing`, because wails close listeners
+  race window destruction and `win.Size()` can already be zero there.
+  Panel-initiated closes are
+  marked in the frontend before calling CloseDesktopStageWindow. That keeps
+  auto-preference from reopening a window the user just closed without
+  treating lifecycle cleanup as a manual return.
+  Maximize→restore black frames under RDP are presentation-state failures,
+  not stream failures: the player is loaded once, `PutBounds` returns, and no
+  second page request should be expected. The vendored wails3 `WM_SIZE`
+  handler re-asserts controller visibility (`Hide`/`Show`) after `PutBounds`
+  only for a composition-hosted window whose last size state was
+  `SIZE_MAXIMIZED`; ordinary drag-resizes and logically hidden windows must
+  not take this path. The embedded 放大/恢复 control is likewise layout-only:
+  `screenExpanded` must not enter the iframe key or `desktopFrameSource`
+  dependencies. Remounting that cross-origin iframe on restore can leave its
+  compositing layer black even though the page and stream are healthy.
+  Embedded iframes remain the default off RDP, and an explicit 回到主窗口 is
+  authoritative for that session. Never log the complete player URL: handoff
+  tokens are capabilities, so `desktopStageLogURL` redacts the path token
+  and drops the query.
 - Resize cursors: the v2 fork patch (8-way edge cursors for frameless
   windows, 406407d5) needs NO port — v3's runtime implements all 8 natively
   (drag.ts cursorForEdge + corner detection) plus `wails:resize:` IPC.

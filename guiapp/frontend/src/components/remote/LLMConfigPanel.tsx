@@ -40,9 +40,11 @@ interface Props {
     onRequestIdentityVerification?: () => void;
     /** Increments when a deep link (agent model menu) requests provider management. */
     autoOpenProviderDialogSeq?: number;
+    /** Hub 云端 Agent tenant switch; off (default) hides the 云端 Agent model row. */
+    cloudAgentAvailable?: boolean;
 }
 
-export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequestIdentityVerification, autoOpenProviderDialogSeq = 0 }: Props) {
+export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequestIdentityVerification, autoOpenProviderDialogSeq = 0, cloudAgentAvailable = false }: Props) {
     const { showAlert, showConfirm, showPrompt } = useDialog();
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [currentName, setCurrentName] = useState(NONE_PROVIDER);
@@ -1154,6 +1156,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                 onSaved={handleProfilesSaved}
                 providerListRevision={providerListRevision}
                 agentProviderSwitch={agentProviderSwitch}
+                showCloudAgent={cloudAgentAvailable}
                 descriptionAction={
                     <button
                         type="button"

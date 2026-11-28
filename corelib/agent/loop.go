@@ -917,6 +917,224 @@ type ContentRetrievalStopGuard interface {
 	ContentRetrievalStopNudge() string
 }
 
+// routedWorkStopNudgeCap is two reminders for web_search, two for web_fetch,
+// and two for generate_pdf. The host returns empty once the current tool's
+// reminders are spent. This cap stops a host that keeps asking.
+const routedWorkStopNudgeCap = 6
+
+// RoutedWorkStopGuard is an optional host callback. A tool-less stop is not
+// completion while a routed turn still owes web_search, web_fetch, or
+// generate_pdf and that tool has not been called. The prompt names it.
+// Empty means this host has no such debt, the tool was already called, or
+// its reminders are spent.
+type RoutedWorkStopGuard interface {
+	RoutedWorkStopNudge() string
+}
+
+// RoutedWorkStopOutcome is optional. When the nudge is empty because the
+// owed tool was never called and its reminders are spent,
+// UnresolvedRoutedWork is the sentence shown instead of a tool-less
+// announcement. Empty means the debt is gone, a reminder can still be
+// sent, or the call already ran and did not succeed. A failed call keeps
+// the model's report. The loop puts this sentence after a report that
+// followed a real tool call, and uses it alone when no tool ran.
+type RoutedWorkStopOutcome interface {
+	UnresolvedRoutedWork() string
+}
+
+// routedWorkReportMinRunes is the shortest reply that can be the report
+// written after a tool ran. A shorter first reply is a stub ("好的"), and a
+// later reply may replace it. A report at least this long stays when the
+// later reply does not contain it, even when that later reply is longer.
+const routedWorkReportMinRunes = 6
+
+// routedWorkVisible is the turn text for a routed-work hard exit. With no
+// tool call, the announcement is dropped and the sentence is the answer.
+// After a tool has run, the report stays and the sentence follows it.
+func routedWorkVisible(sentence, kept, current string, toolCalls int) string {
+	sentence = strings.TrimSpace(sentence)
+	if sentence == "" || toolCalls <= 0 {
+		return sentence
+	}
+	body := routedWorkReport(kept, current)
+	if body == "" || body == sentence {
+		return sentence
+	}
+	if strings.HasSuffix(body, sentence) {
+		return body
+	}
+	return body + "\n" + sentence
+}
+
+// routedWorkChoose picks the assistant text that carries the tool result.
+// The reply that quotes more of the retrieved text wins, so a later
+// writeup that adds the snippet replaces an earlier line that only repeats
+// the title. An equal amount keeps the report rule: an extension wins, a
+// long acknowledgement does not replace a report, and a stub yields to a
+// longer reply. The tool answer itself is not stored here.
+func routedWorkChoose(kept, current, facts string) string {
+	kept = strings.TrimSpace(kept)
+	current = strings.TrimSpace(current)
+	if facts = strings.TrimSpace(facts); facts != "" {
+		keptScore := routedWorkFactScore(kept, facts)
+		currentScore := routedWorkFactScore(current, facts)
+		switch {
+		case currentScore > keptScore:
+			return current
+		case keptScore > currentScore:
+			return kept
+		}
+	}
+	return routedWorkReport(kept, current)
+}
+
+// routedWorkQuotesFacts reports that text carries any of the tool answer.
+func routedWorkQuotesFacts(text, facts string) bool {
+	return routedWorkFactScore(text, facts) > 0
+}
+
+// routedWorkFactScore is how much of the retrieved text appears in the
+// reply. Each hit line adds its length. A six-rune overlap counts only
+// when no line matched, and only as one, so it cannot outweigh a title.
+func routedWorkFactScore(text, facts string) int {
+	text = strings.TrimSpace(text)
+	facts = routedWorkFactEvidence(strings.TrimSpace(facts))
+	if text == "" || facts == "" {
+		return 0
+	}
+	score := 0
+	for _, line := range strings.Split(facts, "\n") {
+		line = strings.TrimSpace(line)
+		if n, rest, ok := splitNumberedResultLine(line); ok && n > 0 {
+			line = rest
+		}
+		// A search title is often five runes ("北京今天晴"). The report
+		// floor of six would miss that line after the digest splits it
+		// from its snippet. Four is short enough to match the query
+		// words inside a narration ("北京天气").
+		if len([]rune(line)) < 5 {
+			continue
+		}
+		if strings.Contains(text, line) {
+			score += len([]rune(line))
+		}
+	}
+	if score > 0 {
+		return score
+	}
+	if strings.Contains(text, facts) || strings.Contains(facts, text) {
+		shared := text
+		if len([]rune(facts)) < len([]rune(shared)) {
+			shared = facts
+		}
+		if len([]rune(shared)) >= routedWorkReportMinRunes {
+			return len([]rune(shared))
+		}
+	}
+	if sharesRuneWindow(text, facts, routedWorkReportMinRunes) {
+		return 1
+	}
+	return 0
+}
+
+// publicSearchDigestLead is the fixed first line of a compact search
+// digest. It is not a retrieved fact. A narration that repeats it is not
+// quoting a hit.
+const publicSearchDigestLead = "根据公开检索，相关信息如下："
+
+func routedWorkFactEvidence(facts string) string {
+	facts = strings.TrimSpace(facts)
+	if strings.HasPrefix(facts, publicSearchDigestLead) {
+		facts = strings.TrimSpace(strings.TrimPrefix(facts, publicSearchDigestLead))
+	}
+	return facts
+}
+
+func sharesRuneWindow(a, b string, n int) bool {
+	if n <= 0 {
+		return false
+	}
+	ar := []rune(a)
+	br := []rune(b)
+	if len(ar) < n || len(br) < n {
+		return false
+	}
+	if len(ar) > len(br) {
+		ar, br = br, ar
+	}
+	longer := string(br)
+	for i := 0; i+n <= len(ar); i++ {
+		if strings.Contains(longer, string(ar[i:i+n])) {
+			return true
+		}
+	}
+	return false
+}
+
+// routedWorkReport picks the reply that carries the tool result. A later
+// reply that repeats the earlier one and adds to it wins. A later reply
+// that does not contain that report does not replace it. A stub first reply
+// yields to a longer later reply.
+func routedWorkReport(kept, current string) string {
+	kept = strings.TrimSpace(kept)
+	current = strings.TrimSpace(current)
+	switch {
+	case kept == "":
+		return current
+	case current == "":
+		return kept
+	case strings.Contains(current, kept):
+		return current
+	case strings.Contains(kept, current):
+		return kept
+	case len([]rune(kept)) >= routedWorkReportMinRunes:
+		return kept
+	case len([]rune(current)) > len([]rune(kept)):
+		return current
+	default:
+		return kept
+	}
+}
+
+// decideRoutedWorkStop is the prose stop and the empty stop. An empty
+// generation used to exhaust its own bound and publish the last text as
+// success, which never asked for the owed tool. The host reminder is spent
+// only when it is returned. keptOut is the best post-tool reply seen so
+// far. A later reply can replace it. facts is the user-facing tool answer
+// and is only evidence for that choice.
+func decideRoutedWorkStop(cb LoopCallbacks, content, kept, facts string, toolCalls, loopNudges, iteration, maxIter int) (prompt, exitText, keptOut string) {
+	keptOut = kept
+	if cb == nil {
+		return "", "", keptOut
+	}
+	guard, ok := cb.(RoutedWorkStopGuard)
+	if !ok {
+		return "", "", keptOut
+	}
+	if iteration+1 < maxIter && loopNudges < routedWorkStopNudgeCap {
+		prompt = strings.TrimSpace(guard.RoutedWorkStopNudge())
+	}
+	body := strings.TrimSpace(StripThinkingTags(content))
+	if prompt != "" {
+		if toolCalls > 0 && body != "" {
+			keptOut = routedWorkChoose(keptOut, body, facts)
+		}
+		return prompt, "", keptOut
+	}
+	outcome, ok := cb.(RoutedWorkStopOutcome)
+	if !ok {
+		return "", "", keptOut
+	}
+	text := strings.TrimSpace(outcome.UnresolvedRoutedWork())
+	if text == "" {
+		return "", "", keptOut
+	}
+	if toolCalls > 0 && body != "" {
+		keptOut = routedWorkChoose(keptOut, body, facts)
+	}
+	return "", routedWorkVisible(text, keptOut, "", toolCalls), keptOut
+}
+
 // ErrChecklistUnsettled is the hard-exit code when the model stops with prose
 // while a checklist it published still has non-terminal items. A written
 // summary does not close that checklist. A nameless tool call that already
@@ -1685,6 +1903,14 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	storedFactNudges := 0
 	skillObligationNudges := 0
 	contentRetrievalStopNudges := 0
+	routedWorkStopNudges := 0
+	// routedWorkKept is the assistant report written after a tool had already
+	// run, captured the first time a routed-work reminder refuses to finish.
+	// A later reminder often draws only an acknowledgement. The hard exit
+	// keeps the longer of the two so the retrieved facts stay with the
+	// sentence that names the call that never ran. A turn with no tool call
+	// has nothing to keep: the announcement is not that report.
+	var routedWorkKept string
 	desktopFinishForced := false
 	// preNudgeAnswer is the user-facing reply written before the one-shot
 	// stored-fact nudge. A follow-up that only acknowledges that instruction
@@ -3175,6 +3401,51 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				choice.FinishReason = "stop"
 			}
 			if !keptStreamed {
+				// The same owed-tool rule as a prose stop. An empty generation
+				// must not spend the empty bound and then publish success
+				// while web_search, web_fetch, or generate_pdf was never called.
+				// Nothing was written after the tool, so the captured report is
+				// empty too. The facts are the same user-facing tool answer a
+				// nameless stop would show: a short result, or the compact
+				// search digest. A long transcript stays out. That answer is
+				// not saved as the report, and the pre-tool announcement is
+				// not used: a later writeup can still replace a stub.
+				facts := latestUserFacingToolAnswer(historyDelta)
+				prompt, exitText, kept := decideRoutedWorkStop(cb, content, routedWorkKept, facts, totalToolCalls, routedWorkStopNudges, iteration, maxIter)
+				if prompt != "" || exitText != "" {
+					routedWorkKept = kept
+					if exitText != "" {
+						if strings.TrimSpace(kept) == "" && facts != "" {
+							exitText = routedWorkVisible(exitText, facts, "", totalToolCalls)
+						}
+						disposeSurface(ToolSurfaceResponseSettled)
+						return finish(LoopResult{
+							Text:       exitText,
+							Error:      exitText,
+							Iterations: iteration + 1,
+							ToolCalls:  totalToolCalls,
+							HardExit:   true,
+						})
+					}
+					routedWorkStopNudges++
+					disposeSurface(ToolSurfaceResponseSettled)
+					conversation = append(conversation, map[string]interface{}{
+						"role":              "assistant",
+						"content":           content,
+						"reasoning_content": "",
+					})
+					historyDelta = append(historyDelta, ConversationEntry{
+						Role:         "assistant",
+						Content:      content,
+						FinishReason: ResolveAssistantFinishReason(choice.FinishReason, false),
+					})
+					conversation = append(conversation, map[string]interface{}{
+						"role":    "user",
+						"content": prompt,
+					})
+					historyDelta = append(historyDelta, HostUserEntry(prompt))
+					continue
+				}
 				// The provider response was consumed, but it did not produce a usable
 				// assistant turn. Retire this exact surface before any backoff, steering
 				// check, or recovery prompt can create the next request surface.
@@ -3688,6 +3959,37 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 						continue
 					}
 				}
+			}
+			// A routed turn that still owes a retrieval or generate_pdf that
+			// has not been called has not finished. The host names that tool.
+			// Six is two reminders for each of web_search, web_fetch, and
+			// generate_pdf. Once those reminders are spent, the announcement
+			// is not the answer: the host sentence names the call that never
+			// ran. A call that already ran and failed is not that sentence.
+			// A report written after a tool ran stays in front of the sentence.
+			// An empty generation uses the same decision before the empty bound.
+			facts := latestUserFacingToolAnswer(historyDelta)
+			prompt, exitText, kept := decideRoutedWorkStop(cb, content, routedWorkKept, facts, totalToolCalls, routedWorkStopNudges, iteration, maxIter)
+			routedWorkKept = kept
+			if prompt != "" {
+				routedWorkStopNudges++
+				disposeSurface(ToolSurfaceResponseSettled)
+				conversation = append(conversation, map[string]interface{}{
+					"role":    "user",
+					"content": prompt,
+				})
+				historyDelta = append(historyDelta, HostUserEntry(prompt))
+				continue
+			}
+			if exitText != "" {
+				disposeSurface(ToolSurfaceResponseSettled)
+				return finish(LoopResult{
+					Text:       exitText,
+					Error:      exitText,
+					Iterations: iteration + 1,
+					ToolCalls:  totalToolCalls,
+					HardExit:   true,
+				})
 			}
 			// A full turn that stops before any tool call still has memory or
 			// knowledge_search unused. One nudge, then the model's next
@@ -6625,6 +6927,27 @@ func doResponsesRequestWithToolsOnce(ctx context.Context, cfg corelib.MaclawLLMC
 	return parsed, nil
 }
 
+// latestUserFacingToolAnswer is the newest successful tool body that can
+// stand in a chat bubble. A later long transcript does not hide an earlier
+// search digest. A fetched page contributes its content, and an empty page
+// does not. A failed call is not a fact.
+func latestUserFacingToolAnswer(history []ConversationEntry) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		entry := history[i]
+		if entry.Role != "tool" || entry.ToolOutcome != string(ToolExecutionOutcomeOK) {
+			continue
+		}
+		text, ok := entry.Content.(string)
+		if !ok {
+			continue
+		}
+		if answer := routedWorkReadableToolAnswer(text); answer != "" {
+			return answer
+		}
+	}
+	return ""
+}
+
 // lastSuccessfulToolBody is the newest successful tool body in this turn.
 func lastSuccessfulToolBody(history []ConversationEntry) string {
 	for i := len(history) - 1; i >= 0; i-- {
@@ -6711,7 +7034,45 @@ func compactPublicWebResults(raw string) (string, bool) {
 		}
 		lines = append(lines, line)
 	}
-	return "根据公开检索，相关信息如下：\n\n" + strings.Join(lines, "\n\n"), true
+	return publicSearchDigestLead + "\n\n" + strings.Join(lines, "\n\n"), true
+}
+
+func routedWorkJSONTranscript(answer string) bool {
+	answer = strings.TrimSpace(answer)
+	return strings.HasPrefix(answer, "{") || strings.HasPrefix(answer, "[")
+}
+
+// routedWorkReadableToolAnswer is the bubble text for one tool body. A
+// search listing becomes the compact digest. A fetched page is the title
+// and content, not the JSON envelope. An empty page is not a fact.
+func routedWorkReadableToolAnswer(raw string) string {
+	answer := userFacingToolAnswer(raw)
+	if answer != "" && !routedWorkJSONTranscript(answer) {
+		return answer
+	}
+	candidate := strings.TrimSpace(answer)
+	if candidate == "" {
+		candidate = strings.TrimSpace(raw)
+	}
+	if !routedWorkJSONTranscript(candidate) {
+		return ""
+	}
+	var page struct {
+		Title   string `json:"title"`
+		Content string `json:"content"`
+	}
+	if json.Unmarshal([]byte(candidate), &page) != nil {
+		return ""
+	}
+	content := strings.TrimSpace(page.Content)
+	if content == "" || len([]rune(content)) > 240 {
+		return ""
+	}
+	title := strings.TrimSpace(page.Title)
+	if title != "" && !strings.Contains(content, title) {
+		return title + "\n" + content
+	}
+	return content
 }
 
 type webResultSnippet struct {

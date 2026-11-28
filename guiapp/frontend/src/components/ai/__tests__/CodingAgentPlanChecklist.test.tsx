@@ -817,6 +817,29 @@ describe("CodingAgentPlanChecklist", () => {
         expect(toggle.getAttribute("aria-expanded")).toBe("false");
     });
 
+    it("does not open a deleted file from the chip", () => {
+        const onOpenFile = vi.fn();
+        const { getAllByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[]}
+                fileChanges={[
+                    { path: "guiapp/file_a.go", added: 4, removed: 1 },
+                    { path: "guiapp/gone.go", added: 0, removed: 3, deleted: true },
+                ]}
+                onOpenFile={onOpenFile}
+            />,
+        );
+        const rows = getAllByTestId("coding-agent-plan-file");
+        const deleted = rows.find((row) => row.getAttribute("title") === "guiapp/gone.go");
+        expect(deleted?.getAttribute("role")).toBeNull();
+        expect(deleted?.getAttribute("data-preview-path")).toBeNull();
+        fireEvent.click(deleted!);
+        expect(onOpenFile).not.toHaveBeenCalled();
+    });
+
     it("keeps file rows inert without an open handler", () => {
         const { getAllByTestId } = render(
             <CodingAgentPlanChecklist

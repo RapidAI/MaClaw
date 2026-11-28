@@ -626,6 +626,43 @@ func TestWatchSnapshotCarriesThinking(t *testing.T) {
 	}
 }
 
+func TestCodingPreviewEventCarriesCreated(t *testing.T) {
+	rt := openRuntime(t)
+	spec := putKind(t, rt, KindCoding)
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.emitToolFinished(inst, "task-1", "req-1", "write_file", `{"path":"snake.cpp"}`, "ok", false, 0, hostWriteEvent{
+		path: "snake.cpp", created: true, added: 12, removed: 0, hasCounts: true,
+	})
+	rt.emitCodingDiffSummary(inst, "task-1", "req-1", []codingagent.FinalAnswerFileChangeFact{
+		{Path: "snake.cpp", Created: true, Added: 12, Removed: 0, HasCounts: true},
+		{Path: "old.cpp", Deleted: true, Added: 0, Removed: 3, HasCounts: true},
+	})
+	raw, err := rt.Control(context.Background(), spec.ID, "user-a", "cloud_watch_task", []byte(`{"task_id":"task-1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap struct {
+		Parts []struct {
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	for _, part := range snap.Parts {
+		text += part.Text + "\n"
+	}
+	for _, want := range []string{`"created":true`, `"deleted":true`, `"event":"tool_finished"`, `"event":"diff_summary"`, `snake.cpp`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("snapshot missing %s: %s", want, text)
+		}
+	}
+}
+
 func TestCodingSystemPromptUsesSharedFinalAnswerContract(t *testing.T) {
 	dir := t.TempDir()
 	bk, err := openBook(dir)

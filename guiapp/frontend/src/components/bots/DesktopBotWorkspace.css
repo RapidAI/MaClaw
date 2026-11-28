@@ -2233,6 +2233,10 @@
     height: 100%;
 }
 
+.desktop-bot-stage__frame > .desktop-bot-stage__loading {
+    height: 100%;
+}
+
 /* 观看时挡住 iframe，避免在跨源页上切换 pointer-events。放大按钮在它上面。 */
 .desktop-bot-stage__shield {
     position: absolute;
@@ -2349,6 +2353,24 @@
     min-height: 0;
 }
 
+/* 播放器切换：两段并排，当前项实心高亮，避免分不清"显示的是当前项还是切换目标" */
+.desktop-bot-stage__viewer {
+    gap: 4px;
+}
+.desktop-bot-stage__viewer-opt {
+    opacity: 0.45;
+    padding: 0 5px;
+    border-radius: 999px;
+}
+.desktop-bot-stage__viewer-opt.is-on {
+    opacity: 1;
+    background: #1d1d21;
+    color: #fff;
+}
+.desktop-bot-stage__viewer-sep {
+    opacity: 0.3;
+}
+
 /* 底部模式条：对齐远控窗口，仅观看 / 取得控制权 */
 .desktop-bot-stage__dock {
     flex: 0 0 auto;
@@ -2443,6 +2465,67 @@
     min-height: 240px;
     border: 0;
     background: #111;
+}
+
+/* In-document H.264 player (DesktopBotH264Player): replaces the cross-origin
+   player iframe so no OOPIF can die under WebView2 composition hosting. */
+.desktop-h264 {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    background: #111;
+}
+
+.desktop-h264__surface {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    outline: none;
+    touch-action: none;
+    cursor: default;
+}
+
+.desktop-h264__status {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ddd;
+    background: #111;
+    font-size: 14px;
+    line-height: 1.7;
+    text-align: center;
+    padding: 0 28px;
+    white-space: pre-line;
+    z-index: 1;
+    pointer-events: none;
+}
+
+.desktop-h264__badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    line-height: 18px;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.55);
+    pointer-events: none;
+    z-index: 2;
+}
+
+.desktop-h264__badge.is-you {
+    background: rgba(22, 128, 61, 0.85);
+}
+
+.desktop-h264__badge.is-bot {
+    background: rgba(180, 83, 9, 0.85);
 }
 
 /* 输入区：随时可以留言，工作是后台的，回应是即时的 */
@@ -4401,40 +4484,6 @@ button.desktop-bot-feed__file {
 }
 
 /* Bot collaboration: status row, prompts, said bubbles, rooms */
-/* The header is a pointer-events:none overlay; the rooms button re-enables
-   events like the identity button does (jsdom ignores the property, so only
-   a real browser click ever catches this). */
-.desktop-bot-chat__rooms-btn { margin-left: auto; align-self: center; pointer-events: auto; }
-/* The chat header is a pointer-events:none overlay; the bug-report button
-   re-enables events like the identity button does. Sizing and skin mirror
-   .mc-task-execution-actions .task-bug-report-btn (the cluster-scoped task
-   header skin does not reach this bar, so the palette repeats here). */
-.desktop-bot-chat__header .task-bug-report-btn {
-    pointer-events: auto;
-    align-self: center;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    box-sizing: border-box;
-    width: 36px;
-    height: 32px;
-    margin-left: 6px;
-    padding: 0;
-    flex-shrink: 0;
-    line-height: 1;
-    border: 1px solid color-mix(in srgb, var(--theme-border, #e4e7ec) 85%, transparent);
-    border-radius: var(--radius-md, 8px);
-    background: var(--theme-surface, #fff);
-    color: var(--theme-text-secondary, #46586f);
-    cursor: pointer;
-}
-.desktop-bot-chat__header .task-bug-report-btn:hover:not(:disabled) {
-    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 32%, var(--theme-border, #e4e7ec));
-    background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
-    color: var(--theme-primary, #2e75cb);
-}
-.desktop-bot-chat__header .task-bug-report-btn svg { display: block; }
-.desktop-bot-chat__header .task-bug-report-btn:disabled { cursor: progress; opacity: 0.72; }
 .bot-collab { display: flex; flex-direction: column; gap: 6px; padding: 6px 16px; border-bottom: 1px solid var(--border-color, rgba(127,127,127,.2)); font-size: 12px; }
 .bot-collab__row { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0; padding: 2px 0; color: inherit; text-align: left; cursor: pointer; font: inherit; }
 .bot-collab__row > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -4451,21 +4500,341 @@ button.desktop-bot-feed__file {
 .bot-collab__prompt { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 8px; background: rgba(251,188,4,.16); border: 1px solid rgba(251,188,4,.5); }
 .bot-said__who { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; opacity: .85; margin-bottom: 2px; }
 .bot-said__who time { opacity: .6; }
-.bot-rooms-dialog { width: min(560px, 92vw); }
-.bot-rooms__list, .bot-rooms__members { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.bot-rooms__list li, .bot-rooms__members li { display: flex; align-items: center; gap: 8px; }
-.bot-rooms__open { flex: 1; display: flex; flex-direction: column; align-items: flex-start; background: none; border: 1px solid rgba(127,127,127,.25); border-radius: 8px; padding: 6px 10px; color: inherit; cursor: pointer; text-align: left; }
-.bot-rooms__members label { flex: 1; }
-.bot-rooms__hint { font-size: 12px; opacity: .75; }
-.bot-rooms__editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
-.bot-room-chat__log { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow: auto; padding: 4px; }
-.bot-room-chat__msg { display: flex; flex-direction: column; padding: 6px 10px; border-radius: 8px; background: rgba(127,127,127,.08); max-width: 85%; }
-.bot-room-chat__msg.is-me { align-self: flex-end; background: rgba(66,133,244,.14); }
-.bot-room-chat__answered { font-size: 12px; opacity: .75; min-height: 1em; margin: 4px 0; }
-.bot-room-chat__mentions { list-style: none; margin: 0 0 4px; padding: 4px; border: 1px solid rgba(127,127,127,.25); border-radius: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
-.bot-room-chat__mentions button { background: none; border: 0; color: inherit; cursor: pointer; padding: 2px 6px; }
-.bot-room-chat__form { display: flex; gap: 8px; align-items: flex-end; }
-.bot-room-chat__form textarea { flex: 1; resize: vertical; }
+/* 群聊 dialog (BotRoomsDialog): card list, member editor, room chat.
+   Theme tokens only — the dialog sits on custom-dialog chrome in both schemes. */
+.bot-rooms-dialog { width: min(640px, 92vw); }
+.bot-rooms-dialog .custom-dialog__header { padding: 16px 18px; gap: 10px; }
+.bot-rooms-dialog .custom-dialog__body { padding: 14px 18px 18px; }
+.bot-rooms__mark {
+    width: 36px;
+    height: 36px;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-lg);
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
+}
+.bot-rooms__heading-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.bot-rooms__subtitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--theme-text-muted); font-size: 12px; line-height: 1.4; }
+
+/* Deterministic initials avatar, shared by list stack, editor rows and chat. */
+.bot-rooms__avatar, .bot-rooms__stack-chip {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    color: #fff;
+    font-weight: 600;
+    line-height: 1;
+    user-select: none;
+}
+
+/* Empty state. */
+.bot-rooms__empty { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 26px 16px 14px; text-align: center; }
+.bot-rooms__empty-icon {
+    width: 52px;
+    height: 52px;
+    margin-bottom: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
+}
+.bot-rooms__empty-title { margin: 0; font-size: 14px; font-weight: 600; color: var(--theme-text-primary); }
+.bot-rooms__empty-hint { margin: 0 0 10px; max-width: 340px; font-size: 12px; line-height: 1.6; color: var(--theme-text-muted); }
+.bot-rooms__empty-cta { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 16px; border-radius: var(--radius-md); }
+
+/* Room cards. */
+.bot-rooms__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.bot-rooms__item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface);
+    transition: border-color var(--transition-fast), background-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.bot-rooms__item:hover {
+    border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border-subtle));
+    background: color-mix(in srgb, var(--theme-primary) 4%, var(--theme-surface));
+    box-shadow: var(--shadow-sm);
+}
+.bot-rooms__open {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0;
+    margin: 0;
+    background: none;
+    border: 0;
+    border-radius: var(--radius-md);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    text-align: left;
+}
+.bot-rooms__open:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
+.bot-rooms__stack { flex: none; display: inline-flex; align-items: center; }
+.bot-rooms__stack-chip {
+    width: 28px;
+    height: 28px;
+    font-size: 11px;
+    box-shadow: 0 0 0 2px var(--theme-surface);
+}
+.bot-rooms__stack-chip + .bot-rooms__stack-chip { margin-left: -9px; }
+/* The +N chip keeps the base ring; only its fill differs. */
+.bot-rooms__stack-chip--more { background: var(--theme-surface-muted); color: var(--theme-text-secondary); }
+.bot-rooms__meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.bot-rooms__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; color: var(--theme-text-primary); }
+.bot-rooms__members-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--theme-text-muted); }
+.bot-rooms__count {
+    flex: none;
+    min-width: 22px;
+    padding: 2px 7px;
+    box-sizing: border-box;
+    border-radius: var(--radius-pill);
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    text-align: center;
+}
+.bot-rooms__actions { flex: none; display: inline-flex; gap: 6px; }
+.bot-rooms__action {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+.bot-rooms__action svg { flex: none; }
+.bot-rooms__action:hover {
+    border-color: color-mix(in srgb, var(--theme-primary) 36%, var(--theme-border));
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary);
+}
+.bot-rooms__action--danger:hover {
+    border-color: color-mix(in srgb, var(--theme-danger) 36%, var(--theme-border));
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
+}
+/* Armed two-step delete: solid danger fill until the arm expires (3s) or the
+   second click lands, so the destructive intent is unmistakable. */
+.bot-rooms__action--armed {
+    border-color: transparent;
+    background: var(--theme-danger);
+    color: #fff;
+}
+.bot-rooms__action--armed:hover {
+    border-color: transparent;
+    background: color-mix(in srgb, var(--theme-danger) 88%, #000);
+    color: #fff;
+}
+.bot-rooms__action:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
+.bot-rooms-dialog .custom-dialog__footer .bot-room-back { margin-inline-end: auto; }
+.bot-rooms-dialog .btn-primary.bot-rooms__new,
+.bot-rooms-dialog .bot-rooms__empty-cta,
+.bot-room-chat__send { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.bot-rooms-dialog .btn-primary.bot-rooms__new svg { margin-inline-start: -2px; }
+
+/* Editor. */
+.bot-rooms__editor { display: flex; flex-direction: column; gap: 12px; }
+.bot-rooms__field { display: flex; flex-direction: column; gap: 6px; margin: 0; }
+.bot-rooms__field-label { font-size: 12px; font-weight: 600; color: var(--theme-text-secondary); }
+.bot-rooms__name-input {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 38px;
+    padding: 8px 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font-size: 13px;
+}
+.bot-rooms__name-input:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: -1px; }
+.bot-rooms__hint {
+    margin: 0;
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
+    background: var(--theme-info-bg);
+    color: var(--theme-text-secondary);
+    font-size: 12px;
+    line-height: 1.6;
+}
+.bot-rooms__members { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.bot-rooms__members li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    transition: opacity var(--transition-fast), background-color var(--transition-fast);
+}
+.bot-rooms__members li.is-out { opacity: .55; background: var(--theme-surface-muted); }
+.bot-rooms__member-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; cursor: pointer; }
+.bot-rooms__members input[type="checkbox"] { width: 15px; height: 15px; margin: 0; flex: none; accent-color: var(--theme-primary); cursor: pointer; }
+.bot-rooms__member-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--theme-text-primary); }
+.bot-rooms__members select {
+    flex: none;
+    min-height: 30px;
+    padding: 2px 8px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+}
+.bot-rooms__members select:disabled { cursor: default; opacity: .6; }
+.bot-rooms__editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+
+/* Room chat. */
+.bot-room-chat { display: flex; flex-direction: column; gap: 8px; }
+.bot-room-chat__log {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 200px;
+    max-height: 340px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 14px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--theme-surface-muted) 55%, var(--theme-surface));
+}
+.bot-room-chat__log-empty { margin: auto; text-align: center; font-size: 12px; color: var(--theme-text-muted); }
+.bot-room-chat__msg { display: flex; align-items: flex-start; gap: 8px; max-width: 88%; }
+.bot-room-chat__msg.is-me { align-self: flex-end; flex-direction: row-reverse; }
+.bot-room-chat__msg .bot-rooms__avatar { margin-top: 4px; }
+.bot-room-chat__bubble { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.bot-room-chat__meta { display: flex; align-items: baseline; gap: 6px; }
+.bot-room-chat__meta strong { font-size: 12px; font-weight: 600; color: var(--theme-text-secondary); }
+.bot-room-chat__meta time { font-size: 11px; color: var(--theme-text-tertiary, var(--theme-text-muted)); }
+.bot-room-chat__msg.is-me .bot-room-chat__meta { justify-content: flex-end; }
+.bot-room-chat__text {
+    display: inline-block;
+    align-self: flex-start;
+    padding: 7px 11px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+    border-top-left-radius: var(--radius-xs);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font-size: 13px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+    box-shadow: var(--shadow-sm);
+}
+.bot-room-chat__msg.is-me .bot-room-chat__text {
+    align-self: flex-end;
+    border-top-left-radius: var(--radius-lg);
+    border-top-right-radius: var(--radius-xs);
+    border-color: color-mix(in srgb, var(--theme-primary) 22%, transparent);
+    background: var(--theme-primary-soft);
+}
+.bot-room-chat__answered {
+    margin: 0;
+    padding: 0 2px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 1em;
+    font-size: 12px;
+    color: var(--theme-text-muted);
+}
+.bot-room-chat__answered::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--theme-success);
+}
+.bot-room-chat__answered:empty { display: none; }
+.bot-room-chat__mentions {
+    list-style: none;
+    margin: -2px 0 0;
+    padding: 4px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    box-shadow: var(--shadow-md);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.bot-room-chat__mentions button {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--theme-text-primary);
+    font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+}
+.bot-room-chat__mentions button:hover { background: var(--theme-primary-soft); color: var(--theme-primary); }
+.bot-room-chat__form {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.bot-room-chat__form:focus-within {
+    border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border));
+    box-shadow: 0 0 0 3px var(--theme-primary-soft);
+}
+.bot-room-chat__form textarea {
+    flex: 1;
+    min-height: 38px;
+    max-height: 120px;
+    padding: 6px 4px;
+    resize: none;
+    /* Height is script-managed (auto-grow up to the max); past the cap the
+       box scrolls instead of growing. */
+    overflow-y: auto;
+    border: 0;
+    background: transparent;
+    color: var(--theme-text-primary);
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+}
+.bot-room-chat__form textarea:focus-visible { outline: none; }
+.bot-room-chat__form textarea::placeholder { color: var(--theme-text-tertiary, var(--theme-text-muted)); }
+.bot-room-chat__send { flex: none; min-height: 32px; padding: 0 14px; border-radius: var(--radius-md); }
+.bot-room-chat__send:disabled { opacity: .5; cursor: default; }
 
 /* Sleeping desktop: a plain line drawing. No screen, no viewer chrome.
    Dash lengths are user units of the longest stroke in that group

@@ -111,6 +111,93 @@ func TestCodingWorkbenchEntryPropertiesUsesPortablePermissionAndFileMetadata(t *
 	}
 }
 
+func TestCloudWorkspacePreviewStampRequiresPath(t *testing.T) {
+	if _, err := (*App)(nil).PrepareCloudWorkspacePreviewFile("", "report.pdf"); err == nil {
+		t.Fatal("expected a missing project path to fail")
+	}
+}
+
+func TestCloudWorkspacePreviewStampReturnsMaterializedCachePath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "cloud-workspaces", "tenant", "cws_live")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(root, "report.pdf")
+	if err := os.WriteFile(dest, []byte("pdf"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if codingWorkbenchEntryProperties("report.pdf", dest, "report.pdf", false, 3, 1, "0644").AbsPath != "" {
+		t.Fatal("listing properties still expose the cache path")
+	}
+	props, err := cloudWorkspacePreviewProperties(nil, root, "report.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if props.AbsPath != dest || props.ModifiedUnixNano <= 0 {
+		t.Fatalf("preview path = %+v, want %s", props, dest)
+	}
+}
+
+func TestCloudWorkspacePreviewStampReadsExistingFile(t *testing.T) {
+	root := t.TempDir()
+	body := []byte("cached-pdf")
+	if err := os.WriteFile(filepath.Join(root, "report.pdf"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	props, err := cloudWorkspacePreviewProperties(nil, root, "report.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, statErr := os.Stat(filepath.Join(root, "report.pdf"))
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if props.Size != int64(len(body)) || !props.SizeKnown || props.ModifiedUnixNano != info.ModTime().UnixNano() || props.ModifiedUnixNano <= 0 {
+		t.Fatalf("stamp = %+v, want size %d nano %d", props, len(body), info.ModTime().UnixNano())
+	}
+}
+
+func TestCloudWorkspacePreviewStampFollowsMaterialize(t *testing.T) {
+	root := t.TempDir()
+	rel := "report.pdf"
+	dest := filepath.Join(root, rel)
+	body := []byte("newer-bytes")
+	previous := cloudWorkspacePreviewMaterialize
+	t.Cleanup(func() { cloudWorkspacePreviewMaterialize = previous })
+	cloudWorkspacePreviewMaterialize = func(_ *App, gotRoot, gotRel string) error {
+		if gotRoot != root || gotRel != rel {
+			t.Fatalf("materialize root=%q rel=%q", gotRoot, gotRel)
+		}
+		return os.WriteFile(dest, body, 0o600)
+	}
+	props, err := cloudWorkspacePreviewProperties(nil, root, rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if props.Size != int64(len(body)) || props.ModifiedUnixNano <= 0 {
+		t.Fatalf("stamp = %+v, want the bytes written by materialize", props)
+	}
+}
+
+func TestCloudWorkspacePreviewStampReportsMissingFile(t *testing.T) {
+	_, err := cloudWorkspacePreviewProperties(nil, t.TempDir(), "missing.pdf")
+	if err == nil || !strings.Contains(err.Error(), "cloud workspace file is not in the local cache") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestCloudWorkspacePreviewStampKeepsMaterializeError(t *testing.T) {
+	previous := cloudWorkspacePreviewMaterialize
+	t.Cleanup(func() { cloudWorkspacePreviewMaterialize = previous })
+	cloudWorkspacePreviewMaterialize = func(*App, string, string) error {
+		return fmt.Errorf("暂时无法连接云端")
+	}
+	_, err := cloudWorkspacePreviewProperties(nil, t.TempDir(), "report.pdf")
+	if err == nil || !strings.Contains(err.Error(), "暂时无法连接云端") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestReadCodingWorkbenchBrowserTextFileBoundsLargePreview(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "large.txt")

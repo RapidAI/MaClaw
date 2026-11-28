@@ -584,7 +584,7 @@ export const FilePreviewView = React.memo(function FilePreviewView({
         return <PptxPreviewPanel key={fileKey} absPath={file.absPath} revision={file.previewRevision || ""} theme={theme} lang={lang} docAnnotate={docAnnotate} />;
     }
     if (kind === 'docx' && file.absPath) {
-        return <DocxPreviewPanel key={fileKey} absPath={file.absPath} theme={theme} lang={lang} docAnnotate={docAnnotate} />;
+        return <DocxPreviewPanel key={fileKey} absPath={file.absPath} revision={file.previewRevision || ""} theme={theme} lang={lang} docAnnotate={docAnnotate} />;
     }
     if (kind === 'xlsx' && file.absPath) {
         const sheet = (
@@ -638,6 +638,7 @@ export const FilePreviewView = React.memo(function FilePreviewView({
                 key={fileKey}
                 absPath={absPath || name}
                 dataUrl={file.dataUrl}
+                revision={file.previewRevision || ""}
                 theme={theme}
                 lang={lang}
             />

@@ -63,6 +63,43 @@ export function h264FrameSrc(vncSrc: string, stream?: DesktopStreamSpec): string
     return out;
 }
 
+// desktopStreamWidthForSurface converts a physical surface width to the
+// encoder width. H.264 dimensions need to be even; the cap avoids restarting
+// into a needlessly expensive encode when the stage is maximized on a large
+// monitor. Zero means the caller has no trustworthy surface width.
+export function desktopStreamWidthForSurface(width: number): number {
+    const rounded = Math.round(width);
+    if (!Number.isFinite(rounded) || rounded <= 0) return 0;
+    const capped = Math.max(640, Math.min(1920, rounded));
+    return capped - (capped % 2);
+}
+
+// desktopStreamWidthOverride replaces the outer h264.html w= parameter in
+// place. The first w wins inside the player, so appending another one would
+// leave the narrow embedded-panel encode active in the native window. URLs
+// without an existing w (notably noVNC) are unchanged.
+export function desktopStreamWidthOverride(src: string, width: number): string {
+    const w = Math.round(width);
+    if (!src || !Number.isFinite(w) || w <= 0) return src;
+    const hashAt = src.indexOf('#');
+    const base = hashAt >= 0 ? src.slice(0, hashAt) : src;
+    const hash = hashAt >= 0 ? src.slice(hashAt) : '';
+    const queryAt = base.indexOf('?');
+    if (queryAt < 0) return src;
+    const path = base.slice(0, queryAt);
+    const parts = base.slice(queryAt + 1).split('&');
+    let replaced = false;
+    const next = parts.map(part => {
+        if (!replaced && (part === 'w' || part.startsWith('w='))) {
+            replaced = true;
+            return `w=${w}`;
+        }
+        return part;
+    });
+    if (!replaced) return src;
+    return `${path}?${next.join('&')}${hash}`;
+}
+
 export function desktopViewerSrc(vncSrc: string, viewer: DesktopViewer, stream?: DesktopStreamSpec): string {
     return viewer === 'h264' ? h264FrameSrc(vncSrc, stream) : vncSrc;
 }

@@ -153,20 +153,31 @@ func mustTensorData(m *Model, name string) []float32 {
 }
 
 func (m *Model) weightNormConv1D(x []float32, inC, inT, outC, kernel, stride, padding, dilation, groups int, prefix string) ([]float32, error) {
+	outT := (inT+2*padding-dilation*(kernel-1)-1)/stride + 1
+	out := make([]float32, outC*outT)
+	err := m.weightNormConv1DInto(out, x, inC, inT, outC, kernel, stride, padding, dilation, groups, prefix)
+	return out, err
+}
+
+// weightNormConv1DInto writes the conv into out, which must already have
+// length outC*outT. Every element is stored, so out may be a dirty pool buffer.
+func (m *Model) weightNormConv1DInto(out, x []float32, inC, inT, outC, kernel, stride, padding, dilation, groups int, prefix string) error {
 	wv, err := m.tensorData(prefix + ".weight_v")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	wg, err := m.tensorData(prefix + ".weight_g")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	bias, _ := m.tensorData(prefix + ".bias")
 	outT := (inT+2*padding-dilation*(kernel-1)-1)/stride + 1
-	out := make([]float32, outC*outT)
+	if len(out) != outC*outT {
+		return fmt.Errorf("kokoro: conv out length %d, want %d", len(out), outC*outT)
+	}
 	if groups == 1 {
 		if ok, err := m.gpuConvNorm(out, x, nil, wv, wg, bias, prefix, inC, inT, outC, outT, kernel, stride, padding, dilation); err != nil || ok {
-			return out, err
+			return err
 		}
 	}
 	if useKokoroSIMD() && groups == 1 && kernel == 1 && stride == 1 && padding == 0 && dilation == 1 && inC >= 16 && outC*inT*inC > 50000 {
@@ -178,12 +189,9 @@ func (m *Model) weightNormConv1D(x []float32, inC, inT, outC, kernel, stride, pa
 			return w, nil
 		})
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if err := conv1DPointwiseSIMD(out, x, w, bias, inC, inT, outC); err != nil {
-			return nil, err
-		}
-		return out, nil
+		return conv1DPointwiseSIMD(out, x, w, bias, inC, inT, outC)
 	}
 	if useKokoroSIMD() && useKokoroConvMatMul() && groups == 1 && inC >= 16 && outC*outT*inC*kernel > 50000 {
 		w, err := m.cachedFloat32(prefix+".weight_norm", func() ([]float32, error) {
@@ -194,12 +202,9 @@ func (m *Model) weightNormConv1D(x []float32, inC, inT, outC, kernel, stride, pa
 			return w, nil
 		})
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if err := conv1DMatMul(out, x, w, bias, inC, inT, outC, kernel, stride, padding, dilation, outT); err != nil {
-			return nil, err
-		}
-		return out, nil
+		return conv1DMatMul(out, x, w, bias, inC, inT, outC, kernel, stride, padding, dilation, outT)
 	}
 	if useKokoroSIMD() && groups == 1 && inC >= 16 && outC*outT*inC*kernel > 50000 {
 		wT, err := m.cachedFloat32(prefix+".weight_norm_transposed", func() ([]float32, error) {
@@ -210,12 +215,9 @@ func (m *Model) weightNormConv1D(x []float32, inC, inT, outC, kernel, stride, pa
 			return wT, nil
 		})
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if err := conv1DSIMDTransposedWeight(out, x, wT, bias, nil, inC, inT, outC, kernel, stride, padding, dilation, outT); err != nil {
-			return nil, err
-		}
-		return out, nil
+		return conv1DSIMDTransposedWeight(out, x, wT, bias, nil, inC, inT, outC, kernel, stride, padding, dilation, outT)
 	}
 	w, err := m.cachedFloat32(prefix+".weight_norm", func() ([]float32, error) {
 		w := make([]float32, len(wv))
@@ -225,12 +227,9 @@ func (m *Model) weightNormConv1D(x []float32, inC, inT, outC, kernel, stride, pa
 		return w, nil
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if err := Conv1D(out, x, w, bias, inC, inT, outC, kernel, stride, padding, dilation, groups); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return Conv1D(out, x, w, bias, inC, inT, outC, kernel, stride, padding, dilation, groups)
 }
 
 // weightNormConv1DResidual is weightNormConv1D with a fused residual

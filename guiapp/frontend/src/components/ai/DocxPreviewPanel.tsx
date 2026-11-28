@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { PreviewTaskResultFile } from "../../../wailsjs/go/main/App";
 import type { CodePreviewTheme } from "./FileTabBar";
-import { isTaskResultPdfPreviewURL, localizeTaskResultPreviewError, type TaskResultPreviewPayload } from "./taskResultPreview";
+import { isTaskResultPdfPreviewURL, localizeTaskResultPreviewError, taskResultPreviewURLRevision, type TaskResultPreviewPayload } from "./taskResultPreview";
 import { isPreviewAbortError, readPreviewBody } from "./previewBytes";
 import { PREVIEW_BAR_DELAY_MS, PREVIEW_HEAVY_PARSE_BYTES, PreviewLoadingStatus, yieldPreviewPaint, type PreviewProgress } from "./PreviewProgressBar";
 import { tailText } from "../../i18n/mnTail"
@@ -16,6 +16,8 @@ export function isDocxFileName(name: string): boolean {
 
 export interface DocxPreviewPanelProps {
     absPath: string;
+    /** Changes when the file is rewritten at the same path. */
+    revision?: string;
     theme: CodePreviewTheme;
     lang: string;
     /** Companion document path: enables highlight/note/draw annotations. */
@@ -51,7 +53,7 @@ function foldedDocument(
  * out pages, styles, tables, and images. The text extract used to drop all
  * of that and show a line-numbered dump.
  */
-export function DocxPreviewPanel({ absPath, theme, lang, docAnnotate = "" }: DocxPreviewPanelProps) {
+export function DocxPreviewPanel({ absPath, revision = "", theme, lang, docAnnotate = "" }: DocxPreviewPanelProps) {
     const langRef = useRef(lang);
     useEffect(() => {
         langRef.current = lang;
@@ -76,7 +78,7 @@ export function DocxPreviewPanel({ absPath, theme, lang, docAnnotate = "" }: Doc
         setFindActive(0);
         setFindBusy(false);
         findFoldRef.current = null;
-    }, [absPath]);
+    }, [absPath, revision]);
 
     useEffect(() => {
         let cancelled = false;
@@ -112,7 +114,7 @@ export function DocxPreviewPanel({ absPath, theme, lang, docAnnotate = "" }: Doc
                     fail(zh() ? "无法预览该 Word 文档" : "This Word document cannot be previewed");
                     return;
                 }
-                const response = await fetch(previewURL, { signal: controller.signal });
+                const response = await fetch(taskResultPreviewURLRevision(previewURL, revision), { signal: controller.signal });
                 if (!response.ok) {
                     fail(zh() ? "无法读取该 Word 文档" : "This Word document could not be read");
                     return;
@@ -194,7 +196,7 @@ export function DocxPreviewPanel({ absPath, theme, lang, docAnnotate = "" }: Doc
             const host = hostRef.current;
             if (host) clearDomFindMarks(host);
         };
-    }, [absPath]);
+    }, [absPath, revision]);
 
     useEffect(() => {
         const root = hostRef.current;

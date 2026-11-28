@@ -237,6 +237,12 @@ func filesystemProviderPrefix(s string) (int, bool) {
 		return 0, false
 	}
 	rest := s[n:]
+	// FileSystem::~ and FileSystem::~\Desktop are the home directory.
+	// A relative FileSystem::.. is not a path, and neither is a drive-relative
+	// FileSystem::D:Repo.
+	if len(rest) > 0 && rest[0] == '~' && (len(rest) == 1 || rest[1] == '\\' || rest[1] == '/') {
+		return n, true
+	}
 	if len(rest) < 3 || !isASCIILetter(rest[0]) || rest[1] != ':' {
 		return 0, false
 	}
@@ -378,6 +384,7 @@ func restyleMappedPath(originalSpan, mapped string) string {
 type commandShellDir struct {
 	cur   string
 	base  string
+	home  string
 	per   map[string]string
 	stack []shellDirSnap
 }
@@ -519,20 +526,60 @@ func quoteIsReal(ch byte, mode shellParseMode) bool {
 	return ch == '"' || (ch == '\'' && mode != parseCmd)
 }
 
-// walkShellCommand rewrites one shell script against cwd. A quoted
-// cmd/powershell/bash payload is a child process: it starts at the parent's
-// directory, and its cd does not move the parent. Invoke-Expression runs
-// the quoted script in this process, so that cd is the parent's next cwd.
+// walkShellCommand rewrites one shell script against cwd. Launcher options
+// (start /d, forfiles /p, Start-Process -FilePath and -WorkingDirectory)
+// resolve here, in the parent. Only the child command payload is walked
+// again, and that walk uses the directory the child actually starts in.
+// A quoted cmd/powershell/bash -Command payload is that child. Its cd does
+// not move the parent. Invoke-Expression runs in this process, so that cd
+// is the parent's next cwd.
 func walkShellCommand(command string, cwd *commandShellDir, mapPath func(string) (string, bool), mode shellParseMode) string {
 	if command == "" || cwd == nil || mapPath == nil {
 		return command
+	}
+	if mode == parsePowerShell {
+		if cwd.home == "" {
+			if home, err := os.UserHomeDir(); err == nil && home != "" {
+				cwd.home = home
+			}
+		}
+	} else {
+		// A cmd child must not keep a home copied from the PowerShell parent.
+		// cmd does not expand ~.
+		cwd.home = ""
 	}
 	var b strings.Builder
 	b.Grow(len(command) + 16)
 	inSingle, inDouble := false, false
 	atCmd, expectDir, expectPush, skipValue, nameNext := true, false, false, false, false
 	stackName := ""
+	// payloadAt is the child command of cmd start, or an unquoted
+	// Start-Process -ArgumentList. The launcher's own tokens stay here.
+	payloadAt, payloadUntil := -1, -1
+	var payloadDir *commandShellDir
+	payloadMode := mode
+	// PowerShell joins -ArgumentList on commas before cmd sees the line.
+	// The comma is not a cmd separator, so only that payload is split.
+	payloadSplitCommas := false
 	for i := 0; i < len(command); {
+		if payloadDir != nil && i == payloadAt && payloadUntil > payloadAt {
+			piece := command[payloadAt:payloadUntil]
+			var rewritten string
+			if payloadSplitCommas {
+				rewritten = rewriteArgumentElements(piece, payloadDir, mapPath, mode, payloadMode)
+			} else {
+				rewritten = walkShellCommand(piece, payloadDir, mapPath, payloadMode)
+			}
+			b.WriteString(rewritten)
+			i = payloadUntil
+			payloadDir = nil
+			payloadSplitCommas = false
+			payloadAt, payloadUntil = -1, -1
+			atCmd = false
+			expectDir, expectPush, skipValue, nameNext = false, false, false, false
+			stackName = ""
+			continue
+		}
 		ch := command[i]
 		if !inSingle && !inDouble && quoteIsReal(ch, mode) && atCmd {
 			// & 'cd' ..\..\.. is a call, not a string. The quoted word is the
@@ -573,7 +620,7 @@ func walkShellCommand(command string, cwd *commandShellDir, mapPath func(string)
 			if kind := quoteScriptKind(command, i, mode); kind != "" {
 				bodyStart, bodyEnd, close, ok := quotedPayloadBounds(command, i)
 				if ok {
-					nested := nestedShellDir(command, i, cwd, mode)
+					nested := nestedShellDir(command, i, cwd, mode, mapPath)
 					rewritten := walkShellCommand(command[bodyStart:bodyEnd], nested, mapPath, scriptParseMode(kind, mode))
 					b.WriteByte(ch)
 					b.WriteString(rewritten)
@@ -606,6 +653,9 @@ func walkShellCommand(command string, cwd *commandShellDir, mapPath func(string)
 				i += n
 				atCmd, expectDir, expectPush, skipValue, nameNext = true, false, false, false, false
 				stackName = ""
+				payloadDir = nil
+				payloadSplitCommas = false
+				payloadAt, payloadUntil = -1, -1
 				continue
 			}
 			if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
@@ -670,7 +720,7 @@ func walkShellCommand(command string, cwd *commandShellDir, mapPath func(string)
 				if mode == parseCmd {
 					token = cmdBareCommand(token)
 				}
-				if _, _, glued := splitGluedLocation(token); glued || commandLocationKind(token) != "" {
+				if _, _, glued := splitGluedLocation(token); glued || commandLocationKind(token) != "" || launcherKind(token, mode) != "" {
 					spanIsCommand = true
 				}
 			}
@@ -710,6 +760,29 @@ func walkShellCommand(command string, cwd *commandShellDir, mapPath func(string)
 		if mode == parseCmd && !expectDir {
 			bare = cmdBareCommand(word)
 			trackCmd = true
+		}
+		// The launcher word is not part of the child command. cmd arms it on
+		// the same words as cd, because if/for/else run that later command.
+		// An unquoted /c or -Command tail is that shell's script.
+		if trackCmd && payloadDir == nil && !expectDir {
+			switch launcherKind(bare, mode) {
+			case "start":
+				if from, until, dir, ok := cmdStartChildSpan(command, i, cwd, mapPath); ok {
+					payloadAt, payloadUntil, payloadDir, payloadMode = from, until, dir, mode
+				}
+			case "start-process":
+				if from, until, dir, childMode, ok := startProcessArgSpan(command, i, cwd, mode, mapPath); ok {
+					payloadAt, payloadUntil, payloadDir, payloadMode = from, until, dir, childMode
+					payloadSplitCommas = true
+				}
+			}
+			if payloadDir == nil {
+				if from, until, kind, ok := shellScriptSpan(command, i, mode); ok {
+					child := newCommandShellDir(cwd.cur)
+					child.home = cwd.home
+					payloadAt, payloadUntil, payloadDir, payloadMode = from, until, child, scriptParseMode(kind, mode)
+				}
+			}
 		}
 		if trackCmd {
 			if kind, path, glued := splitGluedLocation(bare); glued {
@@ -751,7 +824,8 @@ func walkShellCommand(command string, cwd *commandShellDir, mapPath func(string)
 			// Bare D: selects that drive's remembered directory. Later
 			// names on this line resolve there; the token itself stays D:.
 			// if exist x D: and @D: are the same switch.
-			cwd.chdir(cwd.dirOn(shellCommandToken(bare)))
+			here := cwd
+			here.chdir(here.dirOn(shellCommandToken(bare)))
 			atCmd = false
 		case expectDir:
 			if replaced, dir, ok := mapResolvedSpan(word, cwd, mapPath); ok {
@@ -777,6 +851,86 @@ func walkShellCommand(command string, cwd *commandShellDir, mapPath func(string)
 		i = end
 	}
 	return b.String()
+}
+
+// rewriteArgumentElements splits one PowerShell -ArgumentList value on the
+// comma operator and rewrites each element from the child start directory.
+// A comma glued to a word is still the operator. Quoted commas stay inside
+// the element. Each element is a separate argv, so a cd in one does not
+// move the next.
+func rewriteArgumentElements(command string, cwd *commandShellDir, mapPath func(string) (string, bool), splitMode, elemMode shellParseMode) string {
+	elems := argumentElements(command, splitMode)
+	if len(elems) == 0 {
+		return command
+	}
+	var b strings.Builder
+	prev := 0
+	for _, el := range elems {
+		b.WriteString(command[prev:el.start])
+		b.WriteString(walkShellCommand(command[el.start:el.end], freshShellDir(cwd), mapPath, elemMode))
+		prev = el.end
+	}
+	b.WriteString(command[prev:])
+	return b.String()
+}
+
+type argElem struct {
+	start int
+	end   int
+}
+
+func argumentElements(command string, mode shellParseMode) []argElem {
+	var out []argElem
+	i := 0
+	for i < len(command) {
+		for i < len(command) && (command[i] == ' ' || command[i] == '\t' || command[i] == ',') {
+			i++
+		}
+		if i >= len(command) {
+			break
+		}
+		start := i
+		depth := 0
+		for i < len(command) {
+			ch := command[i]
+			if quoteIsReal(ch, mode) {
+				_, _, closeAt, ok := quotedPayloadBounds(command, i)
+				if !ok {
+					i = len(command)
+					break
+				}
+				i = closeAt
+				continue
+			}
+			if ch == '(' {
+				depth++
+				i++
+				continue
+			}
+			if ch == ')' && depth > 0 {
+				depth--
+				i++
+				continue
+			}
+			if ch == ',' && depth == 0 {
+				break
+			}
+			i++
+		}
+		if i > start {
+			out = append(out, argElem{start: start, end: i})
+		}
+	}
+	return out
+}
+
+func freshShellDir(src *commandShellDir) *commandShellDir {
+	if src == nil {
+		return newCommandShellDir("")
+	}
+	d := newCommandShellDir(src.cur)
+	d.home = src.home
+	return d
 }
 
 // commandReachesProtectedRoot reports that some path in command still
@@ -980,6 +1134,15 @@ func resolveShellSpan(span string, cwd *commandShellDir) (string, bool) {
 	// FileSystem::D:\Repo is a normal drive path. The qualifier is not a directory.
 	if n, ok := filesystemProviderPrefix(span); ok {
 		return resolveShellSpan(span[n:], cwd)
+	}
+	// PowerShell expands ~ to the user profile. cmd looks for a directory
+	// named ~, so home stays empty in that mode and this stays a relative name.
+	if cwd.home != "" && (span == "~" || strings.HasPrefix(span, `~\`) || strings.HasPrefix(span, "~/")) {
+		rest := strings.TrimLeft(span[1:], `/\`)
+		if rest == "" {
+			return filepath.Clean(cwd.home), true
+		}
+		return filepath.Clean(filepath.Join(cwd.home, rest)), true
 	}
 	if len(span) >= 2 && span[1] == ':' && isASCIILetter(span[0]) {
 		rest := span[2:]
@@ -1332,16 +1495,20 @@ func isLocationValueFlag(token string) bool {
 	}
 }
 
-// quoteScriptKind is the shell that will run this quoted text. The executable
-// does not have to be the first word: start, call, and Start-Process cmd.exe
-// still run the quoted command. A quoted string that itself begins with cmd
-// is the script forfiles /c passes through.
+// quoteScriptKind is the shell that will run this quoted text. /c and
+// -Command bind it, and so does a launcher's command payload: Start-Process
+// -ArgumentList when -FilePath is a shell, and forfiles /c. cmd start's
+// first quoted string is the window title, not that payload. A quote whose
+// body itself begins with cmd is still the script forfiles passes through.
 func quoteScriptKind(command string, quoteAt int, mode shellParseMode) string {
 	if quoteAt <= 0 || quoteAt >= len(command) || !quoteIsReal(command[quoteAt], mode) {
 		return ""
 	}
 	head := strings.TrimSpace(command[statementStartBefore(command, quoteAt, mode):quoteAt])
 	if kind := processShellKind(head); kind != "" {
+		return kind
+	}
+	if kind, bound := boundLauncherQuote(command, quoteAt, mode); bound {
 		return kind
 	}
 	bodyStart, bodyEnd, _, ok := quotedPayloadBounds(command, quoteAt)
@@ -1374,30 +1541,21 @@ func scriptParseMode(kind string, parent shellParseMode) shellParseMode {
 	}
 }
 
-// processShellKind finds the shell whose quoted text follows head.
-// A script switch (-Command, /c) wins. Otherwise any cmd/powershell/bash
-// in the head still owns the quote, which is how Start-Process -ArgumentList
-// passes a command line through.
+// processShellKind is the shell whose /c, -Command, or iex script follows
+// head. A bare cmd.exe earlier in the head does not own the next quote:
+// that quote may be Start-Process -WorkingDirectory.
 func processShellKind(head string) string {
 	words := shellHeadWords(head)
-	script := ""
-	seen := ""
 	for start := 0; start < len(words); start++ {
 		kind := shellWrapperKind(words[start])
 		if kind == "" {
 			continue
 		}
-		if script == "" && wrapperTailIsScript(kind, words[start+1:]) {
-			script = kind
-		}
-		if seen == "" && kind != "inline" {
-			seen = kind
+		if wrapperTailIsScript(kind, words[start+1:]) {
+			return kind
 		}
 	}
-	if script != "" {
-		return script
-	}
-	return seen
+	return ""
 }
 
 func leadingProcessShell(command string) string {
@@ -1437,6 +1595,49 @@ func wrapperTailIsScript(kind string, tail []string) bool {
 	}
 	// iex "script" has no -Command. powershell "script" is not a script.
 	return kind == "inline"
+}
+
+// shellScriptSpan is an unquoted /c or -Command tail. The quoted form is
+// already a script quote. Invoke-Expression stays in this process, and a
+// tail that is only a quote is left to that quote so the parent walk still
+// sees the closing quote.
+func shellScriptSpan(command string, at int, mode shellParseMode) (from, until int, kind string, ok bool) {
+	// cmd already reads every later word as a command, including start after
+	// if and cd after an unquoted /c. Peeling that tail off at `&` would run
+	// the following command outside the cmd that forfiles actually uses:
+	// forfiles drops a leading cmd /c and keeps the `&` in the same process.
+	if mode == parseCmd {
+		return 0, 0, "", false
+	}
+	toks := scanStatementTokens(command, at, mode)
+	if len(toks) == 0 {
+		return 0, 0, "", false
+	}
+	kind = shellWrapperKind(cmdBareCommand(toks[0].text))
+	if kind == "" || kind == "inline" {
+		return 0, 0, "", false
+	}
+	for i := 1; i < len(toks); i++ {
+		if !isWrapperCommandFlag(kind, toks[i].text) {
+			continue
+		}
+		tail := make([]string, i)
+		for j := 1; j <= i; j++ {
+			tail[j-1] = toks[j].text
+		}
+		if !wrapperTailIsScript(kind, tail) {
+			continue
+		}
+		if i+1 >= len(toks) || stmtTokQuoted(command, toks[i+1]) {
+			return 0, 0, "", false
+		}
+		end := statementEnd(command, at, mode)
+		if toks[i+1].start >= end {
+			return 0, 0, "", false
+		}
+		return toks[i+1].start, end, kind, true
+	}
+	return 0, 0, "", false
 }
 
 func statementStartBefore(command string, at int, mode shellParseMode) int {
@@ -1484,17 +1685,827 @@ func shellWrapperKind(token string) string {
 }
 
 // nestedShellDir is the cwd the quoted payload runs in. A child starts at
-// the parent's directory and is discarded. Invoke-Expression is the parent.
-func nestedShellDir(command string, quoteAt int, parent *commandShellDir, mode shellParseMode) *commandShellDir {
+// the parent's directory and is discarded. start /d, forfiles /p, and
+// Start-Process -WorkingDirectory move that child before the script runs.
+// Invoke-Expression is the parent.
+func nestedShellDir(command string, quoteAt int, parent *commandShellDir, mode shellParseMode, mapPath func(string) (string, bool)) *commandShellDir {
+	if parent == nil {
+		parent = newCommandShellDir("")
+	}
 	head := command[statementStartBefore(command, quoteAt, mode):quoteAt]
 	words := shellHeadWords(head)
 	if len(words) > 0 && shellWrapperKind(words[0]) == "inline" {
 		return parent
 	}
-	if parent == nil {
-		return newCommandShellDir("")
+	child := newCommandShellDir(parent.cur)
+	child.home = parent.home
+	if logical, ok := quoteLauncherDir(command, quoteAt, parent, mode); ok {
+		child.chdir(launchedChildDir(logical, mapPath))
 	}
-	return newCommandShellDir(parent.cur)
+	return child
+}
+
+// quoteLauncherDir is the start directory of the launcher that owns this
+// quote. forfiles /c and Start-Process -ArgumentList own their payload even
+// when an earlier cmd start would otherwise claim the statement. That
+// owner's directory is resolved in the process that launches it, so a
+// relative forfiles /p follows start /d when start already moved that process.
+func quoteLauncherDir(command string, quoteAt int, parent *commandShellDir, mode shellParseMode) (string, bool) {
+	stmt := statementStartBefore(command, quoteAt, mode)
+	toks := scanStatementTokens(command, stmt, mode)
+	owned := false
+	for i := 0; i < len(toks); i++ {
+		token := toks[i].text
+		if mode == parseCmd {
+			token = cmdBareCommand(token)
+		}
+		switch launcherKind(token, mode) {
+		case "forfiles":
+			if _, ok := forfilesCommandQuote(command, quoteAt, toks[i:]); !ok {
+				continue
+			}
+		case "start-process":
+			if _, ok := startProcessArgumentQuote(command, quoteAt, toks[i:]); !ok {
+				continue
+			}
+		default:
+			continue
+		}
+		owned = true
+		if logical, _, _, ok := statementLauncherDir(command, toks[i].start, parent, mode); ok {
+			return logical, true
+		}
+	}
+	if !owned && mode != parseCmd {
+		if start, ok := owningArgumentParen(command, quoteAt, mode); ok {
+			if logical, _, _, dirOK := statementLauncherDir(command, start, parent, mode); dirOK {
+				return logical, true
+			}
+			return "", false
+		}
+	}
+	if owned || mode != parseCmd {
+		return "", false
+	}
+	for i := 0; i < len(toks); i++ {
+		token := cmdBareCommand(toks[i].text)
+		if launcherKind(token, mode) != "start" {
+			continue
+		}
+		if !quoteInStartProgram(command, quoteAt, toks[i:]) {
+			continue
+		}
+		if logical, _, _, ok := statementLauncherDir(command, toks[i].start, parent, mode); ok {
+			return logical, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// quoteInStartProgram reports that the quote is cmd start's program tail.
+// The first quoted token is the window title, so it does not take /d.
+func quoteInStartProgram(command string, quoteAt int, toks []stmtTok) bool {
+	if cmdStartTitleQuote(command, quoteAt, toks) {
+		return false
+	}
+	titleTaken := false
+	for i := 1; i < len(toks); i++ {
+		isSwitch, takesValue, glued := cmdStartSwitch(toks[i].text)
+		if isSwitch {
+			if takesValue && !glued && i+1 < len(toks) {
+				i++
+			}
+			continue
+		}
+		if !titleTaken && stmtTokQuoted(command, toks[i]) {
+			titleTaken = true
+			continue
+		}
+		prog := toks[i].start
+		if stmtTokQuoted(command, toks[i]) && prog > 0 {
+			prog--
+		}
+		return quoteAt >= prog
+	}
+	return false
+}
+
+// owningArgumentParen is the Start-Process whose -ArgumentList value is the
+// @() or () around this quote. Those parentheses are an array expression.
+// A parenthesis at the start of a statement is still just grouping, and
+// -WorkingDirectory (expr) is not the argument list.
+func owningArgumentParen(command string, quoteAt int, mode shellParseMode) (int, bool) {
+	if mode == parseCmd {
+		return 0, false
+	}
+	pos := quoteAt
+	for {
+		open := enclosingParen(command, pos, mode)
+		if open < 0 {
+			return 0, false
+		}
+		if start, ok := startProcessBeforeArgParen(command, open, mode); ok {
+			return start, true
+		}
+		pos = open
+	}
+}
+
+func enclosingParen(command string, at int, mode shellParseMode) int {
+	var openAt []int
+	inSingle, inDouble := false, false
+	for i := 0; i < at && i < len(command); i++ {
+		ch := command[i]
+		if ch == '\'' && !inDouble && mode != parseCmd {
+			inSingle = !inSingle
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if inSingle || inDouble {
+			continue
+		}
+		switch ch {
+		case '(':
+			openAt = append(openAt, i)
+		case ')':
+			if len(openAt) > 0 {
+				openAt = openAt[:len(openAt)-1]
+			}
+		}
+	}
+	if len(openAt) == 0 {
+		return -1
+	}
+	return openAt[len(openAt)-1]
+}
+
+func startProcessBeforeArgParen(command string, open int, mode shellParseMode) (int, bool) {
+	valueAt := open
+	if open > 0 && command[open-1] == '@' {
+		valueAt = open - 1
+	}
+	stmt := statementStartBefore(command, valueAt, mode)
+	toks := scanStatementTokens(command, stmt, mode)
+	if len(toks) == 0 || launcherKind(toks[0].text, mode) != "start-process" {
+		return 0, false
+	}
+	if !parenFillsArgumentList(command, toks, open, valueAt) {
+		return 0, false
+	}
+	return toks[0].start, true
+}
+
+func parenFillsArgumentList(command string, toks []stmtTok, open, valueAt int) bool {
+	programSet, argSet := false, false
+	for i := 1; i < len(toks); i++ {
+		name, _, attached, takes, isParam := startProcessParamKind(toks[i].text)
+		if isParam {
+			if !takes || attached {
+				if name == "argumentlist" && attached && toks[i].end <= open {
+					if colon := strings.LastIndex(toks[i].text, ":"); colon >= 0 {
+						val := toks[i].text[colon+1:]
+						if (val == "@" || val == "") && strings.TrimSpace(command[toks[i].end:open]) == "" {
+							return true
+						}
+					}
+				}
+				continue
+			}
+			if i+1 >= len(toks) {
+				return name == "argumentlist" && strings.TrimSpace(command[toks[i].end:open]) == ""
+			}
+			next := toks[i+1]
+			if name == "argumentlist" && next.text == "@" && next.start == valueAt {
+				return true
+			}
+			if name == "filepath" {
+				programSet = true
+			}
+			if name == "argumentlist" {
+				argSet = true
+			}
+			i++
+			continue
+		}
+		if toks[i].text != "" && toks[i].text[0] == '-' {
+			continue
+		}
+		if toks[i].text == "@" && toks[i].start == valueAt && programSet && !argSet {
+			return true
+		}
+		if !programSet {
+			programSet = true
+			continue
+		}
+		if !argSet {
+			argSet = true
+		}
+	}
+	if programSet && !argSet && len(toks) > 0 {
+		return strings.TrimSpace(command[toks[len(toks)-1].end:open]) == ""
+	}
+	return false
+}
+
+// launchedChildDir is where the child process starts. It is the cwd of that
+// child's command only. A start directory inside the shared tree is already
+// rewritten to the checkout, so the payload runs there.
+func launchedChildDir(logical string, mapPath func(string) (string, bool)) string {
+	if mapPath != nil {
+		if mapped, ok := mapPath(logical); ok && strings.TrimSpace(mapped) != "" {
+			return mapped
+		}
+	}
+	return logical
+}
+
+// statementLauncherDir is the directory a child process starts in when this
+// statement is start, forfiles, or Start-Process. The returned span is the
+// flag's path, which still resolves against the parent. cmd's start /d is
+// not PowerShell's start alias, and powershell.exe -WorkingDirectory is not
+// a start directory on Windows PowerShell 5.1.
+func statementLauncherDir(command string, at int, parent *commandShellDir, mode shellParseMode) (dir string, valueStart, valueEnd int, ok bool) {
+	toks := scanStatementTokens(command, at, mode)
+	if len(toks) == 0 || parent == nil {
+		return "", 0, 0, false
+	}
+	token := toks[0].text
+	if mode == parseCmd {
+		token = cmdBareCommand(token)
+	}
+	kind := launcherKind(token, mode)
+	if kind == "" {
+		return "", 0, 0, false
+	}
+	for i := 1; i < len(toks); i++ {
+		value, attached, flag := launcherDirFlag(kind, toks[i].text)
+		if !flag {
+			continue
+		}
+		start, end := toks[i].start, toks[i].end
+		text := value
+		if !attached {
+			if i+1 >= len(toks) {
+				return "", 0, 0, false
+			}
+			text = toks[i+1].text
+			start, end = toks[i+1].start, toks[i+1].end
+		}
+		logical, resolved := resolveShellSpan(text, parent)
+		if !resolved || strings.TrimSpace(logical) == "" || end <= start {
+			return "", 0, 0, false
+		}
+		return logical, start, end, true
+	}
+	return "", 0, 0, false
+}
+
+type stmtTok struct {
+	start int
+	end   int
+	text  string
+}
+
+func scanStatementTokens(command string, at int, mode shellParseMode) []stmtTok {
+	var out []stmtTok
+	for i := at; i < len(command); {
+		ch := command[i]
+		if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
+			i++
+			continue
+		}
+		if quoteIsReal(ch, mode) {
+			bodyStart, bodyEnd, close, ok := quotedPayloadBounds(command, i)
+			if !ok {
+				return out
+			}
+			out = append(out, stmtTok{start: bodyStart, end: bodyEnd, text: command[bodyStart:bodyEnd]})
+			i = close
+			continue
+		}
+		if n := shellSepLen(command, i); n > 0 {
+			return out
+		}
+		start := i
+		for i < len(command) && isShellWordChar(command[i]) {
+			i++
+		}
+		if i == start {
+			i++
+			continue
+		}
+		out = append(out, stmtTok{start: start, end: i, text: command[start:i]})
+	}
+	return out
+}
+
+func launcherKind(token string, mode shellParseMode) string {
+	switch executableLeaf(token) {
+	case "forfiles":
+		return "forfiles"
+	case "start-process", "saps":
+		// saps is Start-Process. cmd has no such builtin.
+		if executableLeaf(token) == "saps" && mode == parseCmd {
+			return ""
+		}
+		return "start-process"
+	case "start":
+		// PowerShell's start is Start-Process. cmd's start is the builtin.
+		if mode == parseCmd {
+			return "start"
+		}
+		return "start-process"
+	default:
+		return ""
+	}
+}
+
+func launcherDirFlag(kind, token string) (value string, attached, ok bool) {
+	switch kind {
+	case "start":
+		w := strings.ToLower(token)
+		if w == "/d" {
+			return "", false, true
+		}
+		if strings.HasPrefix(w, "/d") && looksLikeDirValue(token[2:]) {
+			return token[2:], true, true
+		}
+	case "forfiles":
+		w := strings.ToLower(token)
+		if w == "/p" {
+			return "", false, true
+		}
+		if strings.HasPrefix(w, "/p") && looksLikeDirValue(token[2:]) {
+			return token[2:], true, true
+		}
+	case "start-process":
+		if !isWorkingDirectoryParam(token) {
+			return "", false, false
+		}
+		if _, value, yes := splitAttachedParam(token); yes {
+			return value, true, true
+		}
+		return "", false, true
+	}
+	return "", false, false
+}
+
+func looksLikeDirValue(s string) bool {
+	if s == "" {
+		return false
+	}
+	switch s[0] {
+	case '\\', '/', '.', '~':
+		return true
+	}
+	return len(s) >= 2 && isASCIILetter(s[0]) && s[1] == ':'
+}
+
+// isWorkingDirectoryParam reports Start-Process -WorkingDirectory, including
+// the unique prefix -Wo. -W also matches -Wait and -WindowStyle, so it is
+// not a directory.
+func isWorkingDirectoryParam(token string) bool {
+	name := token
+	if cut := strings.IndexByte(token, ':'); cut >= 0 {
+		name = token[:cut]
+	}
+	name = strings.ToLower(strings.Trim(name, `"'`))
+	if len(name) < 3 || name[0] != '-' {
+		return false
+	}
+	body := name[1:]
+	const full = "workingdirectory"
+	if !strings.HasPrefix(full, body) {
+		return false
+	}
+	for _, other := range []string{"wait", "windowstyle", "warningaction", "warningvariable", "whatif"} {
+		if strings.HasPrefix(other, body) {
+			return false
+		}
+	}
+	return true
+}
+
+// cmdStartChildSpan is the program tail of cmd's start, through the next
+// statement separator. Switches stay in the parent. The first quoted token
+// is the window title, even when it follows /d, so it is not the program.
+func cmdStartChildSpan(command string, at int, parent *commandShellDir, mapPath func(string) (string, bool)) (from, until int, dir *commandShellDir, ok bool) {
+	if parent == nil {
+		return 0, 0, nil, false
+	}
+	toks := scanStatementTokens(command, at, parseCmd)
+	if len(toks) == 0 || launcherKind(cmdBareCommand(toks[0].text), parseCmd) != "start" {
+		return 0, 0, nil, false
+	}
+	titleTaken := false
+	program := -1
+	for i := 1; i < len(toks); i++ {
+		isSwitch, takesValue, glued := cmdStartSwitch(toks[i].text)
+		if isSwitch {
+			if takesValue && !glued {
+				i++
+			}
+			continue
+		}
+		if !titleTaken && stmtTokQuoted(command, toks[i]) {
+			titleTaken = true
+			continue
+		}
+		program = i
+		break
+	}
+	if program < 0 {
+		return 0, 0, nil, false
+	}
+	from = toks[program].start
+	if stmtTokQuoted(command, toks[program]) && from > 0 {
+		from--
+	}
+	return from, statementEnd(command, at, parseCmd), childAtLauncherDir(command, at, parent, parseCmd, mapPath), from < statementEnd(command, at, parseCmd)
+}
+
+// startProcessArgSpan is an unquoted Start-Process -ArgumentList (or the
+// positional argument list) when the program is a shell. A quoted list is a
+// script quote instead. Tokens run until the next parameter.
+func startProcessArgSpan(command string, at int, parent *commandShellDir, mode shellParseMode, mapPath func(string) (string, bool)) (from, until int, dir *commandShellDir, childMode shellParseMode, ok bool) {
+	if parent == nil {
+		return 0, 0, nil, 0, false
+	}
+	toks := scanStatementTokens(command, at, mode)
+	if len(toks) == 0 || launcherKind(cmdBareCommand(toks[0].text), mode) != "start-process" {
+		return 0, 0, nil, 0, false
+	}
+	program, argIndex := classifyStartProcess(toks)
+	if argIndex < 0 || argIndex >= len(toks) || stmtTokQuoted(command, toks[argIndex]) {
+		return 0, 0, nil, 0, false
+	}
+	kind := shellWrapperKind(program)
+	if kind == "" || kind == "inline" {
+		return 0, 0, nil, 0, false
+	}
+	last := argIndex
+	for last+1 < len(toks) {
+		next := toks[last+1]
+		if _, _, _, _, known := startProcessParamKind(next.text); known {
+			break
+		}
+		if next.text != "" && next.text[0] == '-' {
+			break
+		}
+		if stmtTokQuoted(command, next) {
+			break
+		}
+		last++
+	}
+	return toks[argIndex].start, toks[last].end, childAtLauncherDir(command, at, parent, mode, mapPath), scriptParseMode(kind, mode), true
+}
+
+func childAtLauncherDir(command string, at int, parent *commandShellDir, mode shellParseMode, mapPath func(string) (string, bool)) *commandShellDir {
+	child := newCommandShellDir(parent.cur)
+	if parent != nil {
+		child.home = parent.home
+	}
+	if logical, _, _, ok := statementLauncherDir(command, at, parent, mode); ok {
+		child.chdir(launchedChildDir(logical, mapPath))
+	}
+	return child
+}
+
+// boundLauncherQuote reports whether this quote is a launcher's command
+// payload. bound with an empty kind means the quote is data: cmd start's
+// window title, or arguments of a program that is not a shell.
+func boundLauncherQuote(command string, quoteAt int, mode shellParseMode) (kind string, bound bool) {
+	stmt := statementStartBefore(command, quoteAt, mode)
+	toks := scanStatementTokens(command, stmt, mode)
+	if len(toks) == 0 {
+		return argumentParenKind(command, quoteAt, mode)
+	}
+	// if/for/else run the later command, so the launcher is not always the
+	// first token. The payload owner wins over an earlier cmd start: a
+	// forfiles /c after start /d takes /p, and a window title stays data.
+	for i := 0; i < len(toks); i++ {
+		token := toks[i].text
+		if mode == parseCmd {
+			token = cmdBareCommand(token)
+		}
+		switch launcherKind(token, mode) {
+		case "forfiles":
+			if k, ok := forfilesCommandQuote(command, quoteAt, toks[i:]); ok {
+				return k, true
+			}
+		case "start-process":
+			if k, ok := startProcessArgumentQuote(command, quoteAt, toks[i:]); ok {
+				return k, true
+			}
+		}
+	}
+	if mode == parseCmd {
+		for i := 0; i < len(toks); i++ {
+			token := cmdBareCommand(toks[i].text)
+			if launcherKind(token, mode) == "start" && cmdStartTitleQuote(command, quoteAt, toks[i:]) {
+				return "", true
+			}
+		}
+	}
+	return argumentParenKind(command, quoteAt, mode)
+}
+
+func argumentParenKind(command string, quoteAt int, mode shellParseMode) (string, bool) {
+	start, ok := owningArgumentParen(command, quoteAt, mode)
+	if !ok {
+		return "", false
+	}
+	toks := scanStatementTokens(command, start, mode)
+	program, _ := classifyStartProcess(toks)
+	kind := shellWrapperKind(program)
+	if kind == "" || kind == "inline" {
+		return "", true
+	}
+	return kind, true
+}
+
+func cmdStartTitleQuote(command string, quoteAt int, toks []stmtTok) bool {
+	for i := 1; i < len(toks); i++ {
+		isSwitch, takesValue, glued := cmdStartSwitch(toks[i].text)
+		if isSwitch {
+			if takesValue && !glued && i+1 < len(toks) {
+				i++
+			}
+			continue
+		}
+		if !stmtTokQuoted(command, toks[i]) {
+			return false
+		}
+		return quoteMatches(command, quoteAt, toks[i])
+	}
+	return false
+}
+
+func forfilesCommandQuote(command string, quoteAt int, toks []stmtTok) (string, bool) {
+	for i := 1; i < len(toks); i++ {
+		if strings.ToLower(toks[i].text) != "/c" {
+			continue
+		}
+		if i+1 >= len(toks) || !stmtTokQuoted(command, toks[i+1]) || !quoteMatches(command, quoteAt, toks[i+1]) {
+			return "", false
+		}
+		if k := leadingProcessShell(toks[i+1].text); k != "" {
+			return k, true
+		}
+		return "cmd", true
+	}
+	return "", false
+}
+
+func startProcessArgumentQuote(command string, quoteAt int, toks []stmtTok) (string, bool) {
+	program, argIndex := classifyStartProcess(toks)
+	matched := false
+	for _, idx := range argumentListTokens(command, toks, argIndex) {
+		if idx >= 0 && idx < len(toks) && quoteMatches(command, quoteAt, toks[idx]) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return "", false
+	}
+	kind := shellWrapperKind(program)
+	if kind == "" || kind == "inline" {
+		return "", true
+	}
+	return kind, true
+}
+
+// argumentListTokens is one Start-Process -ArgumentList value plus the
+// following elements cmd joins when a comma sits between them. A later
+// parameter ends the list. A comma glued inside one word is not a join.
+func argumentListTokens(command string, toks []stmtTok, argIndex int) []int {
+	if argIndex < 0 || argIndex >= len(toks) {
+		return nil
+	}
+	out := []int{argIndex}
+	for i := argIndex; i+1 < len(toks); {
+		next := i + 1
+		// The comma is its own word. PowerShell still joins the elements
+		// on either side into the command line cmd receives.
+		if toks[next].text == "," {
+			next++
+		}
+		if next >= len(toks) {
+			break
+		}
+		if _, _, _, _, known := startProcessParamKind(toks[next].text); known {
+			break
+		}
+		if toks[next].text == "," || toks[next].text == "" {
+			break
+		}
+		// /c,'copy' keeps the comma on the first word because comma is a
+		// word character. It is still the array operator.
+		if toks[i+1].text != "," && !strings.HasSuffix(toks[i].text, ",") && !commaJoined(command, toks[i], toks[next]) {
+			break
+		}
+		out = append(out, next)
+		i = next
+	}
+	return out
+}
+
+func commaJoined(command string, left, right stmtTok) bool {
+	if left.end < 0 || left.end > right.start || right.start > len(command) {
+		return false
+	}
+	from, to := left.end, right.start
+	if from < len(command) && (command[from] == '"' || command[from] == '\'') {
+		from++
+	}
+	if to > 0 && (command[to-1] == '"' || command[to-1] == '\'') {
+		to--
+	}
+	if from > to || to > len(command) {
+		return false
+	}
+	return strings.TrimSpace(command[from:to]) == ","
+}
+
+func classifyStartProcess(toks []stmtTok) (program string, argIndex int) {
+	argIndex = -1
+	programSet, argSet := false, false
+	for i := 1; i < len(toks); i++ {
+		name, value, attached, takes, ok := startProcessParamKind(toks[i].text)
+		if ok {
+			text := value
+			valIdx := i
+			if takes && !attached {
+				if i+1 >= len(toks) {
+					return program, argIndex
+				}
+				i++
+				valIdx = i
+				text = toks[i].text
+			}
+			switch name {
+			case "filepath":
+				program = text
+				programSet = true
+			case "argumentlist":
+				if !attached {
+					argIndex = valIdx
+				}
+				argSet = true
+			}
+			continue
+		}
+		if toks[i].text != "" && toks[i].text[0] == '-' {
+			continue
+		}
+		if !programSet {
+			program = toks[i].text
+			programSet = true
+			continue
+		}
+		if !argSet {
+			argIndex = i
+			argSet = true
+		}
+	}
+	return program, argIndex
+}
+
+func startProcessParamKind(token string) (name, value string, attached, takesValue, ok bool) {
+	if token == "" || token[0] != '-' {
+		return "", "", false, false, false
+	}
+	body := token[1:]
+	if n, v, yes := splitAttachedParam(token); yes {
+		body = n
+		value = v
+		attached = true
+	}
+	name, takesValue, ok = uniqueStartProcessParam(strings.ToLower(body))
+	return name, value, attached, takesValue, ok
+}
+
+func uniqueStartProcessParam(body string) (name string, takesValue, ok bool) {
+	if body == "" {
+		return "", false, false
+	}
+	type spParam struct {
+		name  string
+		value bool
+	}
+	params := []spParam{
+		{"argumentlist", true},
+		{"credential", true},
+		{"filepath", true},
+		{"loaduserprofile", false},
+		{"nonewwindow", false},
+		{"passthru", false},
+		{"redirectstandarderror", true},
+		{"redirectstandardinput", true},
+		{"redirectstandardoutput", true},
+		{"usenewenvironment", false},
+		{"verb", true},
+		{"wait", false},
+		{"windowstyle", true},
+		{"workingdirectory", true},
+		{"whatif", false},
+		{"confirm", false},
+		{"verbose", false},
+		{"debug", false},
+		{"erroraction", true},
+		{"warningaction", true},
+		{"informationaction", true},
+		{"errorvariable", true},
+		{"warningvariable", true},
+		{"informationvariable", true},
+		{"outvariable", true},
+		{"outbuffer", true},
+		{"pipelinevariable", true},
+	}
+	exact, exactValue := "", false
+	prefix, prefixValue := "", false
+	ambiguous := false
+	for _, p := range params {
+		if p.name == body {
+			exact, exactValue = p.name, p.value
+		}
+		if strings.HasPrefix(p.name, body) {
+			if prefix != "" {
+				ambiguous = true
+			} else {
+				prefix, prefixValue = p.name, p.value
+			}
+		}
+	}
+	if exact != "" {
+		return exact, exactValue, true
+	}
+	if prefix != "" && !ambiguous {
+		return prefix, prefixValue, true
+	}
+	return "", false, false
+}
+
+func cmdStartSwitch(token string) (isSwitch, takesValue, glued bool) {
+	if len(token) < 2 || token[0] != '/' {
+		return false, false, false
+	}
+	body := token[1:]
+	lower := strings.ToLower(body)
+	switch lower {
+	case "d", "node", "affinity":
+		return true, true, false
+	case "b", "i", "min", "max", "separate", "shared", "low", "normal", "high", "realtime", "abovenormal", "belownormal", "wait":
+		return true, false, false
+	}
+	if strings.HasPrefix(lower, "d") && len(body) > 1 && looksLikeDirValue(body[1:]) {
+		return true, false, true
+	}
+	if strings.HasPrefix(lower, "node") && len(lower) > len("node") {
+		return true, false, true
+	}
+	if strings.HasPrefix(lower, "affinity") && len(lower) > len("affinity") {
+		return true, false, true
+	}
+	return false, false, false
+}
+
+func stmtTokQuoted(command string, tok stmtTok) bool {
+	return tok.start > 0 && tok.start <= len(command) && (command[tok.start-1] == '"' || command[tok.start-1] == '\'')
+}
+
+func quoteMatches(command string, quoteAt int, tok stmtTok) bool {
+	bodyStart, bodyEnd, _, ok := quotedPayloadBounds(command, quoteAt)
+	return ok && tok.start == bodyStart && tok.end == bodyEnd
+}
+
+func statementEnd(command string, at int, mode shellParseMode) int {
+	inSingle, inDouble := false, false
+	for i := at; i < len(command); {
+		ch := command[i]
+		if ch == '\'' && !inDouble && mode != parseCmd {
+			inSingle = !inSingle
+			i++
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			i++
+			continue
+		}
+		if !inSingle && !inDouble {
+			if n := shellSepLen(command, i); n > 0 {
+				return i
+			}
+		}
+		i++
+	}
+	return len(command)
 }
 
 func escapedLineBreak(command string, i int) bool {

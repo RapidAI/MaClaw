@@ -189,6 +189,35 @@ func TestOwnedSrvOnlyNodeUpgradeOnRotationCreatesAnOwnedDesktop(t *testing.T) {
 	}
 }
 
+func TestRefreshRotatedDesktopReconcilesOwnerAndHostSize(t *testing.T) {
+	settings := &edgeMemSettings{}
+	pool := desktoppool.New(settings, nil)
+	ctx := context.Background()
+	if _, err := pool.CreateServer(ctx, store.DefaultTenantID, desktoppool.Server{
+		Name: "node-pc", BaseURL: desktoppool.NodeBaseURL("node-1"), AccessToken: "old-key",
+		NodeID: "node-1", OwnerUserID: "bob", Intranet: true,
+		Memory: "2g", CPUs: "1", ShmSize: "1g", ResourcesAuto: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshRotatedDesktop(ctx, pool, store.DefaultTenantID, "node-1", "node-pc", "alice", "new-key", 15032385536, 8); err != nil {
+		t.Fatal(err)
+	}
+	servers, active, err := pool.OwnedServers(ctx, store.DefaultTenantID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 1 || servers[0].OwnerUserID != "alice" || active != servers[0].ID {
+		t.Fatalf("owned servers=%+v active=%q", servers, active)
+	}
+	if servers[0].Memory != "4g" || servers[0].CPUs != "4" || !servers[0].ResourcesAuto {
+		t.Fatalf("rotation did not refit the existing desktop: %+v", servers[0])
+	}
+	if servers[0].AccessToken != "new-key" {
+		t.Fatalf("rotation did not refresh the desktop key: %+v", servers[0])
+	}
+}
+
 func TestOwnedSrvOnlyNodeUpgradeOnRotationRefusesASmallHost(t *testing.T) {
 	t.Setenv("HUB_EDGE_NODES", "on")
 	settings := &edgeMemSettings{}
@@ -493,6 +522,87 @@ func TestEnrollWithSrvRollsBackWhenTheConnectionIsNotStored(t *testing.T) {
 	view, err := pool.View(ctx, store.DefaultTenantID)
 	if err != nil || len(view.Servers) != 0 {
 		t.Fatalf("servers = %+v err %v", view.Servers, err)
+	}
+}
+
+func TestOwnedEnrollRollbackDetachesTheDesktopAssignment(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	settings := &edgeMemSettings{}
+	reg := edgenode.NewRegistry(settings)
+	pool := desktoppool.New(settings, nil)
+	bots := botmgmt.NewService(failingBotSettings{})
+	ctx := context.Background()
+	code, err := reg.IssueOwnedCode(ctx, store.DefaultTenantID, "alice", "alice-pc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	body := `{"code":"` + code.Code + `","desktopd_key":"key-1","srv_admin_secret":"srv-admin","version":"v1","has_desktopd":true,"has_srv":true,"host_ram_bytes":15032385536,"host_cpus":8}`
+	PostEdgeEnrollHandler(reg, pool, bots).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/edge/enroll", strings.NewReader(body)))
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "srv connection was not recorded") {
+		t.Fatalf("enroll %d %s", rec.Code, rec.Body.String())
+	}
+	servers, active, err := pool.OwnedServers(ctx, store.DefaultTenantID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 0 || active != "" {
+		t.Fatalf("rollback left owned desktop servers=%+v active=%q", servers, active)
+	}
+	view, err := pool.View(ctx, store.DefaultTenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Servers) != 0 || len(view.Assignments) != 0 {
+		t.Fatalf("rollback left pool state servers=%+v assignments=%+v", view.Servers, view.Assignments)
+	}
+}
+
+func TestRotationUpgradeRollbackRemovesTheNewDesktopRecord(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	settings := &edgeMemSettings{}
+	reg := edgenode.NewRegistry(settings)
+	pool := desktoppool.New(settings, nil)
+	ctx := context.Background()
+	code, err := reg.IssueOwnedCode(ctx, store.DefaultTenantID, "alice", "alice-pc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	goodBots := botmgmt.NewService(&botSettingsMem{})
+	firstRec := httptest.NewRecorder()
+	firstBody := `{"code":"` + code.Code + `","srv_admin_secret":"srv-1","version":"v1","has_srv":true}`
+	PostEdgeEnrollHandler(reg, pool, goodBots).ServeHTTP(firstRec, httptest.NewRequest(http.MethodPost, "/api/v1/edge/enroll", strings.NewReader(firstBody)))
+	if firstRec.Code != http.StatusCreated {
+		t.Fatalf("srv-only enroll %d %s", firstRec.Code, firstRec.Body.String())
+	}
+	var first edgenode.EnrollResult
+	if err := json.Unmarshal(firstRec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	rotate, err := reg.IssueRotateCode(ctx, store.DefaultTenantID, first.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failingBots := botmgmt.NewService(failingBotSettings{})
+	rec := httptest.NewRecorder()
+	upgradeBody := `{"code":"` + rotate.Code + `","desktopd_key":"key-2","srv_admin_secret":"srv-2","version":"v2","has_desktopd":true,"has_srv":true,"host_ram_bytes":15032385536,"host_cpus":8}`
+	PostEdgeEnrollHandler(reg, pool, failingBots).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/edge/enroll", strings.NewReader(upgradeBody)))
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "srv connection was not recorded") {
+		t.Fatalf("rotation %d %s", rec.Code, rec.Body.String())
+	}
+	node, err := reg.Lookup(ctx, first.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.HasDesktopd || node.DesktopdKey != "" {
+		t.Fatalf("rollback node still has desktop: %+v", node)
+	}
+	servers, active, err := pool.OwnedServers(ctx, store.DefaultTenantID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 0 || active != "" {
+		t.Fatalf("rotation rollback left servers=%+v active=%q", servers, active)
 	}
 }
 

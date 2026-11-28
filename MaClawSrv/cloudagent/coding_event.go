@@ -108,6 +108,9 @@ func (rt *Runtime) emitToolFinished(inst *instance, taskID, requestID, name, arg
 	event["duration_ms"] = duration.Milliseconds()
 	if write.path != "" {
 		event["files"] = []string{write.path}
+		if write.created {
+			event["created"] = true
+		}
 		if write.hasCounts {
 			event["added"] = write.added
 			event["removed"] = write.removed
@@ -129,11 +132,18 @@ func (rt *Runtime) emitCodingDiffSummary(inst *instance, taskID, requestID strin
 	added, removed := 0, 0
 	for _, change := range changes {
 		files = append(files, change.Path)
-		fileChanges = append(fileChanges, map[string]any{
+		row := map[string]any{
 			"path":    change.Path,
 			"added":   change.Added,
 			"removed": change.Removed,
-		})
+		}
+		if change.Created {
+			row["created"] = true
+		}
+		if change.Deleted {
+			row["deleted"] = true
+		}
+		fileChanges = append(fileChanges, row)
 		added += change.Added
 		removed += change.Removed
 	}

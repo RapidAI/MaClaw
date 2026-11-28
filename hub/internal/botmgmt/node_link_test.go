@@ -7,8 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
 func TestPublicAndNodeBotsUseDifferentSrvConnections(t *testing.T) {
@@ -180,6 +183,61 @@ func TestDesktopBotDoesNotUseASrvOnlyNode(t *testing.T) {
 	}
 	if plain.NodeID != "node-1" {
 		t.Fatalf("a no-computer bot can still use the node srv: %+v", plain)
+	}
+}
+
+func TestNoneDesktopBotOnANodePostsToThatNodeSrv(t *testing.T) {
+	var mu sync.Mutex
+	hits := map[string][]string{}
+	handler := func(label string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			hits[label] = append(hits[label], r.Method+" "+r.URL.Path)
+			mu.Unlock()
+			switch {
+			case r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/token":
+				_, _ = io.WriteString(w, `{"access_token":"bearer-`+label+`","principal":{"user_id":"user_alice"}}`)
+			case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
+				writeInstanceSettings(w, r)
+			case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
+				w.WriteHeader(http.StatusOK)
+			case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/config"):
+				_, _ = io.WriteString(w, `{"app_config":{}}`)
+			case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/config"):
+				w.WriteHeader(http.StatusOK)
+			case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/messages"):
+				_, _ = io.WriteString(w, `{"message":{"content":"ok"}}`)
+			default:
+				http.NotFound(w, r)
+			}
+		}
+	}
+	cloud := httptest.NewServer(handler("cloud"))
+	defer cloud.Close()
+	node := httptest.NewServer(handler("node"))
+	defer node.Close()
+
+	settings := &memSettings{}
+	svc := NewService(settings)
+	useDirectNodeDial(svc)
+	alice := ownerPrincipal{HubUserID: "alice", TenantID: "t1", UserID: "user_alice", APIKey: "key-alice", APISecret: "sec-alice"}
+	seedRecord(t, settings, "tenant-a", record{
+		BaseURL: cloud.URL, AccessToken: "cloud-access", AdminSecret: "cloud-admin",
+		Principals: []ownerPrincipal{alice},
+		NodeLinks:  []nodeLink{{NodeID: "node-1", BaseURL: node.URL, AdminSecret: "node-admin", Principals: []ownerPrincipal{alice}}},
+		Bots:       []Bot{{ID: "bot_none", Name: "plain", InstanceID: "inst_none", OwnerUserID: "alice", NodeID: "node-1", DesktopMode: desktop.BotDesktopModeNone}},
+		Grants:     []Grant{{ID: "g1", Scope: ScopeUser, TargetID: "alice"}},
+	})
+	if _, err := svc.PostMessage(context.Background(), "tenant-a", "alice", "bot_none", "查一下天气"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !containsHit(hits["node"], "POST /api/v1/instances/inst_none/messages") {
+		t.Fatalf("node hits=%v cloud hits=%v", hits["node"], hits["cloud"])
+	}
+	if containsHit(hits["cloud"], "POST /api/v1/instances/inst_none/messages") {
+		t.Fatalf("the node bot's message went to the cloud srv: cloud=%v node=%v", hits["cloud"], hits["node"])
 	}
 }
 

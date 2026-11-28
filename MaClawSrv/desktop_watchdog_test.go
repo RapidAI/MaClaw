@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -325,5 +326,42 @@ func TestDesktopFileRefClaimNamesAnOtherwiseEmptyReceipt(t *testing.T) {
 	noteDeliveredFiles(runID, msg, 1)
 	if !strings.Contains(msg.Content, "report.pdf") {
 		t.Fatalf("receipt content %q", msg.Content)
+	}
+}
+
+func TestDesktopRunEvidenceExpiresByTTL(t *testing.T) {
+	oldTTL := desktopRunEvidenceTTL
+	defer func() { desktopRunEvidenceTTL = oldTTL }()
+	desktopRunEvidenceTTL = time.Hour
+	oldRun := "run-evidence-old"
+	newRun := "run-evidence-new"
+	for _, run := range []string{oldRun, newRun} {
+		desktopFileClaimMu.Lock()
+		delete(desktopFileClaimsByRun, run)
+		desktopFileClaimMu.Unlock()
+	}
+	desktopNoteFileRefClaim(oldRun, "", "bf_old", "old.pdf")
+	if len(desktopFileClaims(oldRun)) != 1 {
+		t.Fatal("fresh claim missing")
+	}
+	// A run with no durable finish may still be a long-running task. Age
+	// alone must not delete evidence it will need when it finally settles.
+	desktopRunEvidenceTTL = -time.Hour
+	desktopNoteFileRefClaim(newRun, "", "bf_new", "new.pdf")
+	if got := len(desktopFileClaims(oldRun)); got != 1 {
+		t.Fatalf("unfinished long run lost its evidence: %d", got)
+	}
+	// Once the finish record is durable, the same TTL is only a post-receipt
+	// recovery window and the next evidence write may sweep the stale run.
+	if !desktopStoreRunFinish(oldRun, "", "", desktopRunFinish{Status: "success", Next: "none"}) {
+		t.Fatal("finish record was not stored")
+	}
+	t.Cleanup(func() { _ = os.Remove(desktopRunFinishRecordPath(oldRun)) })
+	desktopNoteFileRefClaim(newRun, "", "bf_newer", "newer.pdf")
+	if got := len(desktopFileClaims(oldRun)); got != 0 {
+		t.Fatalf("finished stale claims survived: %d", got)
+	}
+	if got := len(desktopFileClaims(newRun)); got != 2 {
+		t.Fatalf("triggering run was swept: %d", got)
 	}
 }

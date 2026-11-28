@@ -6,6 +6,8 @@ import (
 	"os"
 	"runtime"
 	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 )
 
 var float32BufferPool sync.Pool
@@ -16,11 +18,15 @@ var (
 	genericDbgMu   sync.Mutex
 )
 
+// minFloat32Pool is the smallest recycled buffer, in floats. A shorter
+// request stays on make so it cannot pin a multi-megabyte block.
+const minFloat32Pool = 4096
+
 func getFloat32Buffer(n int) []float32 {
 	if n <= 0 {
 		return nil
 	}
-	if !useKokoroBufferPool() {
+	if n < minFloat32Pool || !useKokoroBufferPool() {
 		return make([]float32, n)
 	}
 	if v := float32BufferPool.Get(); v != nil {
@@ -28,15 +34,15 @@ func getFloat32Buffer(n int) []float32 {
 		if cap(buf) >= n {
 			return buf[:n]
 		}
+		if cap(buf) >= minFloat32Pool && cap(buf) <= 64*1024*1024 {
+			float32BufferPool.Put(buf[:0])
+		}
 	}
 	return make([]float32, n)
 }
 
 func putFloat32Buffer(buf []float32) {
-	if !useKokoroBufferPool() {
-		return
-	}
-	if cap(buf) == 0 || cap(buf) > 64*1024*1024 {
+	if cap(buf) < minFloat32Pool || cap(buf) > 64*1024*1024 || !useKokoroBufferPool() {
 		return
 	}
 	float32BufferPool.Put(buf[:0])
@@ -115,7 +121,49 @@ func tanh(x float32) float32 {
 }
 
 func gelu(x float32) float32 {
+	if kokoroFastMath {
+		return fastGelu32(x)
+	}
 	return 0.5 * x * (1 + float32(math.Tanh(float64(0.7978845608028654*(x+0.044715*x*x*x)))))
+}
+
+// geluInplace applies GELU. The fast path calls fastGelu32 directly so the
+// polynomial inlines; parallelApply32 would go through a func value.
+func geluInplace(x []float32) {
+	if !kokoroFastMath {
+		parallelApply32(x, gelu)
+		return
+	}
+	workers := runtime.GOMAXPROCS(0)
+	if len(x) < 1<<15 || workers < 2 {
+		for i, v := range x {
+			x[i] = fastGelu32(v)
+		}
+		return
+	}
+	if workers > 8 {
+		workers = 8
+	}
+	var wg sync.WaitGroup
+	chunk := (len(x) + workers - 1) / workers
+	for w := 0; w < workers; w++ {
+		start := w * chunk
+		end := start + chunk
+		if end > len(x) {
+			end = len(x)
+		}
+		if start >= end {
+			break
+		}
+		wg.Add(1)
+		go func(lo, hi int) {
+			defer wg.Done()
+			for i := lo; i < hi; i++ {
+				x[i] = fastGelu32(x[i])
+			}
+		}(start, end)
+	}
+	wg.Wait()
 }
 
 func leakyReLU(x, slope float32) float32 {
@@ -216,6 +264,18 @@ func LinearTensor(out, x []float32, weight *Tensor, bias []float32, in, outDim i
 func LinearSequenceTensor(out, x []float32, weight *Tensor, bias []float32, steps, in, outDim int) error {
 	if len(x) != steps*in || len(out) != steps*outDim {
 		return fmt.Errorf("kokoro: linear sequence tensor shape mismatch")
+	}
+	if kokoroSeqGEMM && steps >= 2 && in > 0 && outDim > 0 && (bias == nil || len(bias) >= outDim) {
+		w, err := weight.Float32()
+		if err != nil {
+			return err
+		}
+		if len(w) != in*outDim {
+			return fmt.Errorf("kokoro: linear sequence weight shape mismatch")
+		}
+		// weight is [outDim, in]. tensor.MatMul is A[steps,in] @ W^T.
+		tensor.MatMulBias(out, x, w, bias, steps, outDim, in)
+		return nil
 	}
 	workers := runtime.GOMAXPROCS(0)
 	if steps >= 8 && in*outDim >= 1<<16 && workers > 1 {
@@ -434,10 +494,46 @@ func conv1DMatMul(out, x, weight, bias []float32, inC, inT, outC, kernel, stride
 	return nil
 }
 
+// useKokoroPointwiseGEMM routes 1x1 convs through tensor.MatMul. vek's
+// MatMul has no NEON, so on arm64 that path was a scalar GEMM. The weight
+// layout of a kernel-1 conv is already [outC, inC], which is what MatMul
+// consumes as B[N, K].
+func useKokoroPointwiseGEMM() bool {
+	// vek's MatMul has no NEON. Keep the desktop path so Mac audio does not
+	// move; the Android voice library is the target.
+	return useKokoroSIMD() && runtime.GOOS == "android" && runtime.GOARCH == "arm64"
+}
+
 func conv1DPointwiseSIMD(out, x, weight, bias []float32, inC, inT, outC int) error {
+	if useKokoroPointwiseGEMM() {
+		conv1DPointwiseFromMatMul(out, x, weight, bias, inC, inT, outC, func(dst, a, b []float32, M, N, K int) {
+			tensor.MatMul(dst, a, b, M, N, K)
+		})
+		return nil
+	}
 	weightColMajor := make([]float32, inC*outC)
 	transposePointwiseConv1DWeight(weightColMajor, weight, inC, outC)
 	return conv1DPointwiseSIMDColMajor(out, x, weightColMajor, bias, inC, inT, outC)
+}
+
+// conv1DPointwiseFromMatMul transposes activation to [T, C], multiplies by
+// weight [outC, inC], then writes [outC, T] with the bias.
+func conv1DPointwiseFromMatMul(out, x, weight, bias []float32, inC, inT, outC int, gemm func(dst, a, b []float32, M, N, K int)) {
+	inputT := getConvScratch(inT * inC)
+	defer putConvScratch(inputT)
+	outT := getConvScratch(inT * outC)
+	defer putConvScratch(outT)
+	transposeChannelTime(inputT, x, inC, inT)
+	gemm(outT, inputT, weight, inT, outC, inC)
+	for oc := 0; oc < outC; oc++ {
+		b := float32(0)
+		if bias != nil {
+			b = bias[oc]
+		}
+		for t := 0; t < inT; t++ {
+			out[oc*inT+t] = outT[t*outC+oc] + b
+		}
+	}
 }
 
 func transposePointwiseConv1DWeight(weightColMajor, weight []float32, inC, outC int) {
@@ -791,8 +887,18 @@ func conv1DSIMDTransposedWeight(out, x, weightT, bias, residual []float32, inC, 
 				}
 				outRow := out[oc*outT : (oc+1)*outT]
 				weightBase := oc * kernel * inC
+				var resRow []float32
+				if residual != nil {
+					resRow = residual[oc*outT : (oc+1)*outT]
+				}
 				for ot := otStart; ot < otEnd; ot++ {
-					outRow[ot] = conv1DSIMDGenericDot(inputT, weightT, b, inC, inT, kernel, stride, padding, dilation, weightBase, ot)
+					// Same residual epilogue as the FMA path. Read before
+					// the store so an in-place residual stays intact.
+					sum := conv1DSIMDGenericDot(inputT, weightT, b, inC, inT, kernel, stride, padding, dilation, weightBase, ot)
+					if resRow != nil {
+						sum += resRow[ot]
+					}
+					outRow[ot] = sum
 				}
 			}
 		}(ocStart, ocEnd, otStart, otEnd)
@@ -989,41 +1095,53 @@ func convTranspose1DSIMDTransposedWeight(out, x, weightT, bias []float32, inC, i
 				}
 				wStride := -stride * outC * inC
 				ocQuadsEnd := ocStart + (ocEnd-ocStart)/4*4
+				// Two outputs one stride apart share a residue class, so
+				// their input rows are one row apart and their weights match.
+				// dotStridedFMA4x2 loads those weights once. inC >= 8 is the
+				// AVX/NEON kernel's minimum width. Desktop keeps the
+				// single-position loop.
+				pairTimes := useKokoroConvTransposePair() && inC >= 8
 				for oc := ocStart; oc < ocQuadsEnd; oc += 4 {
 					var bias4 []float32
 					if bias != nil {
 						bias4 = bias[oc : oc+4]
 					}
 					weightBase := (oc * inC)
-					// Pair positions (ot, ot+stride): they share the
-					// residue class, weights and tap count. Within each
-					// residue class r (mod stride) the pair starts are
-					// r, r+2*stride, ... — equivalently ot where
-					// ot mod 2*stride < stride.
-					ot := 0
-					for otb := 0; otb+stride < outT; otb += 2 * stride {
-						lim := otb + stride
-						if lim > outT {
-							lim = outT
+					if pairTimes {
+						for r := 0; r < stride && r < outT; r++ {
+							for ot := r; ot < outT; {
+								base := ot + padding
+								k0 := base % stride
+								count := ktab[k0]
+								it0 := (base - k0) / stride
+								kMax := k0 + (count-1)*stride
+								xRow := inputT[(it0-(count-1)+halo)*inC:]
+								wRow := weightT[(kMax*outC)*inC+weightBase:]
+								if ot+stride < outT {
+									p0, p1, p2, p3, p4, p5, p6, p7 := dotStridedFMA4x2(xRow, inC, wRow, wStride, inC, count, inC)
+									out[oc*outT+ot] = biasOrZero(bias4, 0) + p0
+									out[oc*outT+ot+stride] = biasOrZero(bias4, 0) + p1
+									out[(oc+1)*outT+ot] = biasOrZero(bias4, 1) + p2
+									out[(oc+1)*outT+ot+stride] = biasOrZero(bias4, 1) + p3
+									out[(oc+2)*outT+ot] = biasOrZero(bias4, 2) + p4
+									out[(oc+2)*outT+ot+stride] = biasOrZero(bias4, 2) + p5
+									out[(oc+3)*outT+ot] = biasOrZero(bias4, 3) + p6
+									out[(oc+3)*outT+ot+stride] = biasOrZero(bias4, 3) + p7
+									ot += 2 * stride
+									continue
+								}
+								r0, r1, r2, r3 := dotStridedFMA4(xRow, inC, wRow, wStride, inC, count, inC)
+								out[oc*outT+ot] = biasOrZero(bias4, 0) + r0
+								out[(oc+1)*outT+ot] = biasOrZero(bias4, 1) + r1
+								out[(oc+2)*outT+ot] = biasOrZero(bias4, 2) + r2
+								out[(oc+3)*outT+ot] = biasOrZero(bias4, 3) + r3
+								ot += stride
+							}
 						}
-						for oti := otb; oti < lim; oti++ {
-							ot := oti
-							base := ot + padding
-							k0 := base % stride
-							count := ktab[k0]
-							it0 := (base - k0) / stride
-							kMax := k0 + (count-1)*stride
-							// Walk taps from the largest k (lowest x address) up
-							// so the x stride is positive; the negative weight
-							// stride is handled directly by the kernel.
-							conv4x2G(
-								inputT[(it0-(count-1)+halo)*inC:], inC,
-								weightT[(kMax*outC)*inC+weightBase:], wStride, inC,
-								count, inC, inC,
-								out[oc*outT+ot:], outT, stride, bias4, nil)
-						}
+						continue
 					}
-					for ; ot < outT; ot++ {
+					// Each position is written once.
+					for ot := 0; ot < outT; ot++ {
 						base := ot + padding
 						k0 := base % stride
 						count := ktab[k0]

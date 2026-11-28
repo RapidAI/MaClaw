@@ -4598,6 +4598,52 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     z-index: 10000;
 }
 
+/* bots 页签的顶栏动作（群聊 + 故障报告）：DesktopBotWorkspace 悬浮标题条
+   上的两个按钮上移到这里。本簇是 .top-header-window-controls 的兄弟节点 ——
+   pet-store 的 `.top-header-window-controls button` 会把控制区按钮钳到
+   32x32（强制优先级，图标钮规范化），文本按钮进那个容器必然破版。
+   data-window-no-drag 在 TSX 上；这里补窗口拖拽/层级所需的外观变量。 */
+.mth-bot-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: 6px;
+    position: relative;
+    z-index: 10000;
+    pointer-events: auto;
+    --wails-draggable: no-drag;
+}
+
+.mth-bot-rooms-btn {
+    white-space: nowrap;
+}
+
+/* 故障报告钮的皮肤随按钮一起搬进顶栏：尺寸对齐本行控制钮的有效渲染尺寸
+   （32x32，含 pet-store 的钳制），配色沿用原 color-mix 组合。 */
+.mth-bot-actions .task-bug-report-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    flex-shrink: 0;
+    line-height: 1;
+    border: 1px solid color-mix(in srgb, var(--theme-border, #e4e7ec) 85%, transparent);
+    border-radius: var(--radius-md, 8px);
+    background: var(--theme-surface, #fff);
+    color: var(--theme-text-secondary, #46586f);
+    cursor: pointer;
+}
+.mth-bot-actions .task-bug-report-btn:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 32%, var(--theme-border, #e4e7ec));
+    background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+    color: var(--theme-primary, #2e75cb);
+}
+.mth-bot-actions .task-bug-report-btn svg { display: block; }
+.mth-bot-actions .task-bug-report-btn:disabled { cursor: progress; opacity: 0.72; }
+
 /* Migrated from inline styles in SidebarNavRailPieces. */
 .snrp-brand-logo {
     width: 30px;
@@ -23524,24 +23570,6 @@ button.tbk-pill {
     color: var(--theme-danger);
 }
 
-/* --- Global default model picker --- */
-
-.cloud-agent-default-row {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
-}
-
-.cloud-agent-default-row .cloud-agent-select {
-    flex: 0 1 auto;
-}
-
-.cloud-agent-select {
-    width: auto;
-    min-width: 180px;
-}
-
 /* --- Private deployment entry row --- */
 
 .cloud-agent-deploy-row {
@@ -23658,15 +23686,6 @@ button.tbk-pill {
 @media (max-width: 560px) {
     .cloud-agent-install-form {
         grid-template-columns: 1fr;
-    }
-
-    .cloud-agent-default-row {
-        align-items: stretch;
-    }
-
-    .cloud-agent-default-row .cloud-agent-select {
-        min-width: 0;
-        flex: 1 1 100%;
     }
 }
 
@@ -30977,6 +30996,12 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-execution-subline .mc-task-execution-cloud-git { flex: 0 1 auto; max-width: 45%; display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: var(--theme-text-muted); font-size: 12px; line-height: 1.3; white-space: nowrap; }
 .mc-task-execution-subline .mc-task-execution-cloud-git svg { flex: 0 0 auto; display: block; }
 .mc-task-execution-subline .mc-task-execution-cloud-git span { overflow: hidden; text-overflow: ellipsis; }
+/* Link variant: the same chip rendered as a <button> that opens the
+   provider's repository page. Strips the user-agent button chrome and
+   signals the affordance without repainting the muted label. */
+.mc-task-execution-subline button.mc-task-execution-cloud-git { border: 0; background: none; padding: 0; margin: 0; font: inherit; cursor: pointer; }
+.mc-task-execution-subline button.mc-task-execution-cloud-git:hover { color: var(--theme-primary); }
+.mc-task-execution-subline button.mc-task-execution-cloud-git:hover span { text-decoration: underline; }
 .ai-panel-root[data-ai-view='execution'] > .mc-ai-titlebar,
 [data-testid='ai-panel-root'][data-ai-view='execution'] > .mc-ai-titlebar { display: none !important; }
 [data-testid='ai-panel-root'][data-ai-view='execution'] [data-testid='ai-tab-bar'] { display: none !important; }

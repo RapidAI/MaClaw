@@ -16,7 +16,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"slices"
+	"strings"
 	"time"
 
 	goruntime "runtime"
@@ -273,13 +273,19 @@ func Main(v string) {
 	bootLog("wails3 window %dx%d frameless=true startMaximised=%v mode=%s", winWidth, winHeight, startMaximised, launch.Mode)
 	setupTray3(app, args[1:])
 
-	// --desktop-stage: open the standalone desktop-stream window at launch
-	// (also serves as the programmatic verification of the pop-out binding).
-	if slices.Contains(args, "--desktop-stage") {
-		go func() {
-			time.Sleep(5 * time.Second) // let the main window settle first
-			app.OpenDesktopStageWindow(1280, 10)
-		}()
+	// --desktop-stage=<full-player-url> is the smoke-test entry for the pop-out
+	// binding. The URL must come from the caller: unlike the original spike,
+	// there is no meaningful local /h264.html to open without a hub handoff
+	// token and viewer query.
+	for _, arg := range args {
+		if stageURL := strings.TrimPrefix(arg, "--desktop-stage="); stageURL != arg && stageURL != "" {
+			go func(raw string) {
+				time.Sleep(2 * time.Second) // let the main window settle first
+				if err := app.OpenDesktopStageWindow(raw); err != nil {
+					log.Printf("[desktop-stage] smoke open rejected: %v", err)
+				}
+			}(stageURL)
+		}
 	}
 
 	// v2 OnDomReady equivalent.

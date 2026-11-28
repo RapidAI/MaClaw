@@ -19,6 +19,77 @@ func requireSliceClose(t *testing.T, got, want []float32) {
 	}
 }
 
+func TestLinearSequenceGEMMMatchesRowDots(t *testing.T) {
+	prev := kokoroSeqGEMM
+	kokoroSeqGEMM = true
+	t.Cleanup(func() { kokoroSeqGEMM = prev })
+
+	const steps, in, outDim = 4, 8, 6
+	x := make([]float32, steps*in)
+	w := make([]float32, outDim*in)
+	bias := []float32{0.1, -0.2, 0.3, -0.4, 0.5, -0.6}
+	for i := range x {
+		x[i] = float32((i%5)-2) * 0.15
+	}
+	for i := range w {
+		w[i] = float32((i%7)-3) * 0.07
+	}
+	got := make([]float32, steps*outDim)
+	weight := &Tensor{Dims: []int{outDim, in}, Data: w}
+	if err := LinearSequenceTensor(got, x, weight, bias, steps, in, outDim); err != nil {
+		t.Fatal(err)
+	}
+	want := make([]float32, steps*outDim)
+	for s := 0; s < steps; s++ {
+		if err := Linear(want[s*outDim:(s+1)*outDim], x[s*in:(s+1)*in], w, bias, in, outDim); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var maxd float32
+	for i := range got {
+		d := got[i] - want[i]
+		if d < 0 {
+			d = -d
+		}
+		if d > maxd {
+			maxd = d
+		}
+	}
+	if maxd > 1e-3 {
+		t.Fatalf("seq gemm max abs diff %g\ngot %v\nwant %v", maxd, got, want)
+	}
+}
+
+func TestPointwiseLayoutMatchesConv1D(t *testing.T) {
+	const inC, inT, outC = 4, 5, 3
+	x := make([]float32, inC*inT)
+	w := make([]float32, outC*inC)
+	bias := []float32{0.25, -0.5, 0.125}
+	for i := range x {
+		x[i] = float32(i+1) * 0.1
+	}
+	for i := range w {
+		w[i] = float32((i%4)-1) * 0.3
+	}
+	want := make([]float32, outC*inT)
+	if err := Conv1D(want, x, w, bias, inC, inT, outC, 1, 1, 0, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]float32, outC*inT)
+	conv1DPointwiseFromMatMul(got, x, w, bias, inC, inT, outC, func(dst, a, b []float32, M, N, K int) {
+		for i := 0; i < M; i++ {
+			for j := 0; j < N; j++ {
+				var s float32
+				for k := 0; k < K; k++ {
+					s += a[i*K+k] * b[j*K+k]
+				}
+				dst[i*N+j] = s
+			}
+		}
+	})
+	requireSliceClose(t, got, want)
+}
+
 func TestLinear(t *testing.T) {
 	out := make([]float32, 2)
 	err := Linear(out, []float32{1, 2, 3}, []float32{1, 0, 1, 0, 1, 1}, []float32{0.5, -0.5}, 3, 2)
@@ -182,6 +253,109 @@ func TestBiLSTMLayerShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireSliceClose(t, out, []float32{0, 0, 0, 0})
+}
+
+func TestLSTMInputGEMMMatchesStepDots(t *testing.T) {
+	saved := kokoroLSTMGEMM
+	t.Cleanup(func() { kokoroLSTMGEMM = saved })
+	// Large enough that the gate rows run in parallel, both directions.
+	const steps, inDim, hidden = 4, 400, 128
+	rows := 4 * hidden
+	w := LSTMWeights{
+		WeightIH: make([]float32, rows*inDim),
+		WeightHH: make([]float32, rows*hidden),
+		BiasIH:   make([]float32, rows),
+		BiasHH:   make([]float32, rows),
+		InputDim: inDim,
+		Hidden:   hidden,
+	}
+	x := make([]float32, steps*inDim)
+	fillSmall := func(dst []float32, salt int) {
+		for i := range dst {
+			dst[i] = float32(((i+salt)%11)-5) * 0.02
+		}
+	}
+	fillSmall(w.WeightIH, 1)
+	fillSmall(w.WeightHH, 3)
+	fillSmall(w.BiasIH, 5)
+	fillSmall(w.BiasHH, 7)
+	fillSmall(x, 9)
+	run := func(reverse bool) []float32 {
+		out := make([]float32, steps*hidden)
+		if err := LSTMLayer(out, x, steps, w, reverse); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	kokoroLSTMGEMM = false
+	fwdDots := run(false)
+	revDots := run(true)
+	kokoroLSTMGEMM = true
+	fwdGEMM := run(false)
+	revGEMM := run(true)
+	lstmOutputsClose(t, fwdGEMM, fwdDots)
+	lstmOutputsClose(t, revGEMM, revDots)
+
+	w.BiasIH, w.BiasHH = nil, nil
+	kokoroLSTMGEMM = false
+	fwdDots = run(false)
+	kokoroLSTMGEMM = true
+	fwdGEMM = run(false)
+	lstmOutputsClose(t, fwdGEMM, fwdDots)
+}
+
+func TestLSTMHH4RowMatchesDot32(t *testing.T) {
+	saved := kokoroLSTMGEMM
+	t.Cleanup(func() { kokoroLSTMGEMM = saved })
+	kokoroLSTMGEMM = true
+	if !useKokoroLSTMHH4() {
+		t.Skip("4-row recurrent kernel is not selected")
+	}
+	check := func(hidden, g0, g1 int) {
+		t.Helper()
+		rows := 4 * hidden
+		hh := make([]float32, rows*hidden)
+		h := make([]float32, hidden)
+		for i := range hh {
+			hh[i] = float32((i%13)-6) * 0.03
+		}
+		for i := range h {
+			h[i] = float32((i%9)-4) * 0.05
+		}
+		got := make([]float32, rows)
+		want := make([]float32, rows)
+		lstmHHDotRange(got, h, hh, hidden, g0, g1)
+		for g := g0; g < g1; g++ {
+			want[g] += dot32(h, hh[g*hidden:(g+1)*hidden])
+		}
+		lstmOutputsClose(t, got, want)
+	}
+	check(256, 0, 4*256)
+	check(128, 3, 4*128-1)
+	check(17, 1, 4*17-2)
+	check(8, 0, 32)
+}
+
+func lstmOutputsClose(t *testing.T, got, want []float32) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("len %d vs %d", len(got), len(want))
+	}
+	var maxd, acc float32
+	for i := range want {
+		d := got[i] - want[i]
+		if d < 0 {
+			d = -d
+		}
+		if d > maxd {
+			maxd = d
+		}
+		acc += want[i] * want[i]
+	}
+	rms := float32(math.Sqrt(float64(acc / float32(len(want)))))
+	if maxd > 5e-3 && maxd > 0.05*rms {
+		t.Fatalf("lstm gemm maxAbs=%g rms=%g", maxd, rms)
+	}
 }
 
 func TestISTFTRoundTripSmoke(t *testing.T) {

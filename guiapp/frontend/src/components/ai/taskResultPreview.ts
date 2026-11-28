@@ -36,6 +36,14 @@ export function isPdfInlineDataURL(value: string): boolean {
     return value.startsWith("data:application/" + "pdf");
 }
 
+/** Same file lease, new bytes. A stable path keeps the previous iframe and fetch. */
+export function taskResultPreviewURLRevision(url: string, revision: string): string {
+    const raw = String(url || "").trim();
+    const stamp = String(revision || "").trim();
+    if (!raw || !stamp) return raw;
+    return `${raw}${raw.includes("?") ? "&" : "?"}v=${encodeURIComponent(stamp)}`;
+}
+
 export function isTaskResultPdfPreviewURL(value: string): boolean {
     const raw = String(value || "").trim();
     if (!raw.startsWith("/") || raw.startsWith("//")) return false;

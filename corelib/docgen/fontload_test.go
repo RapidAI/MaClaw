@@ -314,7 +314,7 @@ func TestLoadFontCandidatesFallsThrough(t *testing.T) {
 	if err := os.WriteFile(cffOnly, append(append([]byte{}, ottoMagic...), make([]byte, 128)...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	regular, bold, failure := loadFontCandidates([]fontCandidate{
+	regular, bold, failure := firstEmbeddableFont([]fontCandidate{
 		{cffOnly, cffOnly},
 		{plain, plain},
 	})
@@ -364,20 +364,9 @@ func TestLoadFontCandidatesPrefersCJKOverLatinOnly(t *testing.T) {
 	if err != nil {
 		t.Skip("Deng.ttf not available")
 	}
-	got, _, _ := loadFontCandidates([]fontCandidate{{latin, latin}, {cjk, cjk}})
+	got, _, _ := firstEmbeddableFont([]fontCandidate{{latin, latin}, {cjk, cjk}})
 	if !bytes.Equal(got, want) {
 		t.Fatalf("detection must skip the Latin-only font and pick the CJK one")
-	}
-}
-
-func TestLoadFontCandidatesAcceptsLatinOnlyAsLastResort(t *testing.T) {
-	const latin = `C:\Windows\Fonts\arial.ttf`
-	if _, err := os.Stat(latin); err != nil {
-		t.Skip("arial.ttf not available")
-	}
-	got, _, _ := loadFontCandidates([]fontCandidate{{latin, latin}})
-	if len(got) == 0 {
-		t.Fatal("Latin-only systems must still be able to export English documents")
 	}
 }
 

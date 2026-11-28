@@ -11368,3 +11368,470 @@ func TestRunLoop_SkillObligationNudgeOnceThenTheAnswerStands(t *testing.T) {
 		t.Fatalf("requests=%d", n.Load())
 	}
 }
+
+type routedWorkStopCallbacks struct {
+	mockCallbacks
+	left   int
+	prompt string
+}
+
+func (m *routedWorkStopCallbacks) RoutedWorkStopNudge() string {
+	if m.left <= 0 {
+		return ""
+	}
+	m.left--
+	return m.prompt
+}
+
+func TestRunLoop_RoutedWorkStopNudgeCallsTheNamedTool(t *testing.T) {
+	var n atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		round := n.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		switch round {
+		case 1:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"我将先查询北京天气，然后生成PDF。"},"finish_reason":"stop"}]}`)
+		case 2:
+			if !strings.Contains(string(body), "请直接调用 web_search") {
+				t.Errorf("second request missed the retrieval nudge: %s", body)
+			}
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"北京天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+		default:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"北京今天晴。"},"finish_reason":"stop"}]}`)
+		}
+	}))
+	defer server.Close()
+
+	cb := &routedWorkStopCallbacks{
+		left:   1,
+		prompt: "[系统] 请直接调用 web_search，不要只说明将要查询。",
+		mockCallbacks: mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    6,
+			sysPrompt:  "sys",
+			toolResult: "北京今天晴",
+			tools: []map[string]interface{}{
+				tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"}),
+			},
+		},
+	}
+	result := RunLoop(cb, "北京天气，生成pdf", nil, server.Client())
+	if result.Error != "" || result.HardExit {
+		t.Fatalf("result=%#v", result)
+	}
+	if result.Text != "北京今天晴。" {
+		t.Fatalf("text=%q iterations=%d", result.Text, result.Iterations)
+	}
+	if n.Load() != 3 {
+		t.Fatalf("requests=%d", n.Load())
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "web_search" {
+		t.Fatalf("tools=%v", cb.toolCalls)
+	}
+}
+
+type alwaysRoutedWorkStopCallbacks struct {
+	mockCallbacks
+	calls int
+}
+
+func (m *alwaysRoutedWorkStopCallbacks) RoutedWorkStopNudge() string {
+	m.calls++
+	return "[系统] 请直接调用 web_search。"
+}
+
+func TestRunLoop_RoutedWorkStopNudgeStopsAfterTheCap(t *testing.T) {
+	var n atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"我将先查询北京天气。"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &alwaysRoutedWorkStopCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   routedWorkStopNudgeCap + 2,
+		sysPrompt: "sys",
+	}}
+	result := RunLoop(cb, "北京天气，生成pdf", nil, server.Client())
+	if result.Error != "" || result.HardExit {
+		t.Fatalf("result=%#v", result)
+	}
+	if result.Text != "我将先查询北京天气。" {
+		t.Fatalf("text=%q", result.Text)
+	}
+	if result.Iterations != routedWorkStopNudgeCap+1 || n.Load() != int32(routedWorkStopNudgeCap+1) {
+		t.Fatalf("iterations=%d requests=%d", result.Iterations, n.Load())
+	}
+	if cb.calls != routedWorkStopNudgeCap {
+		t.Fatalf("nudges=%d", cb.calls)
+	}
+}
+
+type routedWorkOutcomeCallbacks struct {
+	routedWorkStopCallbacks
+	unresolved string
+}
+
+func (m *routedWorkOutcomeCallbacks) UnresolvedRoutedWork() string {
+	if m.left > 0 {
+		return ""
+	}
+	return m.unresolved
+}
+
+func TestRunLoop_RoutedWorkStopUnresolvedReplacesTheAnnouncement(t *testing.T) {
+	var n atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"我将先查询北京天气，然后生成PDF。"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	const unresolved = "这一步没有完成检索，还没有调用 web_search。PDF 也还没有生成。"
+	cb := &routedWorkOutcomeCallbacks{
+		unresolved: unresolved,
+		routedWorkStopCallbacks: routedWorkStopCallbacks{
+			left:   1,
+			prompt: "[系统] 请直接调用 web_search，不要只说明将要查询。",
+			mockCallbacks: mockCallbacks{
+				config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+				maxIter:   4,
+				sysPrompt: "sys",
+			},
+		},
+	}
+	result := RunLoop(cb, "北京天气，生成pdf", nil, server.Client())
+	if result.Text != unresolved || result.Error != unresolved || !result.HardExit {
+		t.Fatalf("result=%#v", result)
+	}
+	if strings.Contains(result.Text, "我将先查询") {
+		t.Fatalf("announcement kept: %q", result.Text)
+	}
+	if result.Iterations != 2 || n.Load() != 2 {
+		t.Fatalf("iterations=%d requests=%d", result.Iterations, n.Load())
+	}
+}
+
+func TestRunLoop_RoutedWorkStopUnresolvedKeepsTheToolReport(t *testing.T) {
+	var n atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		round := n.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		switch round {
+		case 1:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"北京天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+		case 2:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"北京今天晴，3°C。"},"finish_reason":"stop"}]}`)
+		default:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"请稍候。"},"finish_reason":"stop"}]}`)
+		}
+	}))
+	defer server.Close()
+
+	const unresolved = "这一步没有调用 generate_pdf，文件还没有生成。"
+	cb := &routedWorkOutcomeCallbacks{
+		unresolved: unresolved,
+		routedWorkStopCallbacks: routedWorkStopCallbacks{
+			left:   1,
+			prompt: "[系统] 请直接调用 generate_pdf，把检索到的事实写成完整 Markdown。",
+			mockCallbacks: mockCallbacks{
+				config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+				maxIter:    6,
+				sysPrompt:  "sys",
+				toolResult: "北京今天晴",
+				tools: []map[string]interface{}{
+					tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"}),
+				},
+			},
+		},
+	}
+	result := RunLoop(cb, "北京天气，生成pdf", nil, server.Client())
+	if !result.HardExit || result.Text != result.Error {
+		t.Fatalf("result=%#v", result)
+	}
+	if !strings.Contains(result.Text, "北京今天晴，3°C。") || !strings.Contains(result.Text, unresolved) {
+		t.Fatalf("report dropped: %q", result.Text)
+	}
+	if strings.HasPrefix(result.Text, "请稍候") {
+		t.Fatalf("acknowledgement replaced the report: %q", result.Text)
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "web_search" {
+		t.Fatalf("tools=%v", cb.toolCalls)
+	}
+	if n.Load() != 3 {
+		t.Fatalf("requests=%d", n.Load())
+	}
+}
+
+func TestRoutedWorkVisibleKeepsTheReportWhenTheAckIsLonger(t *testing.T) {
+	const (
+		sentence = "这一步没有调用 generate_pdf，文件还没有生成。"
+		report   = "北京今天晴，3°C。"
+	)
+	ack := "我将根据检索到的天气撰写一份完整的 PDF 报告，请稍候，马上就好。"
+	got := routedWorkVisible(sentence, report, ack, 1)
+	if !strings.Contains(got, report) || !strings.HasSuffix(got, sentence) || strings.Contains(got, "马上就好") {
+		t.Fatalf("long ack replaced the report: %q", got)
+	}
+	extended := report + "\n西北风 3 级。"
+	got = routedWorkVisible(sentence, report, extended, 1)
+	if !strings.Contains(got, "西北风 3 级。") || !strings.HasSuffix(got, sentence) {
+		t.Fatalf("extension dropped: %q", got)
+	}
+	got = routedWorkVisible(sentence, "好的", report, 1)
+	if !strings.Contains(got, report) || strings.Contains(got, "好的") {
+		t.Fatalf("stub kept: %q", got)
+	}
+	if got := routedWorkVisible(sentence, report, ack, 0); got != sentence {
+		t.Fatalf("no-tool = %q", got)
+	}
+}
+
+func TestRoutedWorkChooseKeepsTheReplyThatQuotesTheTool(t *testing.T) {
+	const (
+		digest    = "根据公开检索，相关信息如下：\n\n1. 北京今天晴\n晴，3°C。"
+		report    = "北京今天晴，西北风。"
+		narration = "我先生成一份PDF。"
+		header    = "我将根据公开检索的结果写成 PDF。"
+		ack       = "我将根据检索到的天气撰写一份完整的 PDF 报告，请稍候，马上就好。"
+	)
+	if !routedWorkQuotesFacts(report, digest) || routedWorkQuotesFacts(narration, digest) || routedWorkQuotesFacts(header, digest) || routedWorkQuotesFacts(ack, digest) {
+		t.Fatalf("quote report=%t narration=%t header=%t ack=%t", routedWorkQuotesFacts(report, digest), routedWorkQuotesFacts(narration, digest), routedWorkQuotesFacts(header, digest), routedWorkQuotesFacts(ack, digest))
+	}
+	if got := routedWorkChoose(narration, report, digest); got != report {
+		t.Fatalf("narration kept: %q", got)
+	}
+	if got := routedWorkChoose(header, report, digest); got != report {
+		t.Fatalf("digest lead counted as the report: %q", got)
+	}
+	if got := routedWorkChoose(report, ack, digest); got != report {
+		t.Fatalf("ack replaced the report: %q", got)
+	}
+	if got := routedWorkChoose("好的", report, digest); got != report {
+		t.Fatalf("stub kept: %q", got)
+	}
+	extended := report + "\n西北风 3 级。"
+	if got := routedWorkChoose(report, extended, digest); !strings.Contains(got, "西北风 3 级。") {
+		t.Fatalf("extension dropped: %q", got)
+	}
+	thin := "北京今天晴，我先生成 PDF。"
+	full := "北京今天晴，西北风。晴，3°C。"
+	if got := routedWorkChoose(thin, full, digest); got != full {
+		t.Fatalf("title-only reply kept: %q", got)
+	}
+	if got := routedWorkChoose(full, thin, digest); got != full {
+		t.Fatalf("fuller reply replaced: %q", got)
+	}
+}
+
+func TestLatestUserFacingToolAnswerSkipsALaterLongTranscript(t *testing.T) {
+	listing := "Public web results for \"北京天气\" (1):\n\n1. 北京今天晴\n   https://example.com/bj\n   晴，3°C。\n"
+	history := []ConversationEntry{
+		{Role: "tool", ToolOutcome: string(ToolExecutionOutcomeOK), Content: listing},
+		{Role: "tool", ToolOutcome: string(ToolExecutionOutcomeOK), Content: strings.Repeat("甲", 241)},
+		{Role: "tool", ToolOutcome: string(ToolExecutionOutcomeOK), Content: `{"title":"北京","content":"","note":"页面没有可读正文"}`},
+		{Role: "tool", ToolOutcome: string(ToolExecutionOutcomeError), Content: "搜索失败：超时"},
+	}
+	got := latestUserFacingToolAnswer(history)
+	if !strings.Contains(got, "北京今天晴") || strings.Contains(got, "https://") || strings.Contains(got, "甲") || strings.Contains(got, "搜索失败") || strings.Contains(got, "note") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestLatestUserFacingToolAnswerUsesFetchedPageContent(t *testing.T) {
+	listing := "Public web results for \"北京天气\" (1):\n\n1. 北京今天晴\n   https://example.com/bj\n   晴，3°C。\n"
+	page := `{"title":"北京今天晴","url":"https://example.com/bj","content":"晴，3°C，西北风。"}`
+	history := []ConversationEntry{
+		{Role: "tool", ToolOutcome: string(ToolExecutionOutcomeOK), Content: listing},
+		{Role: "tool", ToolOutcome: string(ToolExecutionOutcomeOK), Content: page},
+	}
+	got := latestUserFacingToolAnswer(history)
+	if got != "北京今天晴\n晴，3°C，西北风。" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestRunLoop_RoutedWorkStopEmptyKeepsTheToolFacts(t *testing.T) {
+	const unresolved = "这一步没有调用 generate_pdf，文件还没有生成。"
+	listing := "Public web results for \"北京天气\" (1):\n\n1. 北京今天晴\n   https://example.com/bj\n   晴，3°C。\n"
+	run := func(t *testing.T, toolResult string, outcome ToolExecutionOutcome, announce bool) (LoopResult, int32) {
+		t.Helper()
+		var n atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			round := n.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			toolRound := int32(1)
+			if announce {
+				toolRound = 2
+			}
+			switch {
+			case announce && round == 1:
+				_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"我将先查询北京天气。"},"finish_reason":"stop"}]}`)
+			case round == toolRound:
+				_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"北京天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+			default:
+				_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}`)
+			}
+		}))
+		defer server.Close()
+		left := 0
+		if announce {
+			left = 1
+		}
+		cb := &routedWorkOutcomeCallbacks{
+			unresolved: unresolved,
+			routedWorkStopCallbacks: routedWorkStopCallbacks{
+				left:   left,
+				prompt: "[系统] 请直接调用 web_search，不要只说明将要查询。",
+				mockCallbacks: mockCallbacks{
+					config:      corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+					maxIter:     6,
+					sysPrompt:   "sys",
+					toolResult:  toolResult,
+					toolOutcome: outcome,
+					tools: []map[string]interface{}{
+						tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"}),
+					},
+				},
+			},
+		}
+		return RunLoop(cb, "北京天气，生成pdf", nil, server.Client()), n.Load()
+	}
+
+	t.Run("digest", func(t *testing.T) {
+		result, requests := run(t, listing, ToolExecutionOutcomeOK, true)
+		if !result.HardExit || result.Text != result.Error {
+			t.Fatalf("result=%#v", result)
+		}
+		if !strings.Contains(result.Text, "根据公开检索") || !strings.Contains(result.Text, "北京今天晴") || !strings.HasSuffix(result.Text, unresolved) {
+			t.Fatalf("facts dropped: %q", result.Text)
+		}
+		if strings.Contains(result.Text, "我将先查询") || strings.Contains(result.Text, "https://") || strings.Contains(result.Text, "Public web results") {
+			t.Fatalf("announcement or listing leaked: %q", result.Text)
+		}
+		if requests != 3 {
+			t.Fatalf("requests=%d", requests)
+		}
+	})
+	t.Run("long", func(t *testing.T) {
+		result, requests := run(t, strings.Repeat("甲", 241), ToolExecutionOutcomeOK, false)
+		if !result.HardExit || result.Text != unresolved || result.Error != unresolved {
+			t.Fatalf("result=%#v", result)
+		}
+		if strings.Contains(result.Text, "甲") {
+			t.Fatalf("long transcript dumped: %q", result.Text)
+		}
+		if requests != 2 {
+			t.Fatalf("requests=%d", requests)
+		}
+	})
+	t.Run("failed", func(t *testing.T) {
+		result, requests := run(t, "搜索失败：超时", ToolExecutionOutcomeError, false)
+		if !result.HardExit || result.Text != unresolved || result.Error != unresolved {
+			t.Fatalf("result=%#v", result)
+		}
+		if strings.Contains(result.Text, "搜索失败") {
+			t.Fatalf("failed call pasted: %q", result.Text)
+		}
+		if requests != 2 {
+			t.Fatalf("requests=%d", requests)
+		}
+	})
+}
+
+func TestRunLoop_RoutedWorkStopKeepsTheLaterFactReport(t *testing.T) {
+	const (
+		unresolved = "这一步没有调用 generate_pdf，文件还没有生成。"
+		report     = "北京今天晴，西北风。"
+		listing    = "Public web results for \"北京天气\" (1):\n\n1. 北京今天晴\n   https://example.com/bj\n   晴，3°C。\n"
+	)
+	run := func(t *testing.T, first string) (LoopResult, int32) {
+		t.Helper()
+		replies := []string{first, report, "请稍候。"}
+		var n atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			round := n.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			if round == 1 {
+				_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"北京天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+				return
+			}
+			content := replies[0]
+			if int(round)-2 < len(replies) {
+				content = replies[round-2]
+			}
+			_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","content":%q},"finish_reason":"stop"}]}`, content)
+		}))
+		defer server.Close()
+		cb := &routedWorkOutcomeCallbacks{
+			unresolved: unresolved,
+			routedWorkStopCallbacks: routedWorkStopCallbacks{
+				left:   2,
+				prompt: "[系统] 请直接调用 generate_pdf，把检索到的事实写成完整 Markdown。",
+				mockCallbacks: mockCallbacks{
+					config:      corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+					maxIter:     6,
+					sysPrompt:   "sys",
+					toolResult:  listing,
+					toolOutcome: ToolExecutionOutcomeOK,
+					tools: []map[string]interface{}{
+						tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"}),
+					},
+				},
+			},
+		}
+		return RunLoop(cb, "北京天气，生成pdf", nil, server.Client()), n.Load()
+	}
+	for _, first := range []string{"好的", "我先生成一份PDF。"} {
+		t.Run(first, func(t *testing.T) {
+			result, requests := run(t, first)
+			if !result.HardExit || result.Text != result.Error {
+				t.Fatalf("result=%#v", result)
+			}
+			if !strings.Contains(result.Text, report) || !strings.HasSuffix(result.Text, unresolved) {
+				t.Fatalf("report dropped: %q", result.Text)
+			}
+			if strings.Contains(result.Text, first) || strings.HasPrefix(result.Text, "请稍候") {
+				t.Fatalf("earlier text kept: %q", result.Text)
+			}
+			if requests != 4 {
+				t.Fatalf("requests=%d", requests)
+			}
+		})
+	}
+}
+
+func TestRunLoop_RoutedWorkStopEmptyDoesNotAcceptTheAnnouncement(t *testing.T) {
+	var n atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	const unresolved = "这一步没有完成检索，还没有调用 web_search。"
+	cb := &routedWorkOutcomeCallbacks{
+		unresolved: unresolved,
+		routedWorkStopCallbacks: routedWorkStopCallbacks{
+			left:   1,
+			prompt: "[系统] 请直接调用 web_search，不要只说明将要查询。",
+			mockCallbacks: mockCallbacks{
+				config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+				maxIter:   6,
+				sysPrompt: "sys",
+			},
+		},
+	}
+	result := RunLoop(cb, "北京天气，生成pdf", nil, server.Client())
+	if !result.HardExit || result.Text != unresolved || result.Error != unresolved {
+		t.Fatalf("result=%#v", result)
+	}
+	if n.Load() != 2 {
+		t.Fatalf("requests=%d", n.Load())
+	}
+}

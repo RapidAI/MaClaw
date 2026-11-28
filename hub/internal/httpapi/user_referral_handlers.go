@@ -1035,18 +1035,22 @@ func referralInviterContactDisplay(ctx context.Context, identity *auth.IdentityS
 	if err != nil || user == nil {
 		return ""
 	}
-	email := strings.TrimSpace(user.Email)
-	if email != "" && !strings.HasPrefix(strings.ToLower(email), "phone:") {
+	// Only a real email names the inviter; the phone-registered synthesis is
+	// skipped so its verified identity can speak instead.
+	if email := strings.TrimSpace(user.Email); email != "" && !strings.HasPrefix(strings.ToLower(email), "phone:") {
 		return maskReferralContact(email)
 	}
-	if identity != nil {
-		if phone, phoneErr := identity.BoundPhoneNumberForUser(ctx, user); phoneErr == nil {
-			if phone = strings.TrimSpace(phone); phone != "" {
-				return maskReferralContact(phone)
-			}
-		}
+	if identity == nil {
+		return ""
 	}
-	return ""
+	phone, err := identity.BoundPhoneNumberForUser(ctx, user)
+	if err != nil {
+		return ""
+	}
+	if phone = strings.TrimSpace(phone); phone == "" {
+		return ""
+	}
+	return maskReferralContact(phone)
 }
 
 func GetMyUserInvitationsHandler(identity *auth.IdentityService, repo store.UserReferralRepository, system store.SystemSettingsRepository) http.HandlerFunc {
@@ -1901,7 +1905,7 @@ func referralRecommendedDownload(r *http.Request, downloads UserReferralDownload
 	}
 }
 
-func writePublicReferralLandingHTML(w http.ResponseWriter, r *http.Request, code string, tenant *store.Tenant, inviterDisplay string, cfg UserReferralConfig, method string, available bool) {
+func writePublicReferralLandingHTML(w http.ResponseWriter, r *http.Request, tenant *store.Tenant, inviterDisplay string, cfg UserReferralConfig, method string, available bool) {
 	name, slug := "MaClaw Hub", ""
 	if tenant != nil {
 		if strings.TrimSpace(tenant.Name) != "" {
@@ -2081,7 +2085,7 @@ func PublicUserReferralLandingHandler(identity *auth.IdentityService, repo store
 			writeJSON(w, 200, payload)
 			return
 		}
-		writePublicReferralLandingHTML(w, r, code, tenant, inviterDisplay, cfg, authCfg.Method, available)
+		writePublicReferralLandingHTML(w, r, tenant, inviterDisplay, cfg, authCfg.Method, available)
 	}
 }
 

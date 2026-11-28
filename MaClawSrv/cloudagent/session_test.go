@@ -1834,7 +1834,7 @@ func TestCloudGetTaskWindowEventsAndDelete(t *testing.T) {
 	if err := inst.book.SealThinking(lastReq, "task-a", "先看结构", base.Add(33*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	lastReqB := runTurn("task-b", "另一件事", "搞定", base.Add(40*time.Second))
+	runTurn("task-b", "另一件事", "搞定", base.Add(40*time.Second))
 
 	raw, err := rt.Control(context.Background(), spec.ID, "user-a", "cloud_list_tasks", []byte(`{}`))
 	if err != nil {
@@ -1931,5 +1931,92 @@ func TestCloudGetTaskWindowEventsAndDelete(t *testing.T) {
 	if err != nil || status != "running" {
 		t.Fatalf("task-b turn after deleting task-a: %q %v", status, err)
 	}
-	_ = lastReqB
+}
+
+// 请求方的 history_limit 必须在服务端钳制：无界的窗口会直接冲进 hub 的
+// 1MB op 中继，被静默截断成解析失败的 JSON。
+func TestCloudGetTaskClampsHistoryLimit(t *testing.T) {
+	rt := openRuntime(t)
+	spec := putSession(t, rt, "http://127.0.0.1:9")
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.book.EnsureTask("task-big", "长任务"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 450; i++ {
+		stamp := formatTS(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Millisecond))
+		if _, err := inst.book.db.Exec(
+			`INSERT INTO messages (id, task_id, role, content, as_error, created_at) VALUES (?, ?, 'user', ?, 0, ?)`,
+			fmt.Sprintf("msg-%04d", i), "task-big", fmt.Sprintf("行%d", i), stamp,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := rt.Control(context.Background(), spec.ID, "user-a", "cloud_get_task", []byte(`{"task_id":"task-big","history_limit":100000}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var detail struct {
+		Messages     []string `json:"messages"`
+		MessageTotal int      `json:"message_total"`
+	}
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Messages) != cloudHistoryWindowMax || detail.MessageTotal != 450 {
+		t.Fatalf("clamped window %d/%d", len(detail.Messages), detail.MessageTotal)
+	}
+	if detail.Messages[0] != "user\n行50" || detail.Messages[len(detail.Messages)-1] != "user\n行449" {
+		t.Fatalf("window ends %#v / %#v", detail.Messages[0], detail.Messages[len(detail.Messages)-1])
+	}
+}
+
+// 过程行回放与 live lane 同规：一个回合几百条进度只回末尾 40 条，否则一
+// 个长编码回合就能把 cloud_get_task 顶过 hub 的 1MB 中继。
+func TestCloudGetTaskReplaysLastEventsOnly(t *testing.T) {
+	rt := openRuntime(t)
+	spec := putSession(t, rt, "http://127.0.0.1:9")
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	requestID, created, err := inst.book.Begin("", "task-a", "长回合", base)
+	if err != nil || !created || requestID == "" {
+		t.Fatalf("begin %v %v", err, created)
+	}
+	for i := 0; i < 45; i++ {
+		if err := inst.book.AppendTurnEvent(requestID, "task-a", "progress", fmt.Sprintf("步骤%d", i), base.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := rt.Control(context.Background(), spec.ID, "user-a", "cloud_get_task", []byte(`{"task_id":"task-a"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var detail struct {
+		Events [][]struct {
+			Seq  int    `json:"seq"`
+			Text string `json:"text"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		t.Fatal(err)
+	}
+	// 回合未结束，唯一一行是用户行；过程行按请求挂在这最后一行上。
+	if len(detail.Events) != 1 {
+		t.Fatalf("events rows %d", len(detail.Events))
+	}
+	list := detail.Events[0]
+	if len(list) != cloudTurnEventsMax {
+		t.Fatalf("replayed events %d", len(list))
+	}
+	if list[0].Text != "步骤5" || list[len(list)-1].Text != "步骤44" {
+		t.Fatalf("replay ends %#v / %#v", list[0], list[len(list)-1])
+	}
+	if list[0].Seq != 6 {
+		t.Fatalf("first replayed seq %d", list[0].Seq)
+	}
 }

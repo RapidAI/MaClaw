@@ -455,6 +455,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     onProviderChanged={onProviderChanged}
                     onRequestIdentityVerification={onRequestIdentityVerification}
                     autoOpenProviderDialogSeq={llmProviderDialogAutoOpenSeq}
+                    cloudAgentAvailable={cloudAgentAvailable}
                 />
             ));
             break;
@@ -578,7 +579,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
             break;
         case 'cloudAgent':
             body = wrapPanel('settings-content settings-panel', (
-                <CloudAgentSettingsPanel lang={lang} showToastMessage={showToastMessage} config={config} setConfig={setConfig} />
+                <CloudAgentSettingsPanel lang={lang} showToastMessage={showToastMessage} />
             ));
             break;
         case 'tokenBank':

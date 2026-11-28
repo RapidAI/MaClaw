@@ -12,18 +12,18 @@ import (
 	"time"
 )
 
-// TestNoneDesktopBotPushesLLMConfigToCloudSrv guards the report that a
-// no-computer bot ran an unmanaged model. Such a bot still carries a node pin
-// from before it lost its computer; pushing the owner's model config at that
-// node left the cloud srv with a stale, empty config, so the turn ran whatever
-// the srv defaulted to instead of the Bot-management pin.
-func TestNoneDesktopBotPushesLLMConfigToCloudSrv(t *testing.T) {
+// TestNoneDesktopBotWithMissingNodeSrvDoesNotPostToCloud guards the instance
+// boundary: a bot created on a node must not be reposted to the cloud srv when
+// that node link disappears. The cloud srv does not have that instance and
+// would return 404; posting there hides the real configuration failure.
+func TestNoneDesktopBotWithMissingNodeSrvDoesNotPostToCloud(t *testing.T) {
 	const endpoint = "https://hub.example/api/llm/v1"
 	const nodeID = "node_dead_beef"
 
 	var (
-		mu      sync.Mutex
-		configs []map[string]any
+		mu       sync.Mutex
+		configs  []map[string]any
+		messages int
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -50,6 +50,9 @@ func TestNoneDesktopBotPushesLLMConfigToCloudSrv(t *testing.T) {
 			mu.Unlock()
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/messages"):
+			mu.Lock()
+			messages++
+			mu.Unlock()
 			_, _ = w.Write([]byte(`{"message":{"content":"ok"}}`))
 		default:
 			http.NotFound(w, r)
@@ -84,24 +87,14 @@ func TestNoneDesktopBotPushesLLMConfigToCloudSrv(t *testing.T) {
 	svc.Now = func() time.Time { return time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC) }
 	svc.OwnerLLM = &countingOwnerLLM{url: endpoint}
 
-	if _, err := svc.PostMessage(context.Background(), "tenant-a", "alice", "bot_alice", "北京天气，生成pdf"); err != nil {
-		t.Fatal(err)
+	_, postErr := svc.PostMessage(context.Background(), "tenant-a", "alice", "bot_alice", "北京天气，生成pdf")
+	if postErr == nil || !strings.Contains(postErr.Error(), "这个节点还没有 srv") {
+		t.Fatalf("post err = %v", postErr)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	// The node has no srv link in this record, so the only reachable push is
-	// the cloud one. Without the fix the cloud config is never written.
-	if len(configs) == 0 {
-		t.Fatal("no-computer bot pushed no model config to the cloud srv")
-	}
-	app := configs[len(configs)-1]
-	for _, key := range []string{"maclaw_llm_providers", "maclaw_bot_llm_mode"} {
-		if _, ok := app[key]; !ok {
-			t.Fatalf("cloud config missing %s: %+v", key, app)
-		}
-	}
-	if app["maclaw_llm_url"] != endpoint {
-		t.Fatalf("cloud llm url = %v, want %s", app["maclaw_llm_url"], endpoint)
+	if len(configs) != 0 || messages != 0 {
+		t.Fatalf("the missing-node bot wrote the cloud srv configs=%v messages=%d", configs, messages)
 	}
 }

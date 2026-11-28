@@ -790,7 +790,11 @@ type turnEvent struct {
 
 // AppendTurnEvent persists one progress row of a running turn. seq is
 // allocated per request inside the statement, so callers do not track it.
-// Failures are logged upstream and never break the round.
+// The EXISTS guard drops events of a turn that lost its row mid-flight (the
+// task was deleted while the goroutine was still unwinding) — there are no
+// foreign keys here, so without it a dying turn would resurrect ghost rows
+// under a deleted task. Failures are logged upstream and never break the
+// round.
 func (b *book) AppendTurnEvent(requestID, taskID, kind, text string, now time.Time) error {
 	if b == nil || b.db == nil {
 		return errors.New("transcript is closed")
@@ -804,14 +808,15 @@ func (b *book) AppendTurnEvent(requestID, taskID, kind, text string, now time.Ti
 		text = text[:turnEventMaxText]
 	}
 	_, err := b.db.Exec(`INSERT INTO turn_events (request_id, task_id, seq, kind, text, created_at)
-		SELECT ?, ?, COALESCE((SELECT MAX(seq) FROM turn_events WHERE request_id = ?), 0) + 1, ?, ?, ?`,
-		requestID, taskID, requestID, kind, text, formatTS(now))
+		SELECT ?, ?, COALESCE((SELECT MAX(seq) FROM turn_events WHERE request_id = ?), 0) + 1, ?, ?, ?
+		WHERE EXISTS (SELECT 1 FROM turns WHERE request_id = ?)`,
+		requestID, taskID, requestID, kind, text, formatTS(now), requestID)
 	return err
 }
 
 // SealThinking persists the round's accumulated reasoning once, at reply
 // time. It replaces any thinking rows the request already has, so a retried
-// seal cannot stack duplicates.
+// seal cannot stack duplicates. The EXISTS guard mirrors AppendTurnEvent.
 func (b *book) SealThinking(requestID, taskID, text string, now time.Time) error {
 	if b == nil || b.db == nil {
 		return errors.New("transcript is closed")
@@ -833,8 +838,9 @@ func (b *book) SealThinking(requestID, taskID, text string, now time.Time) error
 		return err
 	}
 	if _, err = tx.Exec(`INSERT INTO turn_events (request_id, task_id, seq, kind, text, created_at)
-		SELECT ?, ?, COALESCE((SELECT MAX(seq) FROM turn_events WHERE request_id = ?), 0) + 1, 'thinking', ?, ?`,
-		requestID, taskID, requestID, text, formatTS(now)); err != nil {
+		SELECT ?, ?, COALESCE((SELECT MAX(seq) FROM turn_events WHERE request_id = ?), 0) + 1, 'thinking', ?, ?
+		WHERE EXISTS (SELECT 1 FROM turns WHERE request_id = ?)`,
+		requestID, taskID, requestID, text, formatTS(now), requestID); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -110,9 +110,8 @@ function ChecklistFileRow({
     delColor: string;
     onOpenFile?: (path: string) => void;
 }) {
-    // An empty path can never resolve to a preview file — keep the row inert
-    // instead of looking clickable and doing nothing.
-    const openable = !!onOpenFile && !!row.path;
+    // An empty path cannot resolve. A deleted path is already gone.
+    const openable = !!onOpenFile && !!row.path && !row.deleted;
     return (
         <li
             className="capc-file-row"

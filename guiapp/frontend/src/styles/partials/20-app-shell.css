@@ -2926,6 +2926,52 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     z-index: 10000;
 }
 
+/* bots 页签的顶栏动作（群聊 + 故障报告）：DesktopBotWorkspace 悬浮标题条
+   上的两个按钮上移到这里。本簇是 .top-header-window-controls 的兄弟节点 ——
+   pet-store 的 `.top-header-window-controls button` 会把控制区按钮钳到
+   32x32（强制优先级，图标钮规范化），文本按钮进那个容器必然破版。
+   data-window-no-drag 在 TSX 上；这里补窗口拖拽/层级所需的外观变量。 */
+.mth-bot-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: 6px;
+    position: relative;
+    z-index: 10000;
+    pointer-events: auto;
+    --wails-draggable: no-drag;
+}
+
+.mth-bot-rooms-btn {
+    white-space: nowrap;
+}
+
+/* 故障报告钮的皮肤随按钮一起搬进顶栏：尺寸对齐本行控制钮的有效渲染尺寸
+   （32x32，含 pet-store 的钳制），配色沿用原 color-mix 组合。 */
+.mth-bot-actions .task-bug-report-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    flex-shrink: 0;
+    line-height: 1;
+    border: 1px solid color-mix(in srgb, var(--theme-border, #e4e7ec) 85%, transparent);
+    border-radius: var(--radius-md, 8px);
+    background: var(--theme-surface, #fff);
+    color: var(--theme-text-secondary, #46586f);
+    cursor: pointer;
+}
+.mth-bot-actions .task-bug-report-btn:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 32%, var(--theme-border, #e4e7ec));
+    background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+    color: var(--theme-primary, #2e75cb);
+}
+.mth-bot-actions .task-bug-report-btn svg { display: block; }
+.mth-bot-actions .task-bug-report-btn:disabled { cursor: progress; opacity: 0.72; }
+
 /* Migrated from inline styles in SidebarNavRailPieces. */
 .snrp-brand-logo {
     width: 30px;

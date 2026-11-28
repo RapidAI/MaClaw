@@ -13,7 +13,8 @@ import { publishSharedUnreadCount } from '../useNotifications';
 import { bindRemoteAssistantActions, publishRemoteAssistantSession } from '../../layout/remoteAssistantSession';
 import { EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_TASK_ACTIVATE } from '../../../constants/events';
 import { __resetCloudWorkspaceLeaseEnsureForTests } from '../codingTaskMode';
-import { ExportTaskResultFile, PreviewTaskResultFile } from '../../../../wailsjs/go/main/App';
+import { ExportTaskResultFile, GetCodingWorkbenchDirectory, PreviewTaskResultFile } from '../../../../wailsjs/go/main/App';
+import { PREVIEW_TASK_RESULT_EVENT } from '../taskResultPreview';
 import { projectSessionKey } from '../aiAssistantPanelSessionUtils';
 import { expertTaskPreviewKey } from '../assistantPreviewState';
 import { noteNonAppendStreamText } from '../streamTextRevision';
@@ -11776,7 +11777,7 @@ describe('cloud task view in the main panel (local-task parity)', () => {
         action that mirrors closeCloudAssistant's unpublish. */
     function openCloudView(
         send: (text: string) => Promise<boolean> = async () => true,
-        overrides: { busy?: boolean; stop?: () => Promise<boolean> } = {},
+        overrides: { busy?: boolean; stop?: () => Promise<boolean>; cloudKind?: string } = {},
     ) {
         act(() => {
             publishRemoteAssistantSession({
@@ -11785,7 +11786,7 @@ describe('cloud task view in the main panel (local-task parity)', () => {
                 projectPath: 'cloud-agent:inst-1',
                 taskName: '演唱会策划书',
                 cloud: true,
-                cloudKind: 'coding',
+                cloudKind: overrides.cloudKind || 'coding',
                 serverLabel: '官方云端服务',
                 canSend: true,
                 offline: false,
@@ -11814,11 +11815,84 @@ describe('cloud task view in the main panel (local-task parity)', () => {
         expect(screen.getByTestId('task-execution-task-kind').textContent).toBe('编程');
         expect(screen.getByTestId('task-execution-task-kind').getAttribute('data-task-kind')).toBe('coding');
         expect(screen.getByRole('button', { name: '暂停任务' })).toBeTruthy();
+        const filesBtn = screen.getByTestId('cloud-agent-files-btn');
+        expect(filesBtn.textContent).toBe('文件');
+        expect(filesBtn.compareDocumentPosition(screen.getByRole('button', { name: '暂停任务' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(screen.getByTestId('task-tab-switcher-btn')).toBeTruthy();
         expect(screen.getByTestId('task-bug-report-btn')).toBeTruthy();
         expect(screen.queryByTestId('remote-task-chat-close')).toBeNull();
         // Local-only affordances stay off the cloud header.
         expect(screen.queryByTestId('task-share-btn')).toBeNull();
+    });
+
+    it('a cloud session task also gets 文件, and a remote desktop does not', () => {
+        renderPanel({ lang: 'zh-Hans', state: { messages: [], sending: false, streaming: false, ready: true } });
+        openCloudView(async () => true, { cloudKind: 'session' });
+        expect(screen.getByTestId('task-execution-task-kind').textContent).toBe('会话');
+        expect(screen.getByTestId('cloud-agent-files-btn').textContent).toBe('文件');
+        expect(screen.queryByTestId('remote-task-chat-close')).toBeNull();
+
+        act(() => {
+            publishRemoteAssistantSession({
+                grantId: 'grant-desk',
+                machineName: '对方电脑',
+                projectPath: 'D:/work',
+                taskName: 'desk',
+                canSend: true,
+                offline: false,
+                error: '',
+                messages: [],
+            });
+        });
+        expect(screen.queryByTestId('cloud-agent-files-btn')).toBeNull();
+    });
+
+    function mockCloudJail(entries: { name: string; path: string; is_dir: boolean }[]) {
+        const directory = GetCodingWorkbenchDirectory as unknown as ReturnType<typeof vi.fn>;
+        directory.mockClear();
+        directory.mockResolvedValue({ root: 'cloud-agent', path: '', entries });
+        return directory;
+    }
+
+    it('文件 opens the cloud workspace tree in the preview pane', async () => {
+        const directory = mockCloudJail([
+            { name: 'Makefile', path: 'Makefile', is_dir: false },
+            { name: 'snake.cpp', path: 'snake.cpp', is_dir: false },
+        ]);
+        renderPanel({ lang: 'zh-Hans', state: { messages: [], sending: false, streaming: false, ready: true } });
+        openCloudView();
+        fireEvent.click(screen.getByTestId('cloud-agent-files-btn'));
+        const workspace = await screen.findByTestId('code-preview-workspace', {}, { timeout: 8000 });
+        expect(workspace.getAttribute('data-cloud-mode')).toBe('true');
+        expect(await screen.findByText('Makefile', {}, { timeout: 8000 })).toBeTruthy();
+        expect(screen.getByText('snake.cpp')).toBeTruthy();
+        expect(screen.queryByText('工作目录不可用')).toBeNull();
+        expect(directory).toHaveBeenCalledWith('cloud-agent:inst-1', '');
+        directory.mockResolvedValue({ entries: [] });
+    });
+
+    it('previewing a cloud task file lists that instance working directory', async () => {
+        const directory = mockCloudJail([
+            { name: 'Makefile', path: 'Makefile', is_dir: false },
+            { name: 'game.cpp', path: 'game.cpp', is_dir: false },
+        ]);
+        renderPanel({ lang: 'zh-Hans', state: { messages: [], sending: false, streaming: false, ready: true } });
+        openCloudView();
+        act(() => {
+            window.dispatchEvent(new CustomEvent(PREVIEW_TASK_RESULT_EVENT, {
+                detail: { path: 'D:\\cloud\\README.md' },
+            }));
+        });
+        await screen.findByText('README.md', {}, { timeout: 8000 });
+        fireEvent.click(screen.getByTestId('code-preview-workspace-tab'));
+        const workspace = await screen.findByTestId('code-preview-workspace', {}, { timeout: 8000 });
+        expect(workspace.getAttribute('data-cloud-mode')).toBe('true');
+        expect(screen.getByTestId('code-preview-workspace-tab').textContent).toContain('云端文件');
+        expect(await screen.findByText('Makefile', {}, { timeout: 8000 })).toBeTruthy();
+        expect(screen.getByText('game.cpp')).toBeTruthy();
+        expect(screen.queryByText('工作目录不可用')).toBeNull();
+        expect(directory).toHaveBeenCalledWith('cloud-agent:inst-1', '');
+        directory.mockResolvedValue({ entries: [] });
     });
 
     it('新建任务 opens the wizard over the covered cloud view', async () => {

@@ -11,7 +11,8 @@ import '../../components/mermaid/mermaid.dart';
 import '../../core/locale.dart';
 import '../../core/providers.dart';
 import '../../core/theme.dart';
-import '../../core/ui_kit.dart' show linkifyMarkdownUrls, openExternalUrl;
+import '../../core/ui_kit.dart'
+    show AppBadge, linkifyMarkdownUrls, openExternalUrl;
 import '../bots/bots_controller.dart' show failureMessage;
 import 'cloud_api.dart';
 import 'cloud_models.dart';
@@ -305,6 +306,7 @@ class _InstanceCard extends ConsumerWidget {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             ...?_taskBadge(context, task),
+                            const SizedBox(width: AppSpacing.xs),
                             const Icon(Icons.chevron_right),
                           ],
                         ),
@@ -374,6 +376,7 @@ Future<void> showCloudCreateTask(
   }
 }
 
+/// 任务行的状态徽标：与远控列表同一份渲染（AppBadge）。
 List<Widget>? _taskBadge(BuildContext context, CloudTask task) {
   final badge = cloudTaskBadge(
     context.S,
@@ -381,23 +384,7 @@ List<Widget>? _taskBadge(BuildContext context, CloudTask task) {
     task,
   );
   if (badge == null) return null;
-  return [
-    Container(
-      margin: const EdgeInsets.only(right: AppSpacing.xs),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: badge.color.withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-      ),
-      child: Text(
-        badge.label,
-        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-          color: badge.color,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    ),
-  ];
+  return [AppBadge(label: badge.label, color: badge.color)];
 }
 
 class CloudTaskScreen extends ConsumerStatefulWidget {
@@ -525,6 +512,9 @@ class _CloudTaskScreenState extends ConsumerState<CloudTaskScreen> {
       _schedulePoll();
     } catch (error) {
       if (!mounted) return;
+      // A revoked grant (instance stopped, member removed) must not pin the
+      // cache: the next poll re-opens a fresh grant.
+      _grantId = null;
       // Transient poll failures keep the last snapshot on screen. Only a
       // first load paints the full-page error.
       if (_detail == null) {
@@ -609,10 +599,31 @@ class _CloudTaskScreenState extends ConsumerState<CloudTaskScreen> {
       );
       if (!mounted) return;
       final earlier = _earlierThan(current.messages, page.messages);
+      // 过程行按请求挂在窗口内该请求的最后一行；一个请求横跨新旧两窗时，
+      // 旧窗里它残留的那份要以新页为准剥掉，否则过程行渲染两遍。
+      final pageRequests = {
+        for (final row in page.messages)
+          if (row.requestId.isNotEmpty) row.requestId,
+      };
+      List<CloudMessage> stripStaleEvents(List<CloudMessage> rows) => [
+            for (final row in rows)
+              if (row.requestId.isNotEmpty &&
+                  pageRequests.contains(row.requestId) &&
+                  row.events.isNotEmpty)
+                CloudMessage(
+                  role: row.role,
+                  content: row.content,
+                  asError: row.asError,
+                  files: row.files,
+                  requestId: row.requestId,
+                )
+              else
+                row,
+          ];
       setState(() {
         _detail = CloudTaskDetail(
           taskId: current.taskId,
-          messages: [...earlier, ...current.messages],
+          messages: [...earlier, ...stripStaleEvents(current.messages)],
           turnStatus: page.turnStatus,
           messageTotal: page.messageTotal,
         );
@@ -668,6 +679,7 @@ class _CloudTaskScreenState extends ConsumerState<CloudTaskScreen> {
       await _load();
     } catch (error) {
       if (!mounted) return;
+      _grantId = null;
       setState(() => _pending.remove(text));
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(failureMessage(error))),
@@ -710,6 +722,17 @@ class _CloudTaskScreenState extends ConsumerState<CloudTaskScreen> {
     ref.invalidate(cloudTasksProvider(widget.instance.id));
   }
 
+  Future<void> _onOpenDrawerTask(CloudTask task) async {
+    // 抽屉已自行关闭；点当前任务不再向栈上叠一个克隆屏。
+    if (task.id == widget.task.id) return;
+    await saveCloudLastTask(widget.instance.id, task.id);
+    if (!mounted) return;
+    await context.push(
+      '/cloud/task',
+      extra: (instance: widget.instance, task: task),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -725,12 +748,19 @@ class _CloudTaskScreenState extends ConsumerState<CloudTaskScreen> {
           currentTaskId: widget.task.id,
           onTaskDeleted: _onTaskDeleted,
           onTaskRenamed: _onTaskRenamed,
+          onCreateTask: () =>
+              showCloudCreateTask(context, ref, widget.instance),
+          onOpenTask: _onOpenDrawerTask,
         ),
       ),
       appBar: AppBar(
         leading: IconButton(
           tooltip: context.S.cloudSessionList,
-          onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+          onPressed: () {
+            // 打开前刷一次任务列表：抽屉挂载后不会因重开而重新拉取。
+            ref.invalidate(cloudTasksProvider(widget.instance.id));
+            _scaffoldKey.currentState?.openEndDrawer();
+          },
           icon: const Icon(Icons.segment),
         ),
         title: Text(title, overflow: TextOverflow.ellipsis),
@@ -1078,12 +1108,19 @@ class _CloudTaskDrawer extends ConsumerWidget {
     required this.currentTaskId,
     required this.onTaskDeleted,
     required this.onTaskRenamed,
+    required this.onCreateTask,
+    required this.onOpenTask,
   });
 
   final CloudInstance instance;
   final String currentTaskId;
   final Future<void> Function(CloudTask task) onTaskDeleted;
   final void Function(CloudTask task, String title) onTaskRenamed;
+
+  /// 由聊天屏提供的回调：抽屉先 pop 掉自己，之后的导航/弹窗必须用屏幕的
+  /// context——抽屉自身的 element 在 pop 后的下一次构建里就卸载了。
+  final VoidCallback onCreateTask;
+  final Future<void> Function(CloudTask task) onOpenTask;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1152,9 +1189,17 @@ class _CloudTaskDrawer extends ConsumerWidget {
                     ),
                   );
                 }
+                // 会话列表最近活跃在前；从未发过消息的任务垫底。只影响展示，
+                // 服务端顺序保持 created_at ASC（桌面端取「最后一个 id」依赖它）。
+                final sorted = [...rows]..sort((a, b) {
+                  if (a.updatedAt == b.updatedAt) return 0;
+                  if (a.updatedAt.isEmpty) return 1;
+                  if (b.updatedAt.isEmpty) return -1;
+                  return b.updatedAt.compareTo(a.updatedAt);
+                });
                 return ListView(
                   children: [
-                    for (final task in rows)
+                    for (final task in sorted)
                       _CloudDrawerTile(
                         task: task,
                         current: task.id == currentTaskId,
@@ -1162,7 +1207,7 @@ class _CloudTaskDrawer extends ConsumerWidget {
                         onRename: () => _renameTask(context, ref, task),
                         onOpen: () {
                           Navigator.pop(context);
-                          openCloudTask(context, instance, task);
+                          onOpenTask(task);
                         },
                       ),
                   ],
@@ -1177,7 +1222,7 @@ class _CloudTaskDrawer extends ConsumerWidget {
               child: FilledButton.tonalIcon(
                 onPressed: () {
                   Navigator.pop(context);
-                  showCloudCreateTask(context, ref, instance);
+                  onCreateTask();
                 },
                 icon: const Icon(Icons.add),
                 label: Text(context.S.cloudNewTask),
@@ -1340,6 +1385,7 @@ class _CloudDrawerTile extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             ...?_taskBadge(context, task),
+            const SizedBox(width: AppSpacing.xs),
             const Icon(Icons.chevron_right),
           ],
         ),

@@ -96,6 +96,11 @@ type instance struct {
 	// serveFile holds jailMu and then takes stagedMu.
 	stagedMu       sync.Mutex
 	stagedProduced map[string]bool
+	// previewMu guards previewBaselines, the first pre-write text of each
+	// path this process has seen. browseReadFile holds jailMu and may take
+	// previewMu after it. rememberPreviewBaseline never takes jailMu.
+	previewMu        sync.Mutex
+	previewBaselines map[string]string
 }
 
 // ensureJail binds the idle condition to jailMu. The zero Cond is not

@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { localizeText } from '../../i18n';
+import type { CodingAgentTimelineItem } from '../ai/codingAgentTimeline';
 import {
     applyCloudAgentStream,
     applyCloudAgentWatch,
@@ -8,8 +9,10 @@ import {
     cloudAgentSessionKey,
     cloudAgentStoreKey,
     cloudAgentTrail,
+    cloudAgentTrailRequestId,
     cloudAgentWorkbench,
     cloudAgentWorkflow,
+    codingTimelineFromTurnEvents,
     expireCloudAgentCards,
 } from './cloudAgentSession';
 import {
@@ -38,6 +41,36 @@ export function onCloudAgentListRefresh(listener: () => void): () => void {
 
 type Binding = (...args: unknown[]) => Promise<unknown>;
 
+type CloudHistoryEvent = { kind?: string; text?: string; seq?: number };
+
+const settledTrailCap = 32;
+
+function rememberSettledTrail(current: Owner, requestId: string, trail: CodingAgentTimelineItem[]): void {
+    const id = requestId.trim();
+    if (!id || trail.length === 0) return;
+    if (current.settledTrails[id]) delete current.settledTrails[id];
+    current.settledTrails[id] = trail;
+    const ids = Object.keys(current.settledTrails);
+    while (ids.length > settledTrailCap) {
+        const drop = ids.shift();
+        if (drop) delete current.settledTrails[drop];
+    }
+}
+
+function normalizeHistoryEvents(raw: unknown): CloudHistoryEvent[] {
+    if (!Array.isArray(raw)) return [];
+    const events: CloudHistoryEvent[] = [];
+    for (const item of raw) {
+        if (!item || typeof item !== 'object') continue;
+        const row = item as Record<string, unknown>;
+        const text = String(row.text || '');
+        if (!text) continue;
+        const seq = typeof row.seq === 'number' && row.seq > 0 ? row.seq : undefined;
+        events.push({ kind: String(row.kind || ''), text, seq });
+    }
+    return events;
+}
+
 type Owner = {
     generation: number;
     lang: string;
@@ -52,6 +85,13 @@ type Owner = {
     historyRequestIDs: string[];
     /** Parallel to history. The desktop's client message id for a user row; empty on book rows that predate it and on assistant rows. */
     historyClientIDs: string[];
+    /** Parallel to history. Process rows cloud_get_task attached to that line. */
+    historyEvents: CloudHistoryEvent[][];
+    /**
+     * Timelines copied off the live trail before the next round clears it.
+     * A book page with events replaces the cached copy for that request.
+     */
+    settledTrails: Record<string, CodingAgentTimelineItem[]>;
     /** round_started named this client id before the send ack appended the line. */
     pendingClientBinds: Record<string, string>;
     /** How many leading history lines came from the book. The tail is unacked local sends. */
@@ -82,7 +122,7 @@ type Owner = {
     /** Coding-instance repository binding shown by the repo banner. `checked`
      *  stays false until GetCloudAgentGit answers, so the banner never flashes
      *  "not connected" on a bound instance while the read is in flight. */
-    git: { connected: boolean; repo: string; checked: boolean };
+    git: { connected: boolean; repo: string; service: string; origin: string; checked: boolean };
     /** The private node srv this instance runs on, resolved from the user's
      *  srv-capable nodes. Null while the lookup is pending or after it failed —
      *  the header falls back to the node id. */
@@ -156,28 +196,67 @@ function producedFilesAt(files: string[][], index: number): string[] {
     return (files[index] || []).map(path => String(path || '').trim()).filter(Boolean);
 }
 
-/** A book row is on screen when it has text or a produced file. */
-function shownTranscriptRow(content: string, files: string[]): boolean {
-    return !!content.trim() || files.length > 0;
+/** A book row is on screen when it has text, a produced file, or turn events. */
+function shownTranscriptRow(content: string, files: string[], events?: CloudHistoryEvent[]): boolean {
+    if (content.trim() || files.length > 0) return true;
+    return !!events?.some(event => String(event?.text || '').trim());
 }
 
-function historyMessages(lines: string[], files: string[][]): RemoteAssistantTranscriptMessage[] {
+export function historyMessages(
+    lines: string[],
+    files: string[][],
+    events: CloudHistoryEvent[][],
+    requestIDs: string[],
+    settledTrails: Record<string, CodingAgentTimelineItem[]>,
+    liveTrailRequest: string,
+    retiredRequestIDs: ReadonlySet<string>,
+): RemoteAssistantTranscriptMessage[] {
+    const lastIndex = new Map<string, number>();
+    const bookedEvents = new Set<string>();
+    for (let index = 0; index < lines.length; index += 1) {
+        const requestId = requestIDs[index] || '';
+        if (!requestId) continue;
+        lastIndex.set(requestId, index);
+        if ((events[index]?.length || 0) > 0) bookedEvents.add(requestId);
+    }
     const messages: RemoteAssistantTranscriptMessage[] = [];
     for (const [index, line] of lines.entries()) {
         const { role, content } = splitTranscriptLine(line);
         const produced = producedFilesAt(files, index);
-        if (!shownTranscriptRow(content, produced)) continue;
-        messages.push({ role, content, localFilePaths: produced.length ? produced : undefined });
+        if (!shownTranscriptRow(content, produced, events[index])) continue;
+        const requestId = requestIDs[index] || '';
+        let codingTimeline = codingTimelineFromTurnEvents(events[index]);
+        // Events sit on the last row of the request. The cache covers only the
+        // gap after the live trail resets and before that page arrives, and
+        // only on that same last row. A retired stand-in and the open live
+        // row carry the trail themselves.
+        if (
+            !codingTimeline
+            && requestId
+            && lastIndex.get(requestId) === index
+            && !bookedEvents.has(requestId)
+            && requestId !== liveTrailRequest
+            && !retiredRequestIDs.has(requestId)
+        ) {
+            const cached = settledTrails[requestId];
+            if (cached?.length) codingTimeline = cached;
+        }
+        messages.push({
+            role,
+            content,
+            localFilePaths: produced.length ? produced : undefined,
+            codingTimeline,
+        });
     }
     return messages;
 }
 
 /** Request ids of the shown rows, parallel to historyMessages. Empty ids never match. */
-function shownRequestIDs(lines: string[], files: string[][], ids: string[]): string[] {
+function shownRequestIDs(lines: string[], files: string[][], ids: string[], events: CloudHistoryEvent[][]): string[] {
     const shown: string[] = [];
     for (let index = 0; index < lines.length; index += 1) {
         const { content } = splitTranscriptLine(lines[index] || '');
-        if (!shownTranscriptRow(content, producedFilesAt(files, index))) continue;
+        if (!shownTranscriptRow(content, producedFilesAt(files, index), events[index])) continue;
         shown.push(ids[index] || '');
     }
     return shown;
@@ -208,12 +287,12 @@ function stripOrigin(text: string): string {
 }
 
 /** Index of the assistant row for this turn in the filtered transcript, or -1. */
-function assistantMessageIndex(lines: string[], ids: string[], files: string[][], requestId: string): number {
+function assistantMessageIndex(lines: string[], ids: string[], files: string[][], events: CloudHistoryEvent[][], requestId: string): number {
     if (!requestId) return -1;
     let visible = 0;
     for (let index = 0; index < lines.length; index += 1) {
         const { role, content } = splitTranscriptLine(lines[index]);
-        if (!shownTranscriptRow(content, producedFilesAt(files, index))) continue;
+        if (!shownTranscriptRow(content, producedFilesAt(files, index), events[index])) continue;
         if (role === 'assistant' && ids[index] === requestId) return visible;
         visible += 1;
     }
@@ -221,12 +300,12 @@ function assistantMessageIndex(lines: string[], ids: string[], files: string[][]
 }
 
 /** How many shown transcript rows the book prefix contributes. */
-function bookMessageCount(lines: string[], files: string[][], bookLines: number): number {
+function bookMessageCount(lines: string[], files: string[][], events: CloudHistoryEvent[][], bookLines: number): number {
     let count = 0;
     const end = Math.min(Math.max(bookLines, 0), lines.length);
     for (let index = 0; index < end; index += 1) {
         const { content } = splitTranscriptLine(lines[index]);
-        if (shownTranscriptRow(content, producedFilesAt(files, index))) count += 1;
+        if (shownTranscriptRow(content, producedFilesAt(files, index), events[index])) count += 1;
     }
     return count;
 }
@@ -328,7 +407,7 @@ function markQueuedBadges(current: Owner, messages: RemoteAssistantTranscriptMes
     let shown = 0;
     for (let index = 0; index < current.history.length && shown < messages.length; index += 1) {
         const { role, content } = splitTranscriptLine(current.history[index] || '');
-        if (!shownTranscriptRow(content, producedFilesAt(current.historyFiles, index))) continue;
+        if (!shownTranscriptRow(content, producedFilesAt(current.historyFiles, index), current.historyEvents[index])) continue;
         const row = messages[shown];
         shown += 1;
         if (!row || role !== 'user') continue;
@@ -515,20 +594,25 @@ function publishOwner() {
     const sessionKey = cloudAgentSessionKey(current.item.id, current.taskId);
     const storeKey = cloudAgentStoreKey(current.grant, sessionKey);
     const round = storeKey ? cloudAgentRound(storeKey) : null;
-    const messages = historyMessages(current.history, current.historyFiles);
-    const shownIDs = shownRequestIDs(current.history, current.historyFiles, current.historyRequestIDs);
+    const trail = storeKey ? cloudAgentTrail(storeKey) : null;
+    const liveTrailRequest = trail ? cloudAgentTrailRequestId(storeKey) : '';
+    const retiredIDs = new Set(current.retired.map(item => item.requestId));
+    const messages = historyMessages(current.history, current.historyFiles, current.historyEvents, current.historyRequestIDs, current.settledTrails, liveTrailRequest, retiredIDs);
+    const shownIDs = shownRequestIDs(current.history, current.historyFiles, current.historyRequestIDs, current.historyEvents);
     markQueuedBadges(current, messages);
     // The book has not reported these request ids. Keep each terminal between
     // the book prefix and local sends, in the order the rounds closed.
-    let retiredAt = bookMessageCount(current.history, current.historyFiles, current.bookLines);
+    let retiredAt = bookMessageCount(current.history, current.historyFiles, current.historyEvents, current.bookLines);
     for (const item of current.retired) {
-        if (assistantMessageIndex(current.history, current.historyRequestIDs, current.historyFiles, item.requestId) >= 0) continue;
+        if (assistantMessageIndex(current.history, current.historyRequestIDs, current.historyFiles, current.historyEvents, item.requestId) >= 0) continue;
         const files = item.files.length ? item.files : undefined;
         if (!item.text && !files) continue;
+        const cachedTrail = current.settledTrails[item.requestId];
         messages.splice(retiredAt, 0, {
             role: 'assistant',
             content: item.text,
             localFilePaths: files,
+            codingTimeline: cachedTrail?.length ? cachedTrail : undefined,
         });
         shownIDs.splice(retiredAt, 0, '');
         retiredAt += 1;
@@ -553,9 +637,10 @@ function publishOwner() {
     const reasoning = (round?.thinking || []).map(block => block.text).filter(Boolean).join('\n\n');
     // Ordered thinking+tool trail of this round (frame order, tool_started
     // merged with its tool_finished) — the same process timeline a local
-    // coding turn keeps on its bubble. It survives the round's own response
-    // until the next round opens, so the settled transcript row keeps it too.
-    const trail = storeKey ? cloudAgentTrail(storeKey) : null;
+    // coding turn keeps on its bubble. The open row takes the live trail
+    // over a stale book page. settledTrails keeps it across the next
+    // round_started until cloud_get_task returns events.
+    if (trail && round?.requestId) rememberSettledTrail(current, round.requestId, trail);
     // Styled progress rows become the same tool timeline a local turn keeps.
     const folded = remoteLiveToolCalls(live?.parts || [], liveText);
     // The open request's user line is the anchor. Later parked sends stay
@@ -577,7 +662,7 @@ function publishOwner() {
         }
     }
     // The book already stored this turn. The live slot must not paint it again.
-    const bookedAt = assistantMessageIndex(current.history, current.historyRequestIDs, current.historyFiles, round?.requestId || '');
+    const bookedAt = assistantMessageIndex(current.history, current.historyRequestIDs, current.historyFiles, current.historyEvents, round?.requestId || '');
     const booked = bookedAt >= 0 ? messages[bookedAt] : undefined;
     const liveRow = liveText || reasoning || folded.toolCalls || trail || producedFiles;
     // The card and notices belong to this row. Parked sends can be the tail
@@ -586,7 +671,7 @@ function publishOwner() {
     if (booked) {
         if (reasoning && !booked.reasoning) booked.reasoning = reasoning;
         if (folded.toolCalls && !booked.toolCalls) booked.toolCalls = folded.toolCalls;
-        if (trail && !booked.codingTimeline) booked.codingTimeline = trail;
+        if (trail) booked.codingTimeline = trail;
         if (producedFiles && !booked.localFilePaths) booked.localFilePaths = producedFiles;
         openHost = booked;
     } else if (liveRow) {
@@ -647,7 +732,12 @@ function publishOwner() {
         offline: false,
         error: current.error,
         cloudGit: current.item.kind === 'coding' && current.git.checked
-            ? { connected: current.git.connected, repo: current.git.repo.trim() || undefined }
+            ? {
+                connected: current.git.connected,
+                repo: current.git.repo.trim() || undefined,
+                service: current.git.service.trim() || undefined,
+                origin: current.git.origin.trim() || undefined,
+            }
             : undefined,
         loading: !current.grant && !current.error,
         busy: observeTurn(current, round),
@@ -686,7 +776,7 @@ function retireOpenRound(current: Owner): void {
     if (!round?.responded || !round.requestId) return;
     const requestId = round.requestId;
     current.retired = current.retired.filter(item => item.requestId !== requestId);
-    if (assistantMessageIndex(current.history, current.historyRequestIDs, current.historyFiles, requestId) >= 0) {
+    if (assistantMessageIndex(current.history, current.historyRequestIDs, current.historyFiles, current.historyEvents, requestId) >= 0) {
         return;
     }
     const text = (round.visible || round.body || '').trim();
@@ -711,8 +801,13 @@ function ensureStream() {
             const want = cloudAgentStoreKey(preview.grant, cloudAgentSessionKey(preview.item.id, preview.taskId));
             const frameKey = cloudAgentStoreKey(frame.grant, frame.session);
             const openId = currentRound(preview)?.requestId || '';
-            if (frame.event === 'round_started' && frame.requestId && frame.requestId !== openId && frameKey && frameKey === want) {
-                retireOpenRound(preview);
+            if (frame.event === 'round_started' && frame.requestId && frameKey && frameKey === want) {
+                const previousTrailId = cloudAgentTrailRequestId(want);
+                if (previousTrailId && previousTrailId !== frame.requestId) {
+                    const existing = cloudAgentTrail(want);
+                    if (existing) rememberSettledTrail(preview, previousTrailId, existing);
+                }
+                if (frame.requestId !== openId) retireOpenRound(preview);
             }
         }
         const key = applyCloudAgentStream(payload);
@@ -795,7 +890,7 @@ function keepUnackedUserLines(local: string[], incoming: string[], localClientID
 /** A fetch writes only when no send and no newer fetch has happened since it started. */
 function acceptHistory(current: Owner, ticket: HistoryTicket, raw: unknown): boolean {
     if (current.historyEpoch !== ticket.epoch || current.historyLoad !== ticket.load) return false;
-    const body = parseJSON<{ messages?: string[]; files?: unknown[]; request_ids?: unknown[]; client_message_ids?: unknown[] }>(raw, {});
+    const body = parseJSON<{ messages?: string[]; files?: unknown[]; request_ids?: unknown[]; client_message_ids?: unknown[]; events?: unknown[] }>(raw, {});
     const incoming = Array.isArray(body.messages) ? body.messages : [];
     const incomingFiles: string[][] = [];
     for (let index = 0; index < incoming.length; index += 1) {
@@ -806,23 +901,28 @@ function acceptHistory(current: Owner, ticket: HistoryTicket, raw: unknown): boo
     const incomingIDs = incoming.map((_, index) => String(rawIDs[index] || ''));
     const rawClientIDs = Array.isArray(body.client_message_ids) ? body.client_message_ids : [];
     const incomingClientIDs = incoming.map((_, index) => String(rawClientIDs[index] || ''));
+    const rawEvents = Array.isArray(body.events) ? body.events : [];
+    const incomingEvents = incoming.map((_, index) => normalizeHistoryEvents(rawEvents[index]));
     const merged = keepUnackedUserLines(current.history, incoming, current.historyClientIDs, incomingClientIDs);
     // files[i] and request_ids[i] belong to messages[i]. A local suffix keeps
     // the request id and client id the send already bound; the book wins for its own rows.
     const files: string[][] = [];
     const requestIDs: string[] = [];
     const clientIDs: string[] = [];
+    const events: CloudHistoryEvent[][] = [];
     for (let index = 0; index < merged.lines.length; index += 1) {
         if (index < incoming.length) {
             files.push(incomingFiles[index] || []);
             requestIDs.push(incomingIDs[index] || '');
             clientIDs.push(incomingClientIDs[index] || '');
+            events.push(incomingEvents[index] || []);
             continue;
         }
         const localIndex = merged.suffixLocalIndexes[index - incoming.length];
         files.push(current.historyFiles[localIndex] || []);
         requestIDs.push(current.historyRequestIDs[localIndex] || '');
         clientIDs.push(current.historyClientIDs[localIndex] || '');
+        events.push(current.historyEvents[localIndex] || []);
     }
     const artifactRows = files.filter(row => row.length > 0).length;
     if (artifactRows > 0 || merged.lines.length !== incoming.length) {
@@ -835,8 +935,9 @@ function acceptHistory(current: Owner, ticket: HistoryTicket, raw: unknown): boo
     current.historyFiles = files;
     current.historyRequestIDs = requestIDs;
     current.historyClientIDs = clientIDs;
+    current.historyEvents = events;
     current.bookLines = incoming.length;
-    current.retired = current.retired.filter(item => assistantMessageIndex(merged.lines, requestIDs, files, item.requestId) < 0);
+    current.retired = current.retired.filter(item => assistantMessageIndex(merged.lines, requestIDs, files, events, item.requestId) < 0);
     reconcileQueued(current);
     return true;
 }
@@ -940,6 +1041,7 @@ async function sendCloud(gen: number, text: string): Promise<boolean> {
                 owner.history = [...owner.history, `assistant\n⚠ ${workflowWarning}`];
                 owner.historyRequestIDs = [...owner.historyRequestIDs, ''];
                 owner.historyClientIDs = [...owner.historyClientIDs, ''];
+                owner.historyEvents = [...owner.historyEvents, []];
                 owner.historyEpoch += 1;
             }
             const session = cloudAgentSessionKey(current.item.id, taskId);
@@ -990,6 +1092,7 @@ async function sendCloud(gen: number, text: string): Promise<boolean> {
             current.historyRequestIDs = [...current.historyRequestIDs, boundRequest];
             current.historyClientIDs = [...current.historyClientIDs, clientMessageID];
             while (current.historyFiles.length < current.history.length) current.historyFiles.push([]);
+            while (current.historyEvents.length < current.history.length) current.historyEvents.push([]);
         }
         current.error = '';
         if (!owner || owner.generation !== gen) return true;
@@ -1051,7 +1154,7 @@ async function stopCloud(gen: number): Promise<boolean> {
 export async function openCloudAgent(item: CloudAgentListItem, lang: string): Promise<void> {
     const gen = ++generation;
     rememberCloudOpen(item.id);
-    owner = { generation: gen, lang, item, grant: '', taskId: '', history: [], historyFiles: [], historyRequest: '', historyRequestIDs: [], historyClientIDs: [], pendingClientBinds: {}, bookLines: 0, retired: [], historyEpoch: 0, historyLoad: 0, error: '', pending: false, pendingBaseline: '', stopping: false, queued: [], git: { connected: false, repo: '', checked: false }, srv: null };
+    owner = { generation: gen, lang, item, grant: '', taskId: '', history: [], historyFiles: [], historyRequest: '', historyRequestIDs: [], historyClientIDs: [], historyEvents: [], settledTrails: {}, pendingClientBinds: {}, bookLines: 0, retired: [], historyEpoch: 0, historyLoad: 0, error: '', pending: false, pendingBaseline: '', stopping: false, queued: [], git: { connected: false, repo: '', service: '', origin: '', checked: false }, srv: null };
     notify();
     ensureStream();
     publishOwner();
@@ -1224,9 +1327,15 @@ export async function refreshCloudGit(instanceId = ''): Promise<void> {
     const get = binding('GetCloudAgentGit');
     if (!get) return;
     try {
-        const view = await get(current.item.id) as { connected?: boolean; repo?: string };
+        const view = await get(current.item.id) as { connected?: boolean; repo?: string; service?: string; origin?: string };
         if (!owner || owner.generation !== current.generation) return;
-        owner.git = { connected: view?.connected === true, repo: String(view?.repo || ''), checked: true };
+        owner.git = {
+            connected: view?.connected === true,
+            repo: String(view?.repo || ''),
+            service: String(view?.service || ''),
+            origin: String(view?.origin || ''),
+            checked: true,
+        };
         publishOwner();
         // ConnectGit rewrites produced paths in the book. The dialog passes
         // the instance id; the open-time refresh does not, so it cannot
@@ -1248,6 +1357,30 @@ export async function refreshCloudGit(instanceId = ''): Promise<void> {
             }
         }
     }
+}
+
+/**
+ * Optimistically record a successful ConnectCloudAgentGit before the slower
+ * GetCloudAgentGit re-read lands, so the 未连接代码库 hint disappears the
+ * moment the connect call resolves instead of one Hub round-trip later.
+ * view is the connect response itself (a CloudGitPublic), so the recorded
+ * binding is what the backend just accepted. refreshCloudGit still runs and
+ * reconciles; its failure path only flips `checked` and keeps this state.
+ */
+export function noteCloudGitConnected(instanceId: string, view: { service?: string; origin?: string; repo?: string } | null): void {
+    const current = owner;
+    if (!current || current.item.kind !== 'coding') return;
+    if (instanceId && current.item.id !== instanceId) return;
+    // Synchronous: `current` is still `owner`, and mutating through the
+    // narrowed alias keeps TS happy without a redundant re-guard.
+    current.git = {
+        connected: true,
+        repo: String(view?.repo || '').trim(),
+        service: String(view?.service || '').trim(),
+        origin: String(view?.origin || '').trim(),
+        checked: true,
+    };
+    publishOwner();
 }
 
 /** Send through the open panel when it is already on this instance and task. */

@@ -168,8 +168,9 @@ print(msg.hex())
 func TestSupervisorH264MSEClientBoundsQueue(t *testing.T) {
 	out := runSupervisorPython(t, `
 print("mq.length>=8" in sup.H264_PLAYER, "ws.onclose=()=>{mq=[];" in sup.H264_PLAYER)
+print('"stream-resize"' in sup.H264_PLAYER, '"stream-ping"' in sup.H264_PLAYER, "renegotiating=true" in sup.H264_PLAYER, 'Q.set("w"' in sup.H264_PLAYER)
 `)
-	if out != "True True" {
+	if out != "True True\nTrue True True True" {
 		t.Fatalf("got %q", out)
 	}
 }

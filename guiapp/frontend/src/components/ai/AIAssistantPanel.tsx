@@ -6,6 +6,7 @@ import { useVoiceInput } from "./useVoiceInput";
 import { useVoiceTextSubmit } from "./useVoiceTextSubmit";
 import { cloneWorkflowUIState, useWorkflowState, type WorkflowUIState } from "./useWorkflowState";
 import { changedPreviewFilePath, cloneCodePreviewState, initialState as initialCodePreviewState, previewFocusAfterTabChange, useCodePreviewState, willDismissPreviewAfterClosingAll, willDismissPreviewAfterClosingFile, type CodePreviewUIState } from "./useCodePreviewState";
+import { CloudAgentFilesButton, useCloudAgentPreview } from "./useCloudAgentPreview";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { assistantMessageHasVisibleBody, reasoningTrailMarkdownOptions, renderMessage } from "./aiAssistantMarkdown";
@@ -4463,6 +4464,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Assigned below (where the file-focus nonces live): an agent write to a
     // preview file focuses the file body instead of the directory tree.
     const focusAgentFileWriteRef = useRef<(() => void) | null>(null);
+    // Registered before the local preview hook so this cover's event listener
+    // is not the one tests and the local tab treat as current. Events stay off.
+    const cloudAgentPreview = useCloudAgentPreview(remoteChat, focusAgentFileWriteRef);
     const { state: codePreviewState, closePanel: closeCodePreviewRaw, reopenPanel: reopenCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, focusFile: focusCodeFile, openWorkspaceFile, adoptPreviewFile, replaceWorkspaceFileContent, closeFile: closeCodeFileRaw, closeOtherFiles: closeOtherCodeFiles, closeFilesToTheRight: closeCodeFilesToTheRight, closeAllFiles: closeAllCodeFilesRaw, moveFile: moveCodeFile, toggleFilePinned: toggleCodeFilePinned, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codePreviewPathScope, codePreviewEventsEnabled(sourcePreviewAllowed, activeTab.expertId, workTaskTab), { previewWorkspacePath, latexResultTab: isLatexExpertId(activeTab.expertId), taskResultTab: activeTab.type === "expert", expertId: activeTab.expertId, markTaskResult: workTaskTab && !sourcePreviewAllowed, onAgentFileWrite: () => focusAgentFileWriteRef.current?.() });
     const cancelTaskResultPreview = useCallback(() => {
         taskResultPreviewGenRef.current += 1;
@@ -4714,7 +4718,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             reopenCodePreview();
         }
     }, [isPureCodingEnvironment, isCloudWorkspaceEnvironment, codingPreviewAllowed, sourcePreviewAllowed, activeTab.id, codePreviewState.active, codePreviewState.files.size, codePreviewState.userClosed, activateCodePreviewPassive, reopenCodePreview, resetCodePreviewState, selectCodeFile]);
-    const showCodePreview = codingPreviewAllowed && (sourcePreviewAllowed || taskResultPreviewOpen || latexPaperTab || hasTaskResult) && codePreviewState.active;
+    const cloudAgentCover = !!(remoteChat?.cloud && remoteChat.projectPath);
+    const showCodePreview = cloudAgentCover
+        ? cloudAgentPreview.active
+        : codingPreviewAllowed && (sourcePreviewAllowed || taskResultPreviewOpen || latexPaperTab || hasTaskResult) && codePreviewState.active;
     // Isolation conflicts open a dedicated right-hand side panel (not the float popover).
     const showCodingConflictPanel = isPureCodingEnvironment && codingConflictOpen && codingConflictCount > 0;
     // When the side panel is open without an active conflict, load the first one for diffs/3-way.
@@ -4747,7 +4754,28 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
         return () => { if (typeof off === "function") off(); };
     }, []);
-    const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView || showCodingConflictPanel || showBrowserPreview;
+    const anySplitActive = cloudAgentCover
+        ? showCodePreview
+        : showWorkflowPreview || showCodePreview || showAgentView || showCodingConflictPanel || showBrowserPreview;
+    const paneCodePreviewState = cloudAgentCover ? cloudAgentPreview.state : codePreviewState;
+    const paneCloseCodePreview = cloudAgentCover ? cloudAgentPreview.closePanel : closeCodePreview;
+    const paneCloseCodeFile = cloudAgentCover ? cloudAgentPreview.closeFile : closeCodeFile;
+    const paneCloseOtherCodeFiles = cloudAgentCover ? cloudAgentPreview.closeOtherFiles : closeOtherCodeFiles;
+    const paneCloseCodeFilesToTheRight = cloudAgentCover ? cloudAgentPreview.closeFilesToTheRight : closeCodeFilesToTheRight;
+    const paneCloseAllCodeFiles = cloudAgentCover ? cloudAgentPreview.closeAllFiles : closeAllCodeFiles;
+    const paneMoveCodeFile = cloudAgentCover ? cloudAgentPreview.moveFile : moveCodeFile;
+    const paneToggleCodeFilePinned = cloudAgentCover ? cloudAgentPreview.toggleFilePinned : toggleCodeFilePinned;
+    const paneSelectCodeFile = cloudAgentCover ? cloudAgentPreview.selectFile : selectCodeFile;
+    const paneOpenWorkspaceFile = cloudAgentCover ? cloudAgentPreview.openWorkspaceFile : openWorkspaceFile;
+    const paneReplaceWorkspaceFileContent = cloudAgentCover ? cloudAgentPreview.replaceWorkspaceFileContent : replaceWorkspaceFileContent;
+    const paneProjectPath = cloudAgentCover ? remoteChat?.projectPath : previewWorkspacePath;
+    const paneWorkspaceRefreshToken = cloudAgentCover ? cloudAgentPreview.refreshToken : (isRemoteCodingDevEnvironment ? remoteWorkspaceRefreshToken : localWorkspaceRefreshToken);
+    const paneWorkspaceResetOnRefresh = cloudAgentCover ? false : (!isRemoteCodingDevEnvironment && !isCloudWorkspaceEnvironment);
+    const paneCloudMode = cloudAgentCover || isCloudWorkspaceEnvironment;
+    const paneShowAgentView = cloudAgentCover ? false : showAgentView;
+    const paneShowWorkflowPreview = cloudAgentCover ? false : showWorkflowPreview;
+    const paneShowBrowserPreview = cloudAgentCover ? false : showBrowserPreview;
+    const paneShowConflict = cloudAgentCover ? false : showCodingConflictPanel;
     const splitRatio = anySplitActive ? workflowState.splitRatio : 1;
     // Keep the preview overlay mounted after the first open so it can slide back
     // out instead of vanishing the moment the last preview surface closes.
@@ -4755,7 +4783,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     useEffect(() => {
         if (anySplitActive) setPreviewPaneEverOpened(true);
     }, [anySplitActive]);
-    currentPreviewModeRef.current = showCodePreview && !showWorkflowPreview ? "code" : "workflow";
+    if (!cloudAgentCover) currentPreviewModeRef.current = showCodePreview && !showWorkflowPreview ? "code" : "workflow";
     const workflowCurrentPhaseMeta = useMemo(
         () => workflowState.phases.find(phase => phase.id === workflowState.currentPhaseID),
         [workflowState.currentPhaseID, workflowState.phases],
@@ -4909,6 +4937,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         window.addEventListener(FOCUS_CLOUD_WORKSPACE_TREE_EVENT, onTree);
         return () => window.removeEventListener(FOCUS_CLOUD_WORKSPACE_TREE_EVENT, onTree);
     }, []);
+    // A deliverable preview on the cloud cover opens the instance pane, whose
+    // directory tab lists that jail. A failed open must not close a directory
+    // the user already has up. LaTeX stays on the covered tab's own opener.
+    const openCloudPreviewPane = useCallback((open: boolean) => {
+        if (!open) return;
+        setPreviewPaneEverOpened(true);
+        cloudAgentPreview.openFiles();
+    }, [cloudAgentPreview.openFiles]);
     // Task-result previews and LaTeX documents both open in the code-preview
     // pane; see useAssistantPreviewOpenEvents for the request contract.
     useAssistantPreviewOpenEvents({
@@ -4918,6 +4954,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         sessionKey: activeTab.id,
         lang,
         openWorkspaceFile,
+        openTaskResultFile: cloudAgentCover ? paneOpenWorkspaceFile : undefined,
+        openTaskResultPane: cloudAgentCover ? openCloudPreviewPane : undefined,
         generationRef: taskResultPreviewGenRef,
         openPreviewPane: setTaskResultPreviewOpen,
         focusOpenedFile: () => {
@@ -7892,7 +7930,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             <SidebarToggleCluster {...sidebarToggles} lang={lang} />
                         </div>
                     )}
-                    <TaskExecutionHeading activeTab={activeTab} lang={lang} status={remoteChat ? { tone: remoteChat.canSend ? "running" : "pending", label: remoteChat.canSend ? remoteChat.machineName : localizeText(lang, remoteChat.offline ? "Offline" : "Read-only", remoteChat.offline ? "离线" : "只读", remoteChat.offline ? "離線" : "唯讀") } : (warmupChrome ? { tone: "pending", label: startupWarmup ? "" : initLabel } : taskExecutionStatus)} taskCreatedLabel={remoteChat ? "" : taskCreatedLabel} workingDirPath={remoteChat ? "" : activeTabWorkingDirPath} remoteWorkspace={remoteChat ? null : remoteWorkspace} remoteWorkspaceLabel={remoteChat ? (remoteChat.serverLabel || remoteChat.machineName) : remoteWorkspaceLabel} cloudGitRepo={remoteChat?.cloudGit?.connected ? (remoteChat.cloudGit.repo || "") : ""} cloudTaskKind={remoteChat?.cloud ? (remoteChat.cloudKind || "") : ""} title={title} />
+                    <TaskExecutionHeading activeTab={activeTab} lang={lang} status={remoteChat ? { tone: remoteChat.canSend ? "running" : "pending", label: remoteChat.canSend ? remoteChat.machineName : localizeText(lang, remoteChat.offline ? "Offline" : "Read-only", remoteChat.offline ? "离线" : "只读", remoteChat.offline ? "離線" : "唯讀") } : (warmupChrome ? { tone: "pending", label: startupWarmup ? "" : initLabel } : taskExecutionStatus)} taskCreatedLabel={remoteChat ? "" : taskCreatedLabel} workingDirPath={remoteChat ? "" : activeTabWorkingDirPath} remoteWorkspace={remoteChat ? null : remoteWorkspace} remoteWorkspaceLabel={remoteChat ? (remoteChat.serverLabel || remoteChat.machineName) : remoteWorkspaceLabel} cloudGitRepo={remoteChat?.cloudGit?.connected ? (remoteChat.cloudGit.repo || "") : ""} cloudGitService={remoteChat?.cloudGit?.connected ? (remoteChat.cloudGit.service || "") : ""} cloudGitOrigin={remoteChat?.cloudGit?.connected ? (remoteChat.cloudGit.origin || "") : ""} cloudTaskKind={remoteChat?.cloud ? (remoteChat.cloudKind || "") : ""} title={title} />
                     <div className="mc-task-execution-actions" data-testid="task-execution-actions" {...windowNoDragRegionProps()}>
                         <div className="mc-task-notification-slot" data-notification-tree="true" data-testid="task-notification-slot" {...windowNoDragRegionProps()}>
                             {/* The visible bell lives on the sidebar status row; this
@@ -7902,6 +7940,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             <AssistantTitleBarNotifications active={panelActive && !wizardScreen} inline={false} bellHidden lang={lang} theme={t} />
                         </div>
                         {remoteChat ? <>
+                        {cloudAgentCover ? <CloudAgentFilesButton lang={lang} onOpen={() => { setPreviewPaneEverOpened(true); cloudAgentPreview.openFiles(); window.dispatchEvent(new CustomEvent(FOCUS_CLOUD_WORKSPACE_TREE_EVENT)); }} /> : null}
                         <button className="task-pause-btn" data-action="cancel" type="button" onClick={() => { void handleCancel(); }} disabled={!remoteChat.canSend || !!remoteChat.activity?.stopping} aria-busy={!!remoteChat.activity?.stopping} aria-label={localizeText(lang, "Pause task", "暂停任务", "暫停任務")} title={localizeText(lang, "Pause task", "暂停任务", "暫停任務")}>{remoteChat.activity?.stopping ? localizeText(lang, "Stopping…", "正在停止…", "正在停止…") : localizeText(lang, "Pause task", "暂停任务", "暫停任務")}</button>
                         {/* Leaving the covered view lives in the switcher (tab activation retires it). */}
                         <TaskTabSwitcher tabs={tabState.tabs} activeTabId={tabState.activeTabId} lang={lang} onActivate={activateSwitchingTab} onClose={closeTabWithProjectCleanup} tasks={taskListProp} onOpenTask={onOpenTaskProp} />
@@ -7941,7 +7980,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         />
                     )}
                     <ChatBubblesProvider enabled={chatBubblesEnabled !== false}>
-                    <CodingAgentPreviewFocusContext.Provider value={focusCodeFile}>
+                    <CodingAgentPreviewFocusContext.Provider value={cloudAgentCover ? cloudAgentPreview.focusPath : focusCodeFile}>
                     <AssistantConversationBody emptyContent={remoteChat ? remoteEmptyContent : (isPureCodingEnvironment ? null : undefined)} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={remoteChat ? remoteTranscript : (displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : ARCHIVED_VIEW_MESSAGES)} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={remoteChat ? [] : pinnedNews} ready={remoteChat ? true : ready} renderedOtherMessages={remoteChat ? remoteRenderedMessages : renderedOtherMessages} renderedProgressMessages={remoteChat ? remoteRenderedProgress : renderedProgressMessages} liveActivityLabel={remoteChat ? undefined : standaloneLiveActivityLabel} liveActivityObject={remoteChat ? undefined : (standaloneLiveActivityLabel ? liveReasoningObject : undefined)} busyAccessory={remoteChat ? <RemoteAssistantActivity session={remoteChat} lang={lang} theme={t} /> : (hideWorkingTrail ? null : codingWorkingTrail)} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />
                     </CodingAgentPreviewFocusContext.Provider>
                     </ChatBubblesProvider>
@@ -8028,7 +8067,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     hosts the chip, files alone must not mount an empty section.
                     A retired checklist still mounts for that chip but stripped
                     to it — the finished steps do not come back with it. */}
-                {!showWelcomeView && !wizardScreen && remoteChat ? <RemoteCodingPlanChecklist session={remoteChat} lang={lang} theme={t} /> : null}
+                {!showWelcomeView && !wizardScreen && remoteChat ? <RemoteCodingPlanChecklist session={remoteChat} lang={lang} theme={t} onOpenFile={cloudAgentCover ? cloudAgentPreview.focusPath : undefined} /> : null}
                 {/* Cloud workflow surface: phases + form/review gates mirrored
                     from the instance's V2 machine via workflow_state frames. */}
                 {!showWelcomeView && !wizardScreen && remoteChat ? <CloudWorkflowPanel session={remoteChat} lang={lang} theme={t} /> : null}
@@ -8133,32 +8172,32 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 <Suspense fallback={null}>
                     <AssistantPreviewPane concealed={newTaskHome}
                         agentView={agentView}
-                        codePreviewState={codePreviewState}
-                        closeCodePreview={closeCodePreview}
-                        closeCodeFile={closeCodeFile}
-                        closeOtherCodeFiles={closeOtherCodeFiles}
-                        closeCodeFilesToTheRight={closeCodeFilesToTheRight}
-                        closeAllCodeFiles={closeAllCodeFiles}
-                        moveCodeFile={moveCodeFile}
-                        toggleCodeFilePinned={toggleCodeFilePinned}
+                        codePreviewState={paneCodePreviewState}
+                        closeCodePreview={paneCloseCodePreview}
+                        closeCodeFile={paneCloseCodeFile}
+                        closeOtherCodeFiles={paneCloseOtherCodeFiles}
+                        closeCodeFilesToTheRight={paneCloseCodeFilesToTheRight}
+                        closeAllCodeFiles={paneCloseAllCodeFiles}
+                        moveCodeFile={paneMoveCodeFile}
+                        toggleCodeFilePinned={paneToggleCodeFilePinned}
                         closeDocPreview={closeDocPreview}
                         dismissAgentView={dismissAgentView}
                         lang={lang}
-                        selectCodeFile={selectCodeFile}
-                        projectPath={previewWorkspacePath}
+                        selectCodeFile={paneSelectCodeFile}
+                        projectPath={paneProjectPath}
                         paperWorkspace={isLatexExpertId(activeTab.expertId)}
-                        workspaceRefreshToken={isRemoteCodingDevEnvironment ? remoteWorkspaceRefreshToken : localWorkspaceRefreshToken}
-                        workspaceResetOnRefresh={!isRemoteCodingDevEnvironment && !isCloudWorkspaceEnvironment}
-                        cloudMode={isCloudWorkspaceEnvironment}
+                        workspaceRefreshToken={paneWorkspaceRefreshToken}
+                        workspaceResetOnRefresh={paneWorkspaceResetOnRefresh}
+                        cloudMode={paneCloudMode}
                         fileFocusNonce={fileFocusNonce}
                         treeFocusNonce={treeFocusNonce}
-                        openWorkspaceFile={openWorkspaceFile}
-                        replaceWorkspaceFileContent={replaceWorkspaceFileContent}
+                        openWorkspaceFile={paneOpenWorkspaceFile}
+                        replaceWorkspaceFileContent={paneReplaceWorkspaceFileContent}
                         submitAgentView={panelSubmitAgentView}
                         showCodePreview={showCodePreview}
-                        showAgentView={showAgentView}
-                        showWorkflowPreview={showWorkflowPreview}
-                        showBrowserPreview={showBrowserPreview}
+                        showAgentView={paneShowAgentView}
+                        showWorkflowPreview={paneShowWorkflowPreview}
+                        showBrowserPreview={paneShowBrowserPreview}
                         browserStage={browserStage}
                         onBrowserSetHold={callAgentBrowserSetControl}
                         onBrowserInput={callAgentBrowserInput}
@@ -8169,7 +8208,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             setBrowserStage((prev) => (prev ? { ...prev, open: false } : prev));
                             callAgentBrowserClose();
                         }}
-                        showConflict={showCodingConflictPanel}
+                        showConflict={paneShowConflict}
                         conflictCount={codingConflictCount}
                         onCloseConflict={closeCodingConflictSidePanel}
                         conflictContent={showCodingConflictPanel ? (

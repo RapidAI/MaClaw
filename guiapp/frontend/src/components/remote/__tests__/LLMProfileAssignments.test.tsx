@@ -921,6 +921,137 @@ describe("LLMProfileAssignments", () => {
         expect(screen.getByText("AI assistant")).toBeTruthy();
     });
 
+    describe("cloud agent row", () => {
+        // A Hub-service row exists only in the cloud fixtures: adding it to the
+        // shared base state would change the provider option lists every other
+        // test asserts on.
+        const cloudState = {
+            ...state,
+            providers: [
+                ...state.providers,
+                { id: "hub", name: "WorkBuddy CN", model: "hy4flash-free", models: ["hy4flash-free"], is_hub_service: true, connection_test_passed: true },
+            ],
+        };
+        const cloudCustom = {
+            ...cloudState,
+            profiles: {
+                ...cloudState.profiles,
+                cloud: { provider_id: "coding", model: "deepseek-coder", inherit_assistant: false },
+            },
+        };
+        const cloudFollowing = {
+            ...cloudState,
+            profiles: {
+                ...cloudState.profiles,
+                cloud: { inherit_assistant: true },
+            },
+        };
+
+        it("hides the cloud row while the tenant switch is off", async () => {
+            getState.mockResolvedValue(cloudCustom);
+            render(<LLMProfileAssignments lang="en" />);
+            await screen.findByRole("heading", { name: "Model assignments" });
+            expect(screen.queryByText("Cloud Agent", { selector: "strong" })).toBeNull();
+            expect(screen.getAllByRole("checkbox", { name: "Follow AI assistant" })).toHaveLength(1);
+        });
+
+        it("defaults a never-configured cloud row to follow-assistant without materializing it on save", async () => {
+            getState.mockResolvedValue(cloudState);
+            saveProfiles.mockResolvedValue(undefined);
+            render(<LLMProfileAssignments lang="en" showCloudAgent />);
+
+            await screen.findByRole("heading", { name: "Model assignments" });
+            expect(screen.getByText("Cloud Agent", { selector: "strong" })).toBeTruthy();
+            // Absent from the snapshot = the follow state: the checkbox renders
+            // checked and the preview is already effective, not pending.
+            const checkboxes = screen.getAllByRole("checkbox", { name: "Follow AI assistant" });
+            expect((checkboxes[1] as HTMLInputElement).checked).toBe(true);
+            expect(screen.getByText("Effective now: OpenAI · gpt-5")).toBeTruthy();
+            expect(screen.queryByLabelText("Cloud Agent provider")).toBeNull();
+
+            // An unrelated save must not materialize cloud as an explicit pin.
+            fireEvent.change(screen.getByLabelText("Coding provider"), { target: { value: "assistant" } });
+            fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+            await waitFor(() => expect(saveProfiles).toHaveBeenCalled());
+            const payload = saveProfiles.mock.calls[0][0] as { cloud?: unknown };
+            expect(payload.cloud).toBeUndefined();
+        });
+
+        it("unchecking seeds the draft from the assistant and offers MaClaw official without Hub-service rows", async () => {
+            getState.mockResolvedValue(cloudState);
+            render(<LLMProfileAssignments lang="en" showCloudAgent />);
+
+            const checkboxes = await screen.findAllByRole("checkbox", { name: "Follow AI assistant" });
+            fireEvent.click(checkboxes[1]);
+            const providerSelect = screen.getByLabelText("Cloud Agent provider") as HTMLSelectElement;
+            // Unchecked follow seeds from the assistant draft, like the coding row.
+            expect(providerSelect.value).toBe("assistant");
+            const optionTexts = Array.from(providerSelect.options).map(option => option.text);
+            expect(optionTexts).toEqual(["MaClaw official", "OpenAI", "DeepSeek"]);
+            expect((screen.getByLabelText("Cloud Agent model") as HTMLInputElement).value).toBe("gpt-5");
+
+            fireEvent.click(screen.getAllByRole("checkbox", { name: "Follow AI assistant" })[1]);
+            expect(screen.queryByLabelText("Cloud Agent provider")).toBeNull();
+            // Re-checking returns to follow; against a never-saved cloud row
+            // that is already the effective default, so the preview is not pending.
+            expect(screen.getByText("Effective now: OpenAI · gpt-5")).toBeTruthy();
+        });
+
+        it("leaves the official pin when the assistant itself is a Hub service", async () => {
+            const hubAssistant = {
+                ...cloudState,
+                profiles: {
+                    ...cloudState.profiles,
+                    assistant: { provider_id: "hub", model: "hy4flash-free" },
+                },
+            };
+            getState.mockResolvedValue(hubAssistant);
+            render(<LLMProfileAssignments lang="en" showCloudAgent />);
+
+            const checkboxes = await screen.findAllByRole("checkbox", { name: "Follow AI assistant" });
+            fireEvent.click(checkboxes[1]);
+            const providerSelect = screen.getByLabelText("Cloud Agent provider") as HTMLSelectElement;
+            // The assistant pick is filtered out of the cloud select, so the
+            // uncheck falls back to the official pin instead of seeding it.
+            expect(providerSelect.value).toBe("");
+            expect(Array.from(providerSelect.options).map(option => option.text)).toEqual(["MaClaw official", "OpenAI", "DeepSeek"]);
+            expect(screen.queryByText("已删除的服务商")).toBeNull();
+        });
+
+        it("keeps a saved custom cloud pick in its own selectors", async () => {
+            getState.mockResolvedValue(cloudCustom);
+            render(<LLMProfileAssignments lang="en" showCloudAgent />);
+
+            expect((await screen.findByLabelText("Cloud Agent provider") as HTMLSelectElement).value).toBe("coding");
+            expect((screen.getByLabelText("Cloud Agent model") as HTMLInputElement).value).toBe("deepseek-coder");
+            // The follow checkbox stays unchecked for an explicit pick.
+            expect((screen.getAllByRole("checkbox", { name: "Follow AI assistant" })[1] as HTMLInputElement).checked).toBe(false);
+        });
+
+        it("saves an explicit cloud pick with the profile revision", async () => {
+            getState.mockResolvedValue(cloudState);
+            saveProfiles.mockResolvedValue(undefined);
+            render(<LLMProfileAssignments lang="en" showCloudAgent />);
+
+            const checkboxes = await screen.findAllByRole("checkbox", { name: "Follow AI assistant" });
+            fireEvent.click(checkboxes[1]);
+            fireEvent.change(screen.getByLabelText("Cloud Agent provider"), { target: { value: "coding" } });
+            fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+            await waitFor(() => expect(saveProfiles).toHaveBeenCalledWith(expect.objectContaining({
+                cloud: { provider_id: "coding", model: "deepseek-coder", inherit_assistant: false },
+            }), "rev-1"));
+        });
+
+        it("distinguishes the effective follow default from an unsaved flip", async () => {
+            getState.mockResolvedValue(cloudFollowing);
+            render(<LLMProfileAssignments lang="en" showCloudAgent />);
+
+            expect(await screen.findByText("Effective now: OpenAI · gpt-5")).toBeTruthy();
+            fireEvent.change(screen.getByLabelText("Assistant model"), { target: { value: "gpt-5-mini" } });
+            expect(screen.getByText("Effective after save: OpenAI · gpt-5-mini")).toBeTruthy();
+        });
+    });
+
     it("matches backend vision-model rules for caption warnings", () => {
         expect(captionModelMissingVision({ id: "p", name: "P", supports_vision: true, model: "gpt-5" }, "gpt-5")).toBe(false);
         expect(captionModelMissingVision({ id: "p", name: "P", supports_vision: true, model: "" }, "llava")).toBe(true);

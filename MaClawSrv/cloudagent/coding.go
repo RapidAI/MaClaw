@@ -549,9 +549,19 @@ type agentHost struct {
 	fetchDone    bool
 	// searchAttempted and fetchAttempted record a call that reached the
 	// engine. A missing argument does not. The PDF denial uses them to name
-	// a lookup that has not been tried yet.
+	// a lookup that has not been tried yet. A failed call is still an
+	// attempt: the stop sentence must not say the tool was never called.
 	searchAttempted bool
 	fetchAttempted  bool
+	// pdfAttempted records a generate_pdf call that carried content. A
+	// missing content argument does not. pdfDone is set only after the
+	// file is written, so a failed render stays attempted and not done.
+	pdfAttempted bool
+	pdfDone      bool
+	// stopNudges counts tool-less reminders per tool name. A narration of
+	// the next call is not the answer. One tool's reminders do not spend
+	// the next tool's.
+	stopNudges map[string]int
 }
 
 // hostWriteEvent is one write_file call's canonical path and exact line
@@ -955,7 +965,13 @@ func (h *agentHost) runTool(name, argsJSON string) (string, bool) {
 			h.noteFile(path, created)
 			h.noteFileChange(path, created, added, removed, hasCounts)
 			h.noteFileBaseline(path, baseline, baselineOK)
-			h.lastWrite = hostWriteEvent{path: path, created: created, added: added, removed: removed, hasCounts: hasCounts}
+			// The activity feed and the preview tab use the jail-relative path,
+			// the same key the file tree lists.
+			shown := path
+			if rel := canonicalArtifactRel(h.root, path); rel != "" {
+				shown = rel
+			}
+			h.lastWrite = hostWriteEvent{path: shown, created: created, added: added, removed: removed, hasCounts: hasCounts}
 		}
 		return out, path == ""
 	case "git_commit":
@@ -1105,6 +1121,11 @@ func (h *agentHost) noteFileBaseline(abs, baseline string, ok bool) {
 		// was too large or non-text to snapshot.
 		if h.fileWriteCounts[rel] != 1 {
 			return
+		}
+		// The turn-local map dies with the host. The instance keeps the same
+		// first snapshot so a later file browse can still diff the edit.
+		if baseline != "" && h.inst != nil {
+			h.inst.rememberPreviewBaseline(rel, baseline)
 		}
 		if h.fileBaselines == nil {
 			h.fileBaselines = map[string]string{}

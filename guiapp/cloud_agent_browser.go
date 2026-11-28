@@ -1,7 +1,9 @@
 package guiapp
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -126,32 +128,33 @@ func (a *App) getCloudAgentWorkbenchDirectory(instanceID, relativePath string) (
 }
 
 // cloudAgentReadFile fetches raw file bytes from the instance jail.
-func (a *App) cloudAgentReadFile(instanceID, relativePath string, maxBytes int64) (name string, size int64, truncated bool, data []byte, err error) {
+func (a *App) cloudAgentReadFile(instanceID, relativePath string, maxBytes int64) (name string, size int64, truncated bool, data []byte, original string, err error) {
 	raw, err := a.cloudAgentOp(instanceID, "cloud_read_file", map[string]any{
 		"path":      relativePath,
 		"max_bytes": maxBytes,
 	})
 	if err != nil {
-		return "", 0, false, nil, err
+		return "", 0, false, nil, "", err
 	}
 	var payload struct {
 		Name      string `json:"name"`
 		Size      int64  `json:"size"`
 		Truncated bool   `json:"truncated"`
 		Data      string `json:"data_base64"`
+		Original  string `json:"original"`
 	}
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return "", 0, false, nil, fmt.Errorf("云端文件结果无法读取")
+		return "", 0, false, nil, "", fmt.Errorf("云端文件结果无法读取")
 	}
 	data, err = base64.StdEncoding.DecodeString(payload.Data)
 	if err != nil {
-		return "", 0, false, nil, fmt.Errorf("云端文件结果无法读取")
+		return "", 0, false, nil, "", fmt.Errorf("云端文件结果无法读取")
 	}
-	return payload.Name, payload.Size, payload.Truncated, data, nil
+	return payload.Name, payload.Size, payload.Truncated, data, payload.Original, nil
 }
 
 func (a *App) getCloudAgentWorkbenchFilePreview(instanceID, relativePath string) (CodingWorkbenchFilePreview, error) {
-	_, _, capped, data, err := a.cloudAgentReadFile(instanceID, relativePath, codingWorkbenchBrowserMaxReadBytes+int64(utf8.UTFMax))
+	_, _, capped, data, original, err := a.cloudAgentReadFile(instanceID, relativePath, codingWorkbenchBrowserMaxReadBytes+int64(utf8.UTFMax))
 	if err != nil {
 		return CodingWorkbenchFilePreview{}, err
 	}
@@ -172,12 +175,17 @@ func (a *App) getCloudAgentWorkbenchFilePreview(instanceID, relativePath string)
 	if len(runes) > codingWorkbenchBrowserMaxRunes {
 		runes = runes[:codingWorkbenchBrowserMaxRunes]
 	}
-	return CodingWorkbenchFilePreview{
+	preview := CodingWorkbenchFilePreview{
 		Path:      relativePath,
 		Content:   string(runes),
 		Language:  detectLanguageFromExt(relativePath),
 		Truncated: truncated,
-	}, nil
+	}
+	// A clipped body must not be diffed against a full baseline.
+	if !truncated && original != "" && utf8.ValidString(original) && utf8.RuneCountInString(original) <= codingWorkbenchBrowserMaxRunes {
+		preview.Original = original
+	}
+	return preview, nil
 }
 
 func (a *App) getCloudAgentWorkbenchEntryProperties(instanceID, relativePath string) (CodingWorkbenchEntryProperties, error) {
@@ -217,7 +225,7 @@ func (a *App) openCloudAgentWorkbenchFileLocally(instanceID, relativePath string
 	if props.SizeKnown && props.Size > cloudAgentDownloadMaxFileBytes {
 		return fmt.Errorf("文件太大（%d MB 上限）", cloudAgentDownloadMaxFileBytes/(1<<20))
 	}
-	name, _, truncated, data, err := a.cloudAgentReadFile(instanceID, relativePath, cloudAgentDownloadMaxFileBytes)
+	name, _, truncated, data, _, err := a.cloudAgentReadFile(instanceID, relativePath, cloudAgentDownloadMaxFileBytes)
 	if err != nil {
 		return err
 	}
@@ -246,6 +254,67 @@ func (a *App) openCloudAgentWorkbenchFileLocally(instanceID, relativePath string
 		return err
 	}
 	return a.OpenFileOrShowInFolder(local)
+}
+
+// cloudAgentPreviewCacheName keeps one temp file per path and content.
+// The viewer reloads only when absPath changes, so a new version needs a
+// new name. Identical bytes keep the same path.
+func cloudAgentPreviewCacheName(cleaned, base string, data []byte) string {
+	pathSum := sha256.Sum256([]byte(cleaned))
+	contentSum := sha256.Sum256(data)
+	return hex.EncodeToString(pathSum[:8]) + "-" + hex.EncodeToString(contentSum[:8]) + "-" + base
+}
+
+// MaterializeCloudAgentPreviewFile copies a cloud-agent pdf, docx, or pptx
+// into a local cache and returns that path. The in-app viewer reads a local
+// file. This cache path is not a server path. Other binaries stay on the
+// OS-open path, which does not return a path to the frontend.
+func (a *App) MaterializeCloudAgentPreviewFile(projectPath, relativePath string) (string, error) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	instanceID := cloudAgentBrowseInstanceID(projectPath)
+	if instanceID == "" {
+		return "", fmt.Errorf("project path is required")
+	}
+	cleaned, err := cleanCodingWorkbenchBrowserPath(relativePath)
+	if err != nil {
+		return "", err
+	}
+	switch strings.ToLower(filepath.Ext(cleaned)) {
+	case ".pdf", ".docx", ".pptx":
+	default:
+		return "", fmt.Errorf("binary files cannot be previewed")
+	}
+	props, err := a.getCloudAgentWorkbenchEntryProperties(instanceID, cleaned)
+	if err != nil {
+		return "", err
+	}
+	if props.IsDir {
+		return "", fmt.Errorf("path is a directory")
+	}
+	if props.SizeKnown && props.Size > cloudAgentDownloadMaxFileBytes {
+		return "", fmt.Errorf("文件太大（%d MB 上限）", cloudAgentDownloadMaxFileBytes/(1<<20))
+	}
+	name, _, truncated, data, _, err := a.cloudAgentReadFile(instanceID, cleaned, cloudAgentDownloadMaxFileBytes)
+	if err != nil {
+		return "", err
+	}
+	if truncated {
+		return "", fmt.Errorf("文件太大（%d MB 上限）", cloudAgentDownloadMaxFileBytes/(1<<20))
+	}
+	base := filepath.Base(strings.TrimSpace(name))
+	if base == "" || base == "." {
+		base = filepath.Base(cleaned)
+	}
+	destName := cloudAgentPreviewCacheName(cleaned, base, data)
+	dir := filepath.Join(os.TempDir(), "maclaw-cloud-preview", instanceID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	dest := filepath.Join(dir, destName)
+	if err := os.WriteFile(dest, data, 0o600); err != nil {
+		return "", err
+	}
+	return dest, nil
 }
 
 // downloadCloudAgentWorkbenchEntry mirrors DownloadCodingWorkbenchEntry: a
@@ -339,7 +408,7 @@ func (a *App) openCloudAgentWorkbenchFileInVSCode(instanceID, relativePath, code
 	if props.SizeKnown && props.Size > maxBytes {
 		return false, fmt.Errorf("remote file is too large to open locally with VS Code (limit %d MB)", maxBytes/(1024*1024))
 	}
-	name, _, truncated, data, err := a.cloudAgentReadFile(instanceID, relativePath, maxBytes)
+	name, _, truncated, data, _, err := a.cloudAgentReadFile(instanceID, relativePath, maxBytes)
 	if err != nil {
 		return false, err
 	}

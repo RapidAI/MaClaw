@@ -224,28 +224,37 @@ func q8pTile(out *[128]float32, act *Q8Act, w *Q8Packed, m0, p int) {
 // MatMulQ8P computes out[m*N+n] (=, or += when accum) Σ_k act[m,k]·W[n,k]
 // for the act.M real rows. maxWorkers==1 runs serially on the caller.
 func MatMulQ8P(out []float32, act *Q8Act, w *Q8Packed, accum bool, maxWorkers int) {
+	q8pMatMul(out, act, w, nil, accum, false, maxWorkers)
+}
+
+// q8pMatMul is MatMulQ8P with the bias / ReLU epilogue folded into the
+// 32-wide store. A second pass over the output row used to reread every
+// SenseVoice projection (QKV, out, both FFN GEMMs, ~70 layers). The float
+// association matches that pass: (stored + bias), then ReLU, and accum is
+// (dst + gemm) + bias. bias == nil and relu == false is the plain store.
+func q8pMatMul(out []float32, act *Q8Act, w *Q8Packed, bias []float32, accum, relu bool, maxWorkers int) {
 	N := w.N
 	pairs := N / 32
 	M := act.M
 	run := func(ps, pe int) {
 		var tile [128]float32
 		for p := ps; p < pe; p++ {
+			var bcol []float32
+			if bias != nil {
+				bcol = bias[p*32 : p*32+32 : p*32+32]
+			}
 			for m0 := 0; m0 < M; m0 += 4 {
 				q8pTile(&tile, act, w, m0, p)
 				rows := M - m0
 				if rows > 4 {
 					rows = 4
 				}
+				base := p * 32
 				for m := 0; m < rows; m++ {
-					dst := out[(m0+m)*N+p*32 : (m0+m)*N+p*32+32 : (m0+m)*N+p*32+32]
+					row := (m0 + m) * N
+					dst := out[row+base : row+base+32 : row+base+32]
 					src := tile[m*32 : m*32+32 : m*32+32]
-					if accum {
-						for i := range dst {
-							dst[i] += src[i]
-						}
-					} else {
-						copy(dst, src)
-					}
+					q8pWrite32(dst, src, bcol, accum, relu)
 				}
 			}
 		}
@@ -259,6 +268,87 @@ func MatMulQ8P(out []float32, act *Q8Act, w *Q8Packed, accum bool, maxWorkers in
 		nw = maxWorkers
 	}
 	q8pParallel(pairs, nw, run)
+}
+
+// q8pWrite32 stores one 32-column tile. The no-epilogue arms stay a copy or
+// an in-place add, so plain MatMulQ8P does not grow a bias branch per element.
+func q8pWrite32(dst, src, bias []float32, accum, relu bool) {
+	switch {
+	case bias == nil && !relu:
+		if accum {
+			for i := 0; i < 32; i += 8 {
+				dst[i] += src[i]
+				dst[i+1] += src[i+1]
+				dst[i+2] += src[i+2]
+				dst[i+3] += src[i+3]
+				dst[i+4] += src[i+4]
+				dst[i+5] += src[i+5]
+				dst[i+6] += src[i+6]
+				dst[i+7] += src[i+7]
+			}
+			return
+		}
+		copy(dst, src)
+		return
+	case bias == nil:
+		for i := 0; i < 32; i++ {
+			v := src[i]
+			if accum {
+				v = dst[i] + src[i]
+			}
+			if v < 0 {
+				v = 0
+			}
+			dst[i] = v
+		}
+	case !relu:
+		for i := 0; i < 32; i++ {
+			if accum {
+				dst[i] = dst[i] + src[i] + bias[i]
+			} else {
+				dst[i] = src[i] + bias[i]
+			}
+		}
+	default:
+		for i := 0; i < 32; i++ {
+			v := src[i] + bias[i]
+			if accum {
+				v = dst[i] + src[i] + bias[i]
+			}
+			if v < 0 {
+				v = 0
+			}
+			dst[i] = v
+		}
+	}
+}
+
+// q8pActPool reuses the quantized activation buffer across encoder layers.
+var q8pActPool = sync.Pool{New: func() any { return &Q8Act{} }}
+
+// MatMulQ8PBias is the int8-activation GEMM with bias / ReLU folded into the
+// 32-wide store. out[m,n] = dot(quant(A[m]), W[n]) + bias[n], then ReLU when
+// relu is set. accum adds that result into out. Returns false when w is
+// missing or the shape does not match, so the caller keeps the float-activation
+// kernel.
+//
+// Per-block Q8_0 scales are not a Hexagon NNAPI fully-connected layout, and
+// a per-layer NPU launch is slower than SMMLA at SenseVoice shapes (M≈100,
+// K≤2048). This kernel is the acceleration Snapdragon and Oryon cores run.
+func MatMulQ8PBias(out, a []float32, w *Q8Packed, bias []float32, M, N, K int, relu, accum bool) bool {
+	if w == nil || !Q8PAvailable() || w.N != N || w.K != K || M <= 0 || N <= 0 || K <= 0 {
+		return false
+	}
+	if len(a) < M*K || len(out) < M*N || (bias != nil && len(bias) < N) {
+		return false
+	}
+	act := q8pActPool.Get().(*Q8Act)
+	QuantizeQ8Act(act, a, M, K)
+	// Bias and ReLU fold into the tile store. A follow-up sweep re-read the
+	// whole projection after the GEMM had already left those rows.
+	q8pMatMul(out, act, w, bias, accum, relu, 0)
+	q8pActPool.Put(act)
+	return true
 }
 
 // Q8ActResidual writes a − dequant(act) into r (len ≥ act.M*act.K): the

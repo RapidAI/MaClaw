@@ -23,6 +23,15 @@ type executor interface {
 	Close() error
 }
 
+// cloudHistoryWindowMax bounds one cloud_get_task page: the largest window
+// that still fits the hub's 1MB op relay with events attached.
+const cloudHistoryWindowMax = 400
+
+// cloudTurnEventsMax bounds the process rows replayed for one turn — the
+// same cap the live lane keeps, so restore and live look identical and a
+// chatty coding turn cannot blow the relay on its own.
+const cloudTurnEventsMax = 40
+
 type turnBody struct {
 	ClientMessageID string `json:"client_message_id"`
 	TaskID          string `json:"task_id"`
@@ -114,7 +123,17 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 		}
 		return json.Marshal(map[string]any{"tasks": summaries})
 	case "cloud_get_task":
-		lines, flags, files, requestIDs, clientIDs, total, err := inst.book.historyWindow(payload.TaskID, payload.HistoryLimit)
+		// Clamp the page here: an unbounded window rides straight into the
+		// hub's 1MB op relay and comes back silently truncated. 0 stays the
+		// legacy full-history behavior for old clients.
+		limit := payload.HistoryLimit
+		if limit < 0 {
+			limit = 0
+		}
+		if limit > cloudHistoryWindowMax {
+			limit = cloudHistoryWindowMax
+		}
+		lines, flags, files, requestIDs, clientIDs, total, err := inst.book.historyWindow(payload.TaskID, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -132,6 +151,9 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 			return nil, err
 		}
 		rowEvents := make([][]turnEvent, len(lines))
+		for i := range rowEvents {
+			rowEvents[i] = []turnEvent{}
+		}
 		lastIndex := make(map[string]int)
 		for i, requestID := range requestIDs {
 			if requestID != "" {
@@ -139,7 +161,13 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 			}
 		}
 		for requestID, idx := range lastIndex {
-			rowEvents[idx] = eventsByRequest[requestID]
+			events := eventsByRequest[requestID]
+			// Replay the same tail the live lane carries: a turn with
+			// hundreds of progress rows replays its last 40 only.
+			if len(events) > cloudTurnEventsMax {
+				events = events[len(events)-cloudTurnEventsMax:]
+			}
+			rowEvents[idx] = events
 		}
 		return json.Marshal(map[string]any{
 			"task_id":            payload.TaskID,
@@ -181,8 +209,15 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 		if strings.TrimSpace(payload.TaskID) == "" {
 			return nil, errors.New("缺少 task_id")
 		}
+		// Hold the drain lock across cancel + purge: the queue runner's
+		// PeekOldest→BeginDrain window must not promote this task's parked
+		// input into a turn whose transcript is about to disappear.
+		// cancelIDsAndDrain's own drain runs in a goroutine, so this lock
+		// never deadlocks — the spawned runner just queues behind it.
+		inst.drainMu.Lock()
 		ids, err := inst.book.CancelRunning(payload.TaskID, time.Now())
 		if err != nil {
+			inst.drainMu.Unlock()
 			return nil, err
 		}
 		rt.cancelIDsAndDrain(ids, inst)
@@ -196,11 +231,13 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 			}
 		}
 		if err := inst.book.DeleteTask(payload.TaskID); err != nil {
+			inst.drainMu.Unlock()
 			return nil, err
 		}
 		// Drop the live lane so a watcher snapshot cannot resurrect the
 		// deleted task's round.
 		rt.dropStreamLane(inst.meta.ID, payload.TaskID)
+		inst.drainMu.Unlock()
 		return json.Marshal(map[string]any{"ok": true, "cancelled": ids})
 	case "cloud_instance_state":
 		// Hub-side ground truth reconcile: a lost finish beat leaves a stale

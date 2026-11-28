@@ -38,7 +38,9 @@ func TestCreateCloudAgentAppliesDesktopDefaultLLM(t *testing.T) {
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token", RemoteMachineToken: "machine-token", RemoteMachineID: "machine-test",
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{
-			{ID: "prov-1", Name: "DeepSeek", URL: "https://api.deepseek.com", Key: "sk-test", Model: "deepseek-chat", Protocol: "openai", AgentType: "openclaw", ContextLength: 128000, TimeoutSec: 300, MaxOutputTokens: 8192},
+			// The legacy pick only seeds into MaclawLLMProfiles.Cloud when it
+			// satisfies the assignment contract, so the row must be tested.
+			{ID: "prov-1", Name: "DeepSeek", URL: "https://api.deepseek.com", Key: "sk-test", Model: "deepseek-chat", Protocol: "openai", AgentType: "openclaw", ContextLength: 128000, TimeoutSec: 300, MaxOutputTokens: 8192, ConnectionTestPassed: true},
 		},
 		CloudAgentLLMProvider: "prov-1",
 		CloudAgentLLMModel:    "deepseek-v3",
@@ -137,8 +139,8 @@ func TestCloudAgentDefaultLLMSkipsHubServiceAndKeylessRows(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	if err := app.SaveConfig(corelib.AppConfig{
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{
-			{ID: "hub-row", Name: "Hub 内置服务", URL: "https://hub.example", Key: "k", Model: "m", IsHubService: true},
-			{ID: "keyless", Name: "NoKey", URL: "https://api.example.com", Key: "", Model: "m"},
+			{ID: "hub-row", Name: "Hub 内置服务", URL: "https://hub.example", Key: "k", Model: "m", ConnectionTestPassed: true, IsHubService: true},
+			{ID: "keyless", Name: "NoKey", URL: "https://api.example.com", Key: "", Model: "m", ConnectionTestPassed: true},
 		},
 		CloudAgentLLMProvider: "hub-row",
 	}); err != nil {
@@ -150,7 +152,7 @@ func TestCloudAgentDefaultLLMSkipsHubServiceAndKeylessRows(t *testing.T) {
 
 	if err := app.SaveConfig(corelib.AppConfig{
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{
-			{ID: "keyless", Name: "NoKey", URL: "https://api.example.com", Key: "", Model: "m"},
+			{ID: "keyless", Name: "NoKey", URL: "https://api.example.com", Key: "", Model: "m", ConnectionTestPassed: true},
 		},
 		CloudAgentLLMProvider: "keyless",
 	}); err != nil {

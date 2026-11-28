@@ -50,6 +50,85 @@ func TestAdaINSnakeEquivalence(t *testing.T) {
 	}
 }
 
+// TestConvResidualIndependentOfDestination locks the resblock identity:
+// out = conv(in) + residual does not read the old contents of out, and an
+// in-place residual matches a separate buffer. With FMA off, both match
+// the scalar dot plus residual bit for bit.
+func TestConvResidualIndependentOfDestination(t *testing.T) {
+	rng := rand.New(rand.NewSource(17))
+	check := func(k, dil int, fma bool) {
+		const inC, outC, T = 16, 6, 17
+		pad := (k - 1) * dil / 2
+		outT := (T+2*pad-dil*(k-1)-1)/1 + 1
+		if outT != T {
+			t.Fatalf("outT %d", outT)
+		}
+		in := make([]float32, inC*T)
+		w := make([]float32, outC*inC*k)
+		bias := make([]float32, outC)
+		res := make([]float32, outC*T)
+		for i := range in {
+			in[i] = float32(rng.NormFloat64())
+		}
+		for i := range w {
+			w[i] = float32(rng.NormFloat64()) * 0.02
+		}
+		for i := range bias {
+			bias[i] = float32(rng.NormFloat64())
+		}
+		for i := range res {
+			res[i] = float32(rng.NormFloat64())
+		}
+		weightT := make([]float32, outC*k*inC)
+		transposeConv1DWeight(weightT, w, inC, outC, k)
+		clean := make([]float32, outC*outT)
+		poison := make([]float32, outC*outT)
+		for i := range poison {
+			poison[i] = 42
+		}
+		alias := append([]float32(nil), res...)
+		run := func(out, residual []float32) {
+			t.Helper()
+			if err := conv1DSIMDTransposedWeight(out, in, weightT, bias, residual, inC, T, outC, k, 1, pad, dil, outT); err != nil {
+				t.Fatal(err)
+			}
+		}
+		run(clean, res)
+		run(poison, res)
+		run(alias, alias)
+		for i := range clean {
+			if clean[i] != poison[i] || clean[i] != alias[i] {
+				t.Fatalf("fma=%v k=%d dil=%d idx %d clean %v poison %v alias %v", fma, k, dil, i, clean[i], poison[i], alias[i])
+			}
+		}
+		if fma {
+			return
+		}
+		inputT := make([]float32, inC*T)
+		transposeChannelTime(inputT, in, inC, T)
+		for oc := 0; oc < outC; oc++ {
+			for ot := 0; ot < outT; ot++ {
+				want := conv1DSIMDGenericDot(inputT, weightT, bias[oc], inC, T, k, 1, pad, dil, oc*k*inC, ot) + res[oc*outT+ot]
+				if got := clean[oc*outT+ot]; got != want {
+					t.Fatalf("generic k=%d dil=%d oc=%d ot=%d got %v want %v", k, dil, oc, ot, got, want)
+				}
+			}
+		}
+	}
+	if useKokoroStridedFMA() {
+		check(3, 1, true)
+		check(7, 3, true)
+	}
+	saved := kokoroFusedConvFMAEnabled
+	t.Cleanup(func() { kokoroFusedConvFMAEnabled = saved })
+	kokoroFusedConvFMAEnabled = false
+	if useKokoroStridedFMA() {
+		t.Fatal("FMA still enabled")
+	}
+	check(3, 1, false)
+	check(7, 3, false)
+}
+
 // TestConv1DResidualFuzz verifies the fused residual epilogue against a
 // reference add for a spread of shapes, including edge positions.
 func TestConv1DResidualFuzz(t *testing.T) {

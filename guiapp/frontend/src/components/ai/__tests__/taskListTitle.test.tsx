@@ -1,13 +1,17 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 const cloudEntitlement = vi.hoisted(() => vi.fn(async () => ({ workspaces: [] as Array<{ id: string; name: string }> })));
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     CloudWorkspaceEntitlement: () => cloudEntitlement(),
 }));
+const browserOpenURL = vi.hoisted(() => vi.fn());
+vi.mock("../../../../wailsjs/runtime", () => ({
+    BrowserOpenURL: browserOpenURL,
+}));
 import type { AITab } from "../AITabTypes";
-import { TaskExecutionHeading } from "../TaskExecutionHeading";
+import { cloudGitWebURL, TaskExecutionHeading } from "../TaskExecutionHeading";
 import { __resetCloudWorkspaceDisplayNamesForTests, rememberCloudWorkspaceDisplayName } from "../codingTaskMode";
 import { listedTaskTitle } from "../describeTaskTitle";
 import { assistantTaskTitle } from "../taskListTitle";
@@ -273,6 +277,73 @@ describe("TaskExecutionHeading", () => {
         );
         // Nothing connected → no repo segment at all.
         expect(screen.queryByTestId("task-execution-cloud-git")).toBeNull();
+    });
+
+    it("opens the provider page when the connected repo names its provider", () => {
+        browserOpenURL.mockClear();
+        const status = { tone: "running", label: "云端" };
+        render(
+            <TaskExecutionHeading
+                activeTab={tab}
+                lang="zh-CN"
+                status={status}
+                remoteWorkspaceLabel="官方云端服务"
+                cloudGitRepo="znsoft2/test-snake"
+                cloudGitService="gitlab"
+                cloudGitOrigin="https://gitlab.com"
+                title="开发c++版贪吃蛇游戏"
+            />,
+        );
+        // The chip becomes a button whose title carries the target URL.
+        const repo = screen.getByTestId("task-execution-cloud-git");
+        expect(repo.tagName).toBe("BUTTON");
+        expect(repo.getAttribute("title")).toBe("https://gitlab.com/znsoft2/test-snake");
+        fireEvent.click(repo);
+        expect(browserOpenURL).toHaveBeenCalledWith("https://gitlab.com/znsoft2/test-snake");
+        cleanup();
+
+        // A self-hosted gitlab origin wins over the hosted fallback; a self-hosted
+        // github still rides github.com (service-authoritative).
+        render(
+            <TaskExecutionHeading
+                activeTab={tab}
+                lang="zh-CN"
+                status={status}
+                remoteWorkspaceLabel="官方云端服务"
+                cloudGitRepo="znsoft2/test-snake"
+                cloudGitService="github"
+                cloudGitOrigin="https://git.example.corp"
+                title="开发c++版贪吃蛇游戏"
+            />,
+        );
+        fireEvent.click(screen.getByTestId("task-execution-cloud-git"));
+        expect(browserOpenURL).toHaveBeenLastCalledWith("https://github.com/znsoft2/test-snake");
+        cleanup();
+
+        // No provider information at all → plain label, no click affordance.
+        render(
+            <TaskExecutionHeading
+                activeTab={tab}
+                lang="zh-CN"
+                status={status}
+                remoteWorkspaceLabel="官方云端服务"
+                cloudGitRepo="znsoft2/test-snake"
+                title="开发c++版贪吃蛇游戏"
+            />,
+        );
+        expect(screen.getByTestId("task-execution-cloud-git").tagName).toBe("DIV");
+        expect(browserOpenURL).toHaveBeenCalledTimes(2);
+    });
+
+    it("derives the repository web URL from service and origin", () => {
+        expect(cloudGitWebURL("github", "", "znsoft2/test-snake")).toBe("https://github.com/znsoft2/test-snake");
+        expect(cloudGitWebURL("gitlab", "https://gitlab.com/", "group/sub/project")).toBe("https://gitlab.com/group/sub/project");
+        expect(cloudGitWebURL("gitlab", "", "znsoft2/test-snake")).toBe("https://gitlab.com/znsoft2/test-snake");
+        // Only an HTTPS origin is a safe base; http or garbage stays unlinked.
+        expect(cloudGitWebURL("", "http://intranet.example", "a/b")).toBe("");
+        expect(cloudGitWebURL("", "not-a-url", "a/b")).toBe("");
+        expect(cloudGitWebURL("", "", "a/b")).toBe("");
+        expect(cloudGitWebURL("gitlab", "https://gitlab.com", "")).toBe("");
     });
 
     it("marks a cloud agent as a coding or session task", () => {

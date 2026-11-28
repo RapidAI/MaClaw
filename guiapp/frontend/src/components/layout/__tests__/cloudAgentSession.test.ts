@@ -4,6 +4,7 @@ import {
     applyCloudAgentWatch,
     cloudAgentTrail,
     cloudAgentTrailRequestId,
+    codingTimelineFromTurnEvents,
     resetCloudAgentRounds,
 } from '../cloudAgentSession';
 
@@ -36,6 +37,20 @@ const startedJson = (command: string) => JSON.stringify({
 });
 const finishedJson = (command: string, outcome = 'success') => JSON.stringify({
     version: 1, agent: 'coding', event: 'tool_finished', phase: 'running', title: '', detail: 'bash', command, outcome,
+});
+
+describe('codingTimelineFromTurnEvents', () => {
+    it('folds persisted progress and sealed thinking, and skips empty text', () => {
+        const items = codingTimelineFromTurnEvents([
+            { kind: 'progress', text: `Coding Agent Event: ${startedJson('ls')}`, seq: 1 },
+            { kind: 'thinking', text: '先看目录。', seq: 2 },
+            { kind: 'progress', text: '', seq: 3 },
+        ]);
+        expect(items?.map(item => item.kind)).toEqual(['progress', 'thinking']);
+        expect(items?.[1].content).toBe('先看目录。');
+        expect(codingTimelineFromTurnEvents([])).toBeUndefined();
+        expect(codingTimelineFromTurnEvents(null)).toBeUndefined();
+    });
 });
 
 describe('cloudAgentSession trail journal', () => {

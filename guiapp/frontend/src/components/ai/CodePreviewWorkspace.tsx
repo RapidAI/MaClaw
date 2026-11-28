@@ -8,12 +8,36 @@ import type { CodeFile } from "./useCodePreviewState";
 import { isDocxFileName } from "./DocxPreviewPanel";
 import { isPptxFileName } from "./PptxPreviewPanel";
 import { isPdfFileName } from "./taskResultPreview";
+import { cloudAgentPreviewOpenGeneration, materializeCloudAgentPreviewFile } from "./cloudAgentVisualPreview";
 import { scrubCloudWorkspaceError } from "./codingTaskMode";
 
 type DirectoryEntry = { name: string; path: string; is_dir: boolean };
 type DirectoryResponse = { root?: string; entries?: DirectoryEntry[]; truncated?: boolean };
 type FilePreviewResponse = { path?: string; abs_path?: string; content?: string; language?: string; truncated?: boolean };
-type EntryProperties = { name?: string; path?: string; abs_path?: string; is_dir?: boolean; size?: number; size_known?: boolean; modified_at?: number; mode?: string; extension?: string };
+type EntryProperties = { name?: string; path?: string; abs_path?: string; is_dir?: boolean; size?: number; size_known?: boolean; modified_at?: number; modified_unix_nano?: number; mode?: string; extension?: string };
+
+/** Identity of a cloud-workspace file that stays at one cache path. */
+function cloudCachePreviewRevision(props: EntryProperties | null | undefined): string {
+    if (!props || props.is_dir) return "";
+    const nano = Number(props.modified_unix_nano || 0);
+    const modified = Number(props.modified_at || 0);
+    const stamp = nano > 0 ? nano : modified;
+    // Listing metadata can name a size before the object is on disk.
+    // A stamp without a modification time would keep the previous bytes.
+    if (!(stamp > 0)) return "";
+    const size = props.size_known ? Number(props.size || 0) : -1;
+    return `${stamp}:${Number.isFinite(size) ? size : -1}`;
+}
+
+/** Download a listed cloud-workspace object, then read its on-disk stamp. */
+async function prepareCloudWorkspacePreviewFile(projectPath: string, relativePath: string): Promise<EntryProperties> {
+    const app = (window as unknown as {
+        go?: { main?: { App?: Record<string, unknown> } };
+    }).go?.main?.App;
+    const fn = app?.PrepareCloudWorkspacePreviewFile;
+    if (typeof fn !== "function") throw new Error("preview is not ready");
+    return await (fn as (...args: unknown[]) => Promise<EntryProperties>)(projectPath, relativePath) || {};
+}
 type ContextMenu = { entry: DirectoryEntry; x: number; y: number };
 type Cache = { directories: Map<string, DirectoryResponse>; root: string; refreshedAt: Map<string, number> };
 
@@ -107,6 +131,8 @@ const workbenchNoticeExact: Record<string, [string, string, string]> = {
     "path is not a file": ["This path is not a file.", "该路径不是文件。", "該路徑不是檔案。"],
     "delete is only available for cloud workspaces": ["Delete is only available for cloud workspaces.", "仅云端工作区支持删除文件。", "僅雲端工作區支援刪除檔案。"],
     "cloud workspace is read-only": ["The cloud workspace is read-only.", "云端工作区当前为只读。", "雲端工作區目前為唯讀。"],
+    "cloud workspace file is not in the local cache": ["The cloud file is not in the local cache yet.", "云端文件还没有下载到本地，暂时无法预览。", "雲端檔案還沒有下載到本機，暫時無法預覽。"],
+    "preview is not ready": ["Preview is not ready. Try again.", "预览还没准备好，请重试。", "預覽尚未準備好，請重試。"],
     "entry cannot be deleted": ["This item cannot be deleted.", "无法删除该项。", "無法刪除該項目。"],
     "delete is not available for remote workspaces": ["Delete is not available for remote workspaces.", "远程工作区不支持删除。", "遠端工作區不支援刪除。"],
     // Cloud-agent browser ops: the srv answers in Chinese; localize the raw
@@ -287,6 +313,21 @@ export function isLikelyBinaryName(name: string) {
     if (dot <= 0 || dot === name.length - 1) return false;
     return likelyBinaryExt.has(name.slice(dot + 1).toLowerCase());
 }
+function visualPreviewLanguage(name: string): "" | "pdf" | "docx" | "pptx" {
+    if (isPdfFileName(name)) return "pdf";
+    if (isDocxFileName(name)) return "docx";
+    if (isPptxFileName(name)) return "pptx";
+    return "";
+}
+function cloudEntryHint(name: string, manageFiles: boolean, lang: string): string {
+    if (!manageFiles && visualPreviewLanguage(name)) {
+        return label(lang, "Click to preview. Double-click to open locally", "单击预览，双击在本地打开", "按一下預覽，按兩下在本機開啟");
+    }
+    if (isLikelyBinaryName(name) && !manageFiles) {
+        return label(lang, "Click to open locally", "单击在本地打开", "按一下在本機開啟");
+    }
+    return label(lang, "Double-click to open locally", "双击在本地打开", "按兩下在本機開啟");
+}
 /** Windows drive / UNC / POSIX absolute path check for workspace entries. */
 function isAbsoluteEntryPath(path: string) {
     return /^([a-zA-Z]:[\\/]|\\\\|\/)/.test(path);
@@ -386,7 +427,7 @@ const EntryRow = React.memo(function EntryRow({ entry, depth, expanded, selected
         }}
         onFocus={() => { if (virtualIndex !== undefined) onFocus(entry.path); }} onBlur={() => { if (virtualIndex !== undefined) onBlur(entry.path); }}
         aria-expanded={entry.is_dir ? expanded : undefined} aria-haspopup="menu"
-        title={cloudMode && !entry.is_dir ? `${entry.path}\n${isLikelyBinaryName(entry.name) && !manageFiles ? label(lang, "Click to open locally", "单击在本地打开", "按一下在本機開啟") : label(lang, "Double-click to open locally", "双击在本地打开", "按兩下在本機開啟")}` : entry.path}
+        title={cloudMode && !entry.is_dir ? `${entry.path}\n${cloudEntryHint(entry.name, manageFiles, lang)}` : entry.path}
         style={style}><span className="cpws-tw">{entry.is_dir ? (expanded ? "v" : ">") : ""}</span><FileIcon entry={entry} theme={theme} open={expanded} /><span className="cpws-entry-name">{entry.name}</span></button>;
 });
 
@@ -481,6 +522,8 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
             if (version === versionRef.current) setLoading(prev => { const next = new Set(prev); next.delete(path); return next; });
         }
     }, [cloudMode, lang, projectPath]);
+
+    useEffect(() => () => { previewRef.current += 1; }, []);
 
     useEffect(() => {
         const saved = projectPath ? takeCache(projectPath) : undefined;
@@ -670,32 +713,73 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
     }, [cloudMode, lang, projectPath]);
     const openFile = useCallback(async (entry: DirectoryEntry) => {
         if (!projectPath) return;
+        const visualLanguage = visualPreviewLanguage(entry.name);
+        if (visualLanguage) {
+            const listedPath = workspaceVisualAbsPath(projectPath, rootRef.current, entry.path);
+            const listedIsLocal = isLocalDiskPath(listedPath);
+            // A remote POSIX pdf is not a local file. Cloud pdf/docx/pptx and
+            // local docx/pptx open in the viewer. The cloud-agent jail has no
+            // disk path, so those bytes are cached locally first.
+            const openHere = cloudMode || visualLanguage !== "pdf" || listedIsLocal;
+            if (openHere) {
+                const request = ++previewRef.current;
+                const openGen = cloudMode ? cloudAgentPreviewOpenGeneration(projectPath) : 0;
+                setNotice("");
+                setNoticeIsError(false);
+                let absPath = listedIsLocal
+                    ? listedPath
+                    : (cloudMode ? "" : workspaceVisualAbsPath(projectPath, "", entry.path));
+                if (cloudMode && !listedIsLocal) {
+                    try {
+                        absPath = await materializeCloudAgentPreviewFile(projectPath, entry.path);
+                    } catch {
+                        if (request !== previewRef.current || cloudAgentPreviewOpenGeneration(projectPath) !== openGen) return;
+                        void openLocally(entry);
+                        return;
+                    }
+                    if (request !== previewRef.current || cloudAgentPreviewOpenGeneration(projectPath) !== openGen) return;
+                }
+                // A restored read-only cache or a nested folder can resolve to
+                // another directory. Open the file the download wrote, then stamp it.
+                let previewRevision = "";
+                if (cloudMode && listedIsLocal) {
+                    try {
+                        const props = await prepareCloudWorkspacePreviewFile(projectPath, entry.path);
+                        if (request !== previewRef.current || cloudAgentPreviewOpenGeneration(projectPath) !== openGen) return;
+                        const preparedPath = String(props?.abs_path || "").trim();
+                        previewRevision = cloudCachePreviewRevision(props);
+                        if (!previewRevision || !isLocalDiskPath(preparedPath)) {
+                            setNoticeIsError(true);
+                            setNotice(workspaceErrorMessage(new Error("cloud workspace file is not in the local cache"), cloudMode, lang));
+                            return;
+                        }
+                        absPath = preparedPath;
+                    } catch (error) {
+                        if (request !== previewRef.current || cloudAgentPreviewOpenGeneration(projectPath) !== openGen) return;
+                        setNoticeIsError(true);
+                        setNotice(workspaceErrorMessage(error, cloudMode, lang));
+                        return;
+                    }
+                }
+                if (request !== previewRef.current || (cloudMode && cloudAgentPreviewOpenGeneration(projectPath) !== openGen)) return;
+                if (absPath) {
+                    onOpenFile({
+                        filePath: entry.path,
+                        fileName: entry.name,
+                        absPath,
+                        content: "",
+                        language: visualLanguage,
+                        opType: "read",
+                        updatedAt: Date.now(),
+                        ...(previewRevision ? { previewRevision } : {}),
+                    });
+                    return;
+                }
+            }
+        }
         if (cloudMode && isLikelyBinaryName(entry.name)) {
             void openLocally(entry);
             return;
-        }
-        // Local decks and PDFs open in the in-app viewer. The text preview
-        // rejects them with "binary files cannot be previewed". A remote POSIX
-        // root is not a local PDF; leave that click on the text-preview path.
-        if (!cloudMode) {
-            const visualLanguage = isPdfFileName(entry.name) ? "pdf" : isDocxFileName(entry.name) ? "docx" : isPptxFileName(entry.name) ? "pptx" : "";
-            const listedPath = workspaceVisualAbsPath(projectPath, rootRef.current, entry.path);
-            const listedIsLocal = isLocalDiskPath(listedPath);
-            if (visualLanguage === "pptx" || visualLanguage === "docx" || (visualLanguage === "pdf" && listedIsLocal)) {
-                previewRef.current++;
-                setNotice("");
-                setNoticeIsError(false);
-                onOpenFile({
-                    filePath: entry.path,
-                    fileName: entry.name,
-                    absPath: listedIsLocal ? listedPath : workspaceVisualAbsPath(projectPath, "", entry.path),
-                    content: "",
-                    language: visualLanguage,
-                    opType: "read",
-                    updatedAt: Date.now(),
-                });
-                return;
-            }
         }
         const version = versionRef.current;
         const request = ++previewRef.current;
@@ -948,7 +1032,7 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
         ? (rootResolved ? label(lang, "Cloud files", "云端文件", "雲端檔案") : label(lang, "Loading cloud files...", "正在加载云端文件...", "正在載入雲端檔案..."))
         : (root || (rootResolved ? label(lang, "Working directory", "工作目录", "工作目錄") : label(lang, "Resolving directory...", "正在定位目录...", "正在定位目錄...")));
     const propertiesPanel = propertiesEntry ? <Properties entry={propertiesEntry} properties={properties} loading={propertiesLoading} error={propertiesError} lang={lang} theme={theme} hideAbsPath={cloudMode} onClose={() => { propertyRef.current++; setPropertiesEntry(null); setPropertiesLoading(false); }} /> : null;
-    return <div data-testid="code-preview-workspace" data-cloud-mode={cloudMode ? "true" : undefined} data-manage-files={manageFiles ? "true" : undefined} style={{ display: "flex", flexDirection: "column", height: "100%", background: theme.bg, ["--cpws-row-hover" as string]: theme.tabHoverBg, ["--cpws-row-accent" as string]: theme.syntaxKeyword }}>{!hideHeader ? <div data-testid="code-preview-workspace-header" style={{ display: "flex", alignItems: "center", gap: 8, boxSizing: "border-box", height: 42, padding: "0 14px", borderBottom: `1px solid ${theme.border}`, color: theme.textMuted, fontSize: 12 }}>{hideTitle ? null : <strong style={{ color: theme.tabActiveText, fontWeight: 600, flexShrink: 0, lineHeight: 1.2 }}>{cloudMode ? label(lang, "Cloud workspace", "云端工作区", "雲端工作區") : label(lang, "WORKING DIRECTORY", "工作目录", "工作目錄")}</strong>}<span data-testid="code-preview-workspace-root-label" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: rootResolved ? theme.textMuted : theme.lineNumText, fontSize: rootResolved ? 11 : 10.5, fontWeight: 400, lineHeight: 1.2 }}>{rootLabel}</span>{exportButton}<button type="button" aria-label={cloudMode ? label(lang, "Refresh cloud files", "刷新云端文件", "重新整理雲端檔案") : label(lang, "Refresh working directory", "刷新工作目录", "重新整理工作目錄")} title={label(lang, "Refresh", "刷新", "重新整理")} aria-busy={loading.has("")} onClick={refreshRoot} style={{ marginLeft: paperWorkspace ? 0 : "auto", border: 0, borderRadius: 4, padding: "2px 5px", background: "transparent", color: theme.tabActiveText, cursor: "pointer", font: "inherit", lineHeight: 1.2, flexShrink: 0 }}>{label(lang, "Refresh", "刷新", "重新整理")}</button></div> : null}{hideHeader && exportButton ? <div style={{ display: "flex", alignItems: "center", padding: "8px 14px", borderBottom: `1px solid ${theme.border}` }}>{exportButton}</div> : null}{manageFiles && propertiesPanel ? <div className="cpws-properties">{propertiesPanel}</div> : null}<div ref={entriesRef} className="cpws-entries" onScroll={updateTreeMetrics} style={{ position: "relative" }}>{rootError ? <WorkspaceNotice message={rootError} isError lang={lang} theme={theme} onClose={() => setErrors(prev => { const next = new Map(prev); next.delete(""); return next; })} /> : null}{notice ? <WorkspaceNotice message={notice} isError={noticeIsError} lang={lang} theme={theme} onClose={() => { setNotice(""); setNoticeIsError(false); }} /> : null}{manageFiles ? null : propertiesPanel}{loading.has("") && !pagesRef.current.has("") ? <DirectoryLoading root lang={lang} theme={theme} cloudMode={cloudMode} /> : null}{rootResolved && !rootError && pagesRef.current.has("") && !pagesRef.current.get("")?.entries?.length ? <EmptyDirectory lang={lang} theme={theme} cloudMode={cloudMode} /> : null}<div ref={treeRef} data-testid="code-preview-workspace-tree" style={virtualized ? { position: "relative", height: visibleRows.length * workspaceRowHeight } : undefined}>{renderedEntries}</div></div>{menu ? <Menu menu={menu} theme={theme} lang={lang} showPreview={!manageFiles && (menu.entry.is_dir || !cloudMode || !isLikelyBinaryName(menu.entry.name))} showDownload={cloudMode} showOpenLocal={cloudMode && !menu.entry.is_dir} showVSCode={!cloudMode && vscodeAvailable && isVSCodeSourceFile(menu.entry)} actionRef={menuActionRef} onPreview={() => { closeMenu(); menu.entry.is_dir ? void load(menu.entry.path, true) : void openFile(menu.entry); }} onOpenLocal={() => { closeMenu(); void openLocally(menu.entry); }} onDownload={() => { closeMenu(); void downloadEntry(menu.entry); }} onVSCode={() => { closeMenu(); void openVSCode(menu.entry); }} onProperties={() => { closeMenu(); void openProperties(menu.entry); }} latexEdit={(cloudMode || paperWorkspace) && !menu.entry.is_dir && isLatexSourceName(menu.entry.name)} showDelete={cloudMode} menuZIndex={manageFiles ? 110000 : 20} onDelete={() => { closeMenu(); void deleteEntry(menu.entry); }} /> : null}</div>;
+    return <div data-testid="code-preview-workspace" data-cloud-mode={cloudMode ? "true" : undefined} data-manage-files={manageFiles ? "true" : undefined} style={{ display: "flex", flexDirection: "column", height: "100%", background: theme.bg, ["--cpws-row-hover" as string]: theme.tabHoverBg, ["--cpws-row-accent" as string]: theme.syntaxKeyword }}>{!hideHeader ? <div data-testid="code-preview-workspace-header" style={{ display: "flex", alignItems: "center", gap: 8, boxSizing: "border-box", height: 42, padding: "0 14px", borderBottom: `1px solid ${theme.border}`, color: theme.textMuted, fontSize: 12 }}>{hideTitle ? null : <strong style={{ color: theme.tabActiveText, fontWeight: 600, flexShrink: 0, lineHeight: 1.2 }}>{cloudMode ? label(lang, "Cloud workspace", "云端工作区", "雲端工作區") : label(lang, "WORKING DIRECTORY", "工作目录", "工作目錄")}</strong>}<span data-testid="code-preview-workspace-root-label" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: rootResolved ? theme.textMuted : theme.lineNumText, fontSize: rootResolved ? 11 : 10.5, fontWeight: 400, lineHeight: 1.2 }}>{rootLabel}</span>{exportButton}<button type="button" aria-label={cloudMode ? label(lang, "Refresh cloud files", "刷新云端文件", "重新整理雲端檔案") : label(lang, "Refresh working directory", "刷新工作目录", "重新整理工作目錄")} title={label(lang, "Refresh", "刷新", "重新整理")} aria-busy={loading.has("")} onClick={refreshRoot} style={{ marginLeft: paperWorkspace ? 0 : "auto", border: 0, borderRadius: 4, padding: "2px 5px", background: "transparent", color: theme.tabActiveText, cursor: "pointer", font: "inherit", lineHeight: 1.2, flexShrink: 0 }}>{label(lang, "Refresh", "刷新", "重新整理")}</button></div> : null}{hideHeader && exportButton ? <div style={{ display: "flex", alignItems: "center", padding: "8px 14px", borderBottom: `1px solid ${theme.border}` }}>{exportButton}</div> : null}{manageFiles && propertiesPanel ? <div className="cpws-properties">{propertiesPanel}</div> : null}<div ref={entriesRef} className="cpws-entries" onScroll={updateTreeMetrics} style={{ position: "relative" }}>{rootError ? <WorkspaceNotice message={rootError} isError lang={lang} theme={theme} onClose={() => setErrors(prev => { const next = new Map(prev); next.delete(""); return next; })} /> : null}{notice ? <WorkspaceNotice message={notice} isError={noticeIsError} lang={lang} theme={theme} onClose={() => { setNotice(""); setNoticeIsError(false); }} /> : null}{manageFiles ? null : propertiesPanel}{loading.has("") && !pagesRef.current.has("") ? <DirectoryLoading root lang={lang} theme={theme} cloudMode={cloudMode} /> : null}{rootResolved && !rootError && pagesRef.current.has("") && !pagesRef.current.get("")?.entries?.length ? <EmptyDirectory lang={lang} theme={theme} cloudMode={cloudMode} /> : null}<div ref={treeRef} data-testid="code-preview-workspace-tree" style={virtualized ? { position: "relative", height: visibleRows.length * workspaceRowHeight } : undefined}>{renderedEntries}</div></div>{menu ? <Menu menu={menu} theme={theme} lang={lang} showPreview={!manageFiles && (menu.entry.is_dir || !cloudMode || !isLikelyBinaryName(menu.entry.name) || !!visualPreviewLanguage(menu.entry.name))} showDownload={cloudMode} showOpenLocal={cloudMode && !menu.entry.is_dir} showVSCode={!cloudMode && vscodeAvailable && isVSCodeSourceFile(menu.entry)} actionRef={menuActionRef} onPreview={() => { closeMenu(); menu.entry.is_dir ? void load(menu.entry.path, true) : void openFile(menu.entry); }} onOpenLocal={() => { closeMenu(); void openLocally(menu.entry); }} onDownload={() => { closeMenu(); void downloadEntry(menu.entry); }} onVSCode={() => { closeMenu(); void openVSCode(menu.entry); }} onProperties={() => { closeMenu(); void openProperties(menu.entry); }} latexEdit={(cloudMode || paperWorkspace) && !menu.entry.is_dir && isLatexSourceName(menu.entry.name)} showDelete={cloudMode} menuZIndex={manageFiles ? 110000 : 20} onDelete={() => { closeMenu(); void deleteEntry(menu.entry); }} /> : null}</div>;
 }
 
 function Menu({ menu, theme, lang, showPreview = true, showDownload = false, showOpenLocal = false, showVSCode, showDelete = false, latexEdit = false, menuZIndex = 20, actionRef, onPreview, onOpenLocal, onDownload, onVSCode, onProperties, onDelete }: { menu: ContextMenu; theme: CodePreviewTheme; lang: string; showPreview?: boolean; showDownload?: boolean; showOpenLocal?: boolean; showVSCode: boolean; showDelete?: boolean; latexEdit?: boolean; menuZIndex?: number; actionRef: React.RefObject<HTMLButtonElement>; onPreview: () => void; onOpenLocal: () => void; onDownload: () => void; onVSCode: () => void; onProperties: () => void; onDelete: () => void }) { const style: React.CSSProperties = { display: "block", width: "100%", border: 0, background: "transparent", color: theme.text, padding: "7px 12px", textAlign: "left", cursor: "pointer" }; const openLocalRef = !showPreview && showOpenLocal ? actionRef : undefined; const downloadRef = !showPreview && !showOpenLocal && showDownload ? actionRef : undefined; const propertiesRef = !showPreview && !showOpenLocal && !showDownload ? actionRef : undefined; return <div role="menu" aria-label={menu.entry.name} data-testid="code-preview-workspace-context-menu" style={{ position: "fixed", zIndex: menuZIndex, left: menu.x, top: menu.y, width: "min(196px, calc(100vw - 16px))", padding: 4, border: `1px solid ${theme.border}`, borderRadius: 6, background: theme.tabBg }}>{showPreview ? <button ref={actionRef} type="button" role="menuitem" data-testid="code-preview-workspace-context-preview" style={style} onClick={onPreview}>{menu.entry.is_dir ? label(lang, "Preview folder", "预览文件夹", "預覽資料夾") : latexEdit ? label(lang, "Edit LaTeX", "编辑 LaTeX", "編輯 LaTeX") : label(lang, "Preview", "预览", "預覽")}</button> : null}{showOpenLocal ? <button ref={openLocalRef} type="button" role="menuitem" data-testid="code-preview-workspace-context-open-local" style={style} onClick={onOpenLocal}>{label(lang, "Open locally", "在本地打开", "在本機開啟")}</button> : null}{showDownload ? <button type="button" role="menuitem" data-testid="code-preview-workspace-context-download" ref={downloadRef} style={style} onClick={onDownload}>{label(lang, "Download", "下载", "下載")}</button> : null}{showVSCode ? <button type="button" role="menuitem" data-testid="code-preview-workspace-context-open-vscode" style={style} onClick={onVSCode}>{label(lang, "Open with VS Code", "使用 VS Code 打开", "使用 VS Code 開啟")}</button> : null}<button type="button" role="menuitem" data-testid="code-preview-workspace-context-properties" ref={propertiesRef} style={style} onClick={onProperties}>{label(lang, "Properties", "属性", "屬性")}</button>{showDelete ? <button type="button" role="menuitem" data-testid="code-preview-workspace-context-delete" style={{ ...style, color: theme.diffDeleteText, borderTop: `1px solid ${theme.border}`, marginTop: 2 }} onClick={onDelete}>{menu.entry.is_dir ? label(lang, "Delete folder", "删除文件夹", "刪除資料夾") : label(lang, "Delete", "删除", "刪除")}</button> : null}</div>; }

@@ -65,6 +65,11 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
   /// h264 like the desktop default; 'vnc' falls back to the noVNC page.
   String _viewer = 'h264';
 
+  /// True until the first watch answers. Before that the "no picture" pane
+  /// with its wake button is a guess — a running desktop would offer 唤醒
+  /// for a moment. Show a bare spinner instead.
+  bool _loadedOnce = false;
+
   /// One auto-claim after entering via the chat's 接管 button, attempted on
   /// the first watch that reports a controllable desktop. Cleared once the
   /// claim is attempted: a refusal (another device holds the keyboard) shows
@@ -166,6 +171,7 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
       _loadGuardTimer?.cancel();
       setState(() {
         _desktop = desktop;
+        _loadedOnce = true;
         _waking = false;
         _error = '';
         if (!desktop.userControl) _controlling = false;
@@ -181,6 +187,7 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
       if (!mounted) return;
       _loadGuardTimer?.cancel();
       setState(() {
+        _loadedOnce = true;
         _waking = false;
         _error = _wakeFailureText(error);
       });
@@ -789,6 +796,9 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
         key: ValueKey('$url#$_reloadTick#$_controlling'),
         url: url,
       );
+    }
+    if (!_loadedOnce && _error.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
     }
     return EmptyState(
       icon: Icons.desktop_access_disabled_outlined,

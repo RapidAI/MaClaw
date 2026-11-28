@@ -39,6 +39,10 @@ type PanelState = {
         assistant: Profile;
         coding: Profile;
         caption?: Profile;
+        // 云端 Agent default model. Absent (never configured) means the cloud
+        // default follows the assistant — the row must render the checkbox as
+        // checked without materializing a row on save.
+        cloud?: Profile | null;
         foreground?: RoleAssignment;
         background?: RoleAssignment;
         computer_use?: RoleAssignment;
@@ -51,6 +55,11 @@ type PanelState = {
     assistant: Summary;
     coding: Summary;
     caption?: Summary;
+    // Resolved 云端 Agent default (follow shows the assistant's live pick;
+    // an unusable row degrades to the official display). Informational line
+    // for the 云端 Agent settings card; the assignment row below edits the
+    // underlying profile directly.
+    cloud?: Summary;
     foreground?: RoleSummary;
     background?: RoleSummary;
     computer_use?: RoleSummary;
@@ -86,6 +95,11 @@ type Props = {
     // The parent uses this for "Import other agents" so the action stays
     // available while this panel is still loading or failed to load.
     descriptionAction?: ReactNode;
+    // 云端 Agent row (default model for cloud instances). Gated by the Hub
+    // tenant switch upstream (SettingsActiveContent → LLMConfigPanel); hidden
+    // tenants must not see the row, and saving profiles must not touch a
+    // cloud pick they cannot manage.
+    showCloudAgent?: boolean;
 };
 
 const cloneProfiles = (profiles: PanelState["profiles"]): PanelState["profiles"] => ({
@@ -94,6 +108,9 @@ const cloneProfiles = (profiles: PanelState["profiles"]): PanelState["profiles"]
     assistant: { ...profiles.assistant },
     coding: { ...profiles.coding },
     caption: { ...(profiles.caption || {}) },
+    // cloud keeps its null-ness: an untouched row must not materialize as an
+    // explicit non-inherit (MaClaw official) pin on the next save.
+    cloud: profiles.cloud ? { ...profiles.cloud } : undefined,
     foreground: { ...(profiles.foreground || {}) },
     background: { ...(profiles.background || {}) },
     computer_use: { ...(profiles.computer_use || {}) },
@@ -169,7 +186,7 @@ function applyVisionProbeToProvider(provider: Provider, model: string, status?: 
     };
 }
 
-export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0, agentProviderSwitch = null, descriptionAction, section = "profiles", assignmentsRef, disabled = false }: Props) {
+export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0, agentProviderSwitch = null, descriptionAction, section = "profiles", assignmentsRef, disabled = false, showCloudAgent = false }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant = zhHans) =>
         panelText(lang ?? "", en, zhHans, zhHant), [lang]);
     const [state, setState] = useState<PanelState | null>(null);
@@ -324,7 +341,11 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
     const assistant = draft?.assistant;
     const coding = draft?.coding;
     const caption = draft?.caption;
+    const cloud = draft?.cloud;
     const codingFollows = coding?.inherit_assistant === true;
+    // A never-configured cloud row (absent from the panel snapshot) IS the
+    // follow state: the backend resolves it as follow-assistant at use time.
+    const cloudFollows = cloud ? cloud.inherit_assistant === true : true;
     // While editing, "follow assistant" must reflect the unsaved assistant
     // draft, not the last persisted panel snapshot. Otherwise changing the
     // assistant provider/model makes coding appear to keep the old choice
@@ -338,6 +359,14 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         : String(assistant?.model || "").trim()) || t("No model", "未配置模型");
     const followingPreviewPending = codingFollows && !!state && (
         state.profiles.coding.inherit_assistant !== true ||
+        state.profiles.assistant.provider_id !== assistant?.provider_id ||
+        state.profiles.assistant.model !== assistant?.model
+    );
+    // cloudFollows on a row that is absent from the saved snapshot is already
+    // the effective default (the backend resolves nil as follow), so only a
+    // saved explicit follow or an unsaved follow flip counts as pending.
+    const cloudPreviewPending = cloudFollows && !!state && !!state.profiles.cloud && (
+        state.profiles.cloud.inherit_assistant !== true ||
         state.profiles.assistant.provider_id !== assistant?.provider_id ||
         state.profiles.assistant.model !== assistant?.model
     );
@@ -422,6 +451,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
             assistant?.provider_id,
             codingFollows ? "" : coding?.provider_id,
             caption?.provider_id,
+            cloudFollows ? "" : cloud?.provider_id,
             draft?.foreground?.provider_id,
             draft?.background?.provider_id,
             draft?.computer_use?.provider_id,
@@ -430,7 +460,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         for (const id of Array.from(new Set(ids))) {
             void refreshProviderCatalog(id);
         }
-    }, [assistant?.provider_id, caption?.provider_id, coding?.provider_id, codingFollows, draft?.foreground?.provider_id, draft?.background?.provider_id, draft?.computer_use?.provider_id, draft?.grounder?.provider_id, refreshProviderCatalog]);
+    }, [assistant?.provider_id, caption?.provider_id, coding?.provider_id, codingFollows, cloudFollows, cloud?.provider_id, draft?.foreground?.provider_id, draft?.background?.provider_id, draft?.computer_use?.provider_id, draft?.grounder?.provider_id, refreshProviderCatalog]);
 
     const providerModels = (providerID?: string) => {
         const id = String(providerID || "").trim();
@@ -455,7 +485,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         const provider = providerByID.get(providerLookupKey(providerID));
         return provider?.is_hub_service ? officialModelAlias(raw) : raw;
     };
-    const setProvider = (profile: "assistant" | "coding" | "caption", providerID: string, modelOverride?: string) => {
+    const setProvider = (profile: "assistant" | "coding" | "caption" | "cloud", providerID: string, modelOverride?: string) => {
         const models = providerModels(providerID);
         const provider = providerByID.get(providerLookupKey(providerID));
         const preferredRaw = String(provider?.model || "").trim();
@@ -475,7 +505,9 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
             ...prev,
             [profile]: { ...prev[profile], provider_id: providerID, model: nextModel },
         }) : prev);
-        invalidateProbeResults(profile, ...(profile === "assistant" && codingFollows ? ["coding" as const] : []));
+        if (profile !== "cloud") {
+            invalidateProbeResults(profile, ...(profile === "assistant" && codingFollows ? ["coding" as const] : []));
+        }
     };
     const setProviderRef = useRef(setProvider);
     setProviderRef.current = setProvider;
@@ -531,9 +563,11 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         if (!assistantSwitchHint) return;
         preserveDraftForSwitchRef.current = false;
     }, [assistantSwitchHint]);
-    const setModel = (profile: "assistant" | "coding" | "caption", model: string) => {
+    const setModel = (profile: "assistant" | "coding" | "caption" | "cloud", model: string) => {
         setDraft(prev => prev ? ({ ...prev, [profile]: { ...prev[profile], model } }) : prev);
-        invalidateProbeResults(profile, ...(profile === "assistant" && codingFollows ? ["coding" as const] : []));
+        if (profile !== "cloud") {
+            invalidateProbeResults(profile, ...(profile === "assistant" && codingFollows ? ["coding" as const] : []));
+        }
     };
     const setCodingFollows = (inherit: boolean) => {
         setDraft(prev => {
@@ -546,6 +580,26 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
             return { ...prev, coding: current };
         });
         invalidateProbeResults("coding");
+    };
+    const setCloudFollows = (inherit: boolean) => {
+        setDraft(prev => {
+            if (!prev) return prev;
+            // Unchecking seeds the draft from the assistant like the coding
+            // row does, so the revealed selectors start from a working pick;
+            // checking keeps any stored pick hidden rather than erased.
+            const current = { ...(prev.cloud || {}), inherit_assistant: inherit };
+            if (!inherit && (!current.provider_id || !current.model)) {
+                // A hub-service assistant cannot serve a cloud endpoint: the
+                // cloud provider select filters those rows out, so seeding one
+                // would render as a removed provider. Leave the official pin.
+                const seed = providerByID.get(providerLookupKey(prev.assistant.provider_id));
+                if (!seed?.is_hub_service) {
+                    current.provider_id = prev.assistant.provider_id;
+                    current.model = prev.assistant.model;
+                }
+            }
+            return { ...prev, cloud: current };
+        });
     };
     const save = async (): Promise<boolean> => {
         if (!state || !draft || saving || disabled) return false;
@@ -642,26 +696,34 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         }
     };
 
-    const modelOptionsFor = (profile: "assistant" | "coding" | "caption", providerID?: string) => {
+    const modelOptionsFor = (profile: "assistant" | "coding" | "caption" | "cloud", providerID?: string) => {
         const options = providerModels(providerID);
         const hinted = profile === "assistant" ? String(assistantSwitchHint?.model || "").trim() : "";
         if (!hinted || providerLookupKey(providerID) !== providerLookupKey(assistantSwitchHint?.providerID)) return options;
         if (options.some(item => item.toLowerCase() === hinted.toLowerCase())) return options;
         return [hinted, ...options];
     };
-    const selectorAria = (profile: "assistant" | "coding" | "caption", kind: "provider" | "model") => {
+    const selectorAria = (profile: "assistant" | "coding" | "caption" | "cloud", kind: "provider" | "model") => {
         if (profile === "assistant") return kind === "provider" ? t("Assistant provider", "普通 AI 助手服务商") : t("Assistant model", "普通 AI 助手模型");
         if (profile === "caption") return kind === "provider" ? t("Caption provider", "Caption 服务商") : t("Caption model", "Caption 模型");
+        if (profile === "cloud") return kind === "provider" ? t("Cloud Agent provider", "云端 Agent 服务商") : t("Cloud Agent model", "云端 Agent 模型");
         return kind === "provider" ? t("Coding provider", "编程 Agent 服务商") : t("Coding model", "编程 Agent 模型");
     };
-    const renderSelectors = (profile: "assistant" | "coding" | "caption", value: Profile) => (
+    const renderSelectors = (profile: "assistant" | "coding" | "caption" | "cloud", value: Profile) => (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 10, alignItems: "end" }}>
             <div>
                 <label style={labelStyle}>{t("Provider", "服务商")}</label>
                 <select aria-label={selectorAria(profile, "provider")}
                     value={value.provider_id || ""} onChange={e => setProvider(profile, e.target.value)} style={{ ...inputStyle, cursor: "pointer" }}>
-                    <option value="">{profile === "caption" ? t("Not used", "不使用") : t("Select provider", "选择服务商")}</option>
-                    {providers.map(provider => <option key={provider.id} value={provider.id}>{presetProviderDisplayName(lang, provider.name)}</option>)}
+                    <option value="">{
+                        profile === "caption" ? t("Not used", "不使用")
+                            : profile === "cloud" ? t("MaClaw official", "MaClaw 官方")
+                                : t("Select provider", "选择服务商")
+                    }</option>
+                    {(profile === "cloud" ? providers.filter(provider => !provider.is_hub_service) : providers).map(provider => <option key={provider.id} value={provider.id}>{presetProviderDisplayName(lang, provider.name)}</option>)}
+                    {profile === "cloud" && value.provider_id && !providers.some(provider => !provider.is_hub_service && providerLookupKey(provider.id) === providerLookupKey(value.provider_id)) && (
+                        <option value={value.provider_id}>{t("Removed provider", "已删除的服务商")}</option>
+                    )}
                 </select>
             </div>
             <div>
@@ -673,12 +735,12 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                     options={modelOptionsFor(profile, value.provider_id)}
                     onChange={model => setModel(profile, model)}
                     placeholder={t("Select or enter model ID", "选择或输入模型 ID")}
-                    disabled={profile === "caption" && !value.provider_id}
+                    disabled={(profile === "caption" || profile === "cloud") && !value.provider_id}
                     inputProps={profile === "assistant" ? { "data-field": "assistant-model" } : undefined}
                     openOnEnter
                     toggleLabel={t("Show model list", "显示模型列表", "顯示模型列表")}
                     emptyText={t("No matching models", "没有匹配的模型", "沒有匹配的模型")}
-                    inputStyle={{ ...inputStyle, opacity: profile === "caption" && !value.provider_id ? 0.6 : 1 }}
+                    inputStyle={{ ...inputStyle, opacity: (profile === "caption" || profile === "cloud") && !value.provider_id ? 0.6 : 1 }}
                 />
             </div>
         </div>
@@ -822,6 +884,20 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                     {renderProbeAction("caption")}
                 </div>
             </div>
+            {showCloudAgent && (
+                <div style={{ borderTop: `1px solid ${colors.border}`, paddingTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 14, alignItems: "start" }}>
+                    <div style={{ minWidth: 0 }}><strong style={{ fontSize: "0.78rem", color: colors.text }}>{t("Cloud Agent", "云端 Agent")}</strong><p style={{ margin: "3px 0 0", color: colors.textMuted, fontSize: "0.68rem", lineHeight: 1.35 }}>{t("Model for cloud tasks. Saving applies it to every existing cloud instance; new instances pick it up automatically.", "云端任务使用的模型。保存后应用到全部云端实例，新建实例自动使用。")}</p></div>
+                    <div style={{ minWidth: 0 }}>
+                        <label style={{ display: "inline-flex", gap: 7, alignItems: "center", cursor: "pointer", fontSize: "0.75rem", color: colors.text, marginBottom: cloudFollows ? 6 : 10 }}>
+                            <input type="checkbox" checked={cloudFollows} disabled={controlsLocked} onChange={e => setCloudFollows(e.target.checked)} />
+                            {t("Follow AI assistant", "跟随普通 AI 助手")}
+                        </label>
+                        {cloudFollows
+                            ? <div aria-live="polite" style={{ color: colors.textSecondary, fontSize: "0.74rem" }}>{cloudPreviewPending ? t("Effective after save: ", "保存后生效：") : t("Effective now: ", "当前生效：")}{followingAssistantProviderName} · {followingAssistantModel}</div>
+                            : renderSelectors("cloud", cloud || {})}
+                    </div>
+                </div>
+            )}
         </div>
         {error && <div role="alert" className="llm-profile-error"><span>{error}</span>{dirty && <button type="button" className="llm-profile-error__btn" onClick={refreshDraft}>{t("Refresh draft", "刷新草稿")}</button>}</div>}
         {footer}

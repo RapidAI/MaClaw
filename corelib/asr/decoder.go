@@ -92,6 +92,9 @@ func matMulLinear(out, a []float32, w linearWeight, M, N, K int) {
 		tensor.MatMul(out, a, w.f32, M, N, K)
 		return
 	}
+	if tensor.MatMulQ8PBias(out, a, w.q8p, nil, M, N, K, false, false) {
+		return
+	}
 	tensor.MatMulQ8(out, a, w.q8, M, N, K)
 }
 
@@ -99,6 +102,9 @@ func matMulLinear(out, a []float32, w linearWeight, M, N, K int) {
 func matMulLinearBias(out, a []float32, w linearWeight, bias []float32, M, N, K int) {
 	if w.f32 != nil {
 		tensor.MatMulBias(out, a, w.f32, bias, M, N, K)
+		return
+	}
+	if tensor.MatMulQ8PBias(out, a, w.q8p, bias, M, N, K, false, false) {
 		return
 	}
 	tensor.MatMulQ8Bias(out, a, w.q8, bias, M, N, K)
@@ -119,6 +125,9 @@ func matMulLinearBiasReLU(out, a []float32, w linearWeight, bias []float32, M, N
 		tensor.MatMulBiasReLU(out, a, w.f32, bias, M, N, K)
 		return
 	}
+	if tensor.MatMulQ8PBias(out, a, w.q8p, bias, M, N, K, true, false) {
+		return
+	}
 	tensor.MatMulQ8BiasReLU(out, a, w.q8, bias, M, N, K)
 }
 
@@ -130,6 +139,9 @@ func matMulLinearBiasAdd(out, a []float32, w linearWeight, bias []float32, M, N,
 	}
 	if enableSenseVoiceQ4FFN && w.q4 != nil {
 		tensor.MatMulQ4BiasAdd(out, a, w.q4, bias, M, N, K)
+		return
+	}
+	if tensor.MatMulQ8PBias(out, a, w.q8p, bias, M, N, K, false, true) {
 		return
 	}
 	tensor.MatMulQ8BiasAdd(out, a, w.q8, bias, M, N, K)

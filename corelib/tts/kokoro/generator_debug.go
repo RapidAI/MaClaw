@@ -44,6 +44,10 @@ func (m *Model) GeneratorDebugStats(feat *DecoderFeatures, f0n *F0NResult, voice
 	}
 	s := style[:128]
 	var err error
+	har, err := m.sourceHarmonicSpectrum(f0n.F0)
+	if err != nil {
+		return nil, err
+	}
 	x := append([]float32(nil), feat.X...)
 	frames := feat.Frames
 	inC := 512
@@ -73,7 +77,7 @@ func (m *Model) GeneratorDebugStats(feat *DecoderFeatures, f0n *F0NResult, voice
 			frames++
 			stats["stage1_after_reflect"] = StatsOf(x, 1, inC, frames)
 		}
-		xSource, err := m.generatorSourceForStage(f0n.F0, frames, outC, s, i)
+		xSource, err := m.generatorSourceForStage(har, frames, outC, s, i)
 		if err != nil {
 			return nil, err
 		}

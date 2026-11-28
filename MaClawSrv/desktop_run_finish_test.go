@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
@@ -24,6 +27,72 @@ func finishRunSteps(t *testing.T, run string) {
 		desktopRunFactMu.Unlock()
 		desktopContinueTried.Delete(run)
 	})
+}
+
+func TestDesktopRunContinuePromptNamesSuccessImprovement(t *testing.T) {
+	got := desktopRunContinuePrompt("success", "", "给少数类加权后再训一轮")
+	if !strings.Contains(got, "上一步已经做成") || !strings.Contains(got, "给少数类加权后再训一轮") {
+		t.Fatalf("success continuation prompt %q", got)
+	}
+	if strings.Contains(got, "上一步没有做成") || strings.Contains(got, "卡在。") {
+		t.Fatalf("success continuation uses the failure prompt %q", got)
+	}
+}
+
+func TestDesktopRunContinuePromptKeepsFailureBlocker(t *testing.T) {
+	got := desktopRunContinuePrompt("failure", "resource", "我换一种做法再试")
+	if !strings.Contains(got, "上一步没有做成") || !strings.Contains(got, "我换一种做法再试") {
+		t.Fatalf("failure continuation prompt %q", got)
+	}
+}
+
+func TestRunFinishContinuationFailureRewritesTheStoredOutcome(t *testing.T) {
+	d100Env(t)
+	run := "run-finish-continue-fails"
+	finishRunSteps(t, run)
+	metric := 0.62
+	if err := desktopLongJobSave(&desktopLongJob{
+		ID: "job_continue_fails", SourceRun: run, Status: "done",
+		Decision: "continue", DecisionReason: "再训一轮",
+		RoundMetric: &metric, RoundMetricName: "f1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: run}, map[string]any{"outcome": "done", "text": "这一轮可以用。"}); err != nil {
+		t.Fatal(err)
+	}
+	oldSend := desktopRunContinueSend
+	continueStatus := ""
+	desktopRunContinueSend = func(ctx context.Context, svc *agentservice.Service, p agentservice.Principal, instanceID, sessionID, runID, status, blocker, plan string) error {
+		continueStatus = status
+		return errors.New("continuation unavailable")
+	}
+	t.Cleanup(func() { desktopRunContinueSend = oldSend })
+	server := &HTTPServer{}
+	out := server.decorateAssistantMessageMetadata(context.Background(), agentservice.Principal{}, agentservice.Instance{ID: "inst-fin"}, agentservice.Session{}, agentservice.Run{ID: run, InstanceID: "inst-fin"}, agentservice.Message{Content: `{"f1":0.62}`}, corelib.AppConfig{})
+	if out["outcome_next"] != "ask_user" || out["outcome_remediated"] != "true" {
+		t.Fatalf("terminal fields %v", out)
+	}
+	if continueStatus != "success" {
+		t.Fatalf("continuation was not told the original outcome status: %q", continueStatus)
+	}
+	stored, ok := desktopLoadStoredRunFinish(run)
+	if !ok {
+		t.Fatal("finish record missing")
+	}
+	if stored.Next != "ask_user" || !stored.Remediated {
+		t.Fatalf("stored finish was not rewritten after continuation failure: %+v", stored)
+	}
+	if stored.Status != "success" || strings.Join(stored.Results, "\n") == "" {
+		t.Fatalf("continuation startup failure rewrote the original success: %+v", stored)
+	}
+	sentence := desktopRunFinishSentence(stored)
+	if strings.Contains(sentence, "接下来我继续改进") || strings.Contains(sentence, "这一步没能做成") {
+		t.Fatalf("stored sentence misstates the terminal outcome: %q", sentence)
+	}
+	if !strings.Contains(sentence, "我没能自己接着改进") {
+		t.Fatalf("stored sentence does not explain why the success needs the person: %q", sentence)
+	}
 }
 
 func TestRunFinishSuccessStatesTheResult(t *testing.T) {
@@ -57,6 +126,31 @@ func TestRunFinishSuccessStatesTheResult(t *testing.T) {
 	body, err := os.ReadFile(md["outcome_record"])
 	if err != nil || !strings.Contains(string(body), "BEST_VAL_METRICS") {
 		t.Fatalf("record %s %v", body, err)
+	}
+}
+
+func TestRunFinishDropsClassifierStateAfterTheRecordIsStored(t *testing.T) {
+	run := "run-finish-cleanup"
+	finishRunSteps(t, run)
+	desktopNoteRunBlocker(run, "infra_timeout")
+	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: run}, map[string]any{"outcome": "failed", "text": "浏览器没响应"}); err != nil {
+		t.Fatal(err)
+	}
+	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "trace"})
+	if md["outcome_record"] == "" {
+		t.Fatalf("no outcome record: %v", md)
+	}
+	if _, err := os.Stat(md["outcome_record"]); err != nil {
+		t.Fatal(err)
+	}
+	desktopRunFactMu.Lock()
+	_, kept := desktopRunFacts[run]
+	desktopRunFactMu.Unlock()
+	if kept {
+		t.Fatal("terminal run classifier state was kept after the durable finish record")
+	}
+	if _, kept := desktopContinueTried.Load(run); kept {
+		t.Fatal("terminal continuation marker was kept after the durable finish record")
 	}
 }
 
@@ -159,6 +253,10 @@ func TestRunFinishSuccessNamesAndStartsAnImprovement(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, "做成了。") || !strings.Contains(got, "接下来我继续改进：给少数类加权后再训一轮") || strings.Contains(got, "{") {
 		t.Fatalf("sentence %q", got)
+	}
+	stored, ok := desktopStoredFinishSentence(run)
+	if !ok || !strings.Contains(stored, "给少数类加权后再训一轮") {
+		t.Fatalf("stored sentence lost the improvement plan: %q ok=%v", stored, ok)
 	}
 
 	ask := "run-finish-ask-improve"

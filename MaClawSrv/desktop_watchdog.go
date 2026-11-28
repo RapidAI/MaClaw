@@ -747,7 +747,7 @@ func desktopVisibleAnswer(msg *agentservice.Message) string {
 // contract or an unposted publish stays unverified, whatever the prose says.
 // A process screenshot is not one of those records. A file does not replace
 // a measured not-done outcome or an unposted publish.
-func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, outcome, why string, runErr error, _ bool) (string, string) {
+func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, outcome, why string, runErr error, _ bool) (finalOutcome, finalWhy string) {
 	if msg == nil || run == nil || runErr != nil || run.Status == agentservice.RunStatusFailed || run.Status == agentservice.RunStatusCancelled || run.Status == agentservice.RunStatusPaused {
 		return outcome, why
 	}
@@ -764,6 +764,13 @@ func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, 
 	files := desktopDeliveredFileCount(run.ID, msg)
 	complete, incomplete, other := desktopPostEvidence(run.ID)
 	contract, resolved := desktopWaitForContract(run.ID)
+	// The decision record: when a task is wrongly judged again, this line is
+	// the evidence the reconcile actually saw — without it a production
+	// incident cannot be diagnosed at all.
+	defer func() {
+		log.Printf("[watchdog] run=%s reconcile outcome=%q->%q why=%q files=%d contract_resolved=%v typed=%v contract_items=%d posts_complete=%d posts_incomplete=%d posts_other=%d",
+			run.ID, outcome, finalOutcome, finalWhy, files, resolved, contract.typed, len(contract.items)+len(contract.parsed), complete, incomplete, other)
+	}()
 	if resolved && contract.failed {
 		// Extraction failure is a read failure, not a business failure: the
 		// run stays unverified, never an empty-done. The concrete cause can
@@ -871,6 +878,8 @@ func noteDesktopOutputPlan(runID string, items, slots []string) {
 	if runID == "" {
 		return
 	}
+	desktopTouchRunEvidence(runID)
+	desktopExtractionPending.Delete(runID)
 	desktopOutputContracts.Store(runID, desktopOutputContract{
 		items:    append([]string(nil), items...),
 		slots:    append([]string(nil), slots...),
@@ -893,6 +902,8 @@ func noteParsedDeliverableContract(runID string, items []agent.DesktopDeliverabl
 			texts = append(texts, text)
 		}
 	}
+	desktopTouchRunEvidence(runID)
+	desktopExtractionPending.Delete(runID)
 	desktopOutputContracts.Store(runID, desktopOutputContract{
 		items:    texts,
 		parsed:   append([]agent.DesktopDeliverable(nil), items...),
@@ -952,6 +963,9 @@ func noteDeliveredFiles(runID string, msg *agentservice.Message, files int) {
 	}
 	names := deliveredOutputNames(msg)
 	for _, claim := range desktopFileClaims(runID) {
+		if len(names) >= 3 {
+			break
+		}
 		if claim.Name == "" {
 			continue
 		}
@@ -964,9 +978,6 @@ func noteDeliveredFiles(runID string, msg *agentservice.Message, files int) {
 		}
 		if !dup {
 			names = append(names, claim.Name)
-		}
-		if len(names) >= 3 {
-			break
 		}
 	}
 	if len(names) == 0 {
@@ -1251,6 +1262,7 @@ func noteDesktopExtractionPending(runID string) {
 	if runID == "" {
 		return
 	}
+	desktopTouchRunEvidence(runID)
 	desktopExtractionPending.Store(runID, struct{}{})
 }
 
@@ -1283,6 +1295,59 @@ func desktopPlanTurn(run *agentservice.Run) bool {
 	return run != nil && run.Metadata != nil && strings.TrimSpace(run.Metadata["bot_phase"]) == "plan"
 }
 
+// desktopRunEvidenceTTL bounds how long per-run delivery evidence (file
+// and text claims, output contracts, extraction markers) stays in memory.
+// Receipts are finalized minutes after the last write and repeat finalizes
+// land inside the same window, so twelve hours is far beyond every real
+// consumer while keeping a long-running server's memory bounded. It is a
+// var so tests can shrink it.
+var desktopRunEvidenceTTL = 12 * time.Hour
+
+var (
+	desktopEvidenceAtMu sync.Mutex
+	desktopEvidenceAt   = map[string]time.Time{}
+)
+
+func desktopRunFinishRecordExists(runID string) bool {
+	_, err := os.Stat(desktopRunFinishRecordPath(runID))
+	return err == nil
+}
+
+// desktopTouchRunEvidence refreshes a run's evidence clock and sweeps old
+// evidence only after that run's finish record is durable. Age alone is not
+// enough: a long-running task may write a deliverable and then continue for
+// longer than the TTL, and deleting that evidence would turn its final
+// receipt into a false missing-deliverable outcome. The sweep runs before
+// the new write in the note functions, so even a zero TTL cannot delete the
+// write that triggered it.
+func desktopTouchRunEvidence(runID string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	now := time.Now()
+	desktopEvidenceAtMu.Lock()
+	desktopEvidenceAt[runID] = now
+	var expired []string
+	for id, at := range desktopEvidenceAt {
+		if id != runID && now.Sub(at) > desktopRunEvidenceTTL && desktopRunFinishRecordExists(id) {
+			expired = append(expired, id)
+			delete(desktopEvidenceAt, id)
+		}
+	}
+	desktopEvidenceAtMu.Unlock()
+	for _, id := range expired {
+		desktopFileClaimMu.Lock()
+		delete(desktopFileClaimsByRun, id)
+		desktopFileClaimMu.Unlock()
+		desktopTextClaimMu.Lock()
+		delete(desktopTextClaimsByRun, id)
+		desktopTextClaimMu.Unlock()
+		desktopOutputContracts.Delete(id)
+		desktopExtractionPending.Delete(id)
+	}
+}
+
 var (
 	desktopTextClaimMu     sync.Mutex
 	desktopTextClaimsByRun = map[string][]string{}
@@ -1307,6 +1372,7 @@ func desktopNoteFileClaim(runID, itemID string, raw []byte, names ...string) {
 		return
 	}
 	fp := fileFingerprint(base64.StdEncoding.EncodeToString(raw))
+	desktopTouchRunEvidence(runID)
 	desktopFileClaimMu.Lock()
 	desktopFileClaimsByRun[runID] = append(desktopFileClaimsByRun[runID], desktopFileClaim{ItemID: itemID, Fingerprint: fp, Name: firstDesktopFileClaimName(names)})
 	desktopFileClaimMu.Unlock()
@@ -1326,6 +1392,7 @@ func desktopNoteFileRefClaim(runID, itemID, ref, name string) {
 	if runID == "" || ref == "" {
 		return
 	}
+	desktopTouchRunEvidence(runID)
 	desktopFileClaimMu.Lock()
 	desktopFileClaimsByRun[runID] = append(desktopFileClaimsByRun[runID], desktopFileClaim{ItemID: itemID, Ref: ref, Name: strings.TrimSpace(name)})
 	desktopFileClaimMu.Unlock()
@@ -1352,6 +1419,7 @@ func desktopNoteTextClaims(runID string, ids []string) {
 	if runID == "" || len(ids) == 0 {
 		return
 	}
+	desktopTouchRunEvidence(runID)
 	desktopTextClaimMu.Lock()
 	defer desktopTextClaimMu.Unlock()
 	seen := map[string]bool{}
@@ -1637,7 +1705,12 @@ func desktopTaskOutcomeMetadata(runID string, msg agentservice.Message) map[stri
 	}
 	if fin, ok := desktopComposeRunFinish(runID, msg, outcome, why); ok {
 		fin.Record = desktopRunFinishRecordPath(runID)
-		desktopStoreRunFinish(runID, msg.Content, why, fin)
+		if desktopStoreRunFinish(runID, msg.Content, why, fin) {
+			// The TTL is a post-receipt recovery window. Start that window at
+			// finalization, not at the possibly much older deliverable write.
+			desktopTouchRunEvidence(runID)
+			desktopClearRunFinishFacts(runID)
+		}
 		out["outcome_status"] = fin.Status
 		out["outcome_results"] = strings.Join(fin.Results, "\n")
 		out["outcome_blocker"] = fin.Blocker

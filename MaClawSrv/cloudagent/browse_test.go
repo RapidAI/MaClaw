@@ -142,6 +142,48 @@ func TestBrowseReadFile(t *testing.T) {
 	}
 }
 
+func TestBrowseReadFileReturnsStashedOriginal(t *testing.T) {
+	rt := openRuntime(t)
+	spec := putSession(t, rt, "http://127.0.0.1:9")
+	seedWorkspace(t, rt, spec.ID)
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst.rememberPreviewBaseline("a.txt", "old-text")
+	inst.rememberPreviewBaseline("a.txt", "newer-text")
+
+	raw := control(t, rt, spec.ID, "cloud_read_file", `{"path":"a.txt"}`)
+	var out struct {
+		Original  string `json:"original"`
+		Data      string `json:"data_base64"`
+		Truncated bool   `json:"truncated"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	data, err := base64.StdEncoding.DecodeString(out.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello-world" || out.Truncated || out.Original != "old-text" {
+		t.Fatalf("read with original=%s", raw)
+	}
+
+	raw = control(t, rt, spec.ID, "cloud_read_file", `{"path":"a.txt","max_bytes":4}`)
+	out = struct {
+		Original  string `json:"original"`
+		Data      string `json:"data_base64"`
+		Truncated bool   `json:"truncated"`
+	}{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Original != "" || !out.Truncated {
+		t.Fatalf("truncated read must omit the baseline: %s", raw)
+	}
+}
+
 func TestBrowseStat(t *testing.T) {
 	rt := openRuntime(t)
 	spec := putSession(t, rt, "http://127.0.0.1:9")

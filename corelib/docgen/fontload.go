@@ -61,6 +61,37 @@ func normalizeFontData(data []byte) ([]byte, error) {
 	return normalizeFontReaderAt(bytes.NewReader(data), int64(len(data)))
 }
 
+// provisionProbeRunes are what a font must map to serve as THE document
+// font — stricter than detection's two-glyph CJK probe, on purpose: the
+// provisioned download replaces the embedded subset for every character in
+// the document. DroidSansFallback passed the CJK probe yet lacks ASCII
+// digits and letters entirely (it is a complement face by design), which
+// would have printed boxes for every number in a report.
+var provisionProbeRunes = []rune("中文09azAZ。，—！（）：；")
+
+// ValidateEmbeddableCJKFont gates font provisioning: the data must
+// normalize into embeddable TrueType outlines and cover every probe a
+// Chinese document cannot print without. Detection itself keeps the weaker
+// two-glyph check — system fonts always cover ASCII — but a downloaded
+// face is verified as a complete document font before it lands.
+func ValidateEmbeddableCJKFont(data []byte) error {
+	norm, err := normalizeFontData(data)
+	if err != nil {
+		return err
+	}
+	var parser ttfcore.TTFParser
+	if err := parser.ParseFontData(norm); err != nil {
+		return err
+	}
+	chars := parser.Chars()
+	for _, r := range provisionProbeRunes {
+		if _, ok := chars[int(r)]; !ok {
+			return fmt.Errorf("字体缺少文档必需字符 %q 的字形", r)
+		}
+	}
+	return nil
+}
+
 func normalizeFontReaderAt(r io.ReaderAt, size int64) ([]byte, error) {
 	if size < sfntHeaderLen {
 		return nil, fmt.Errorf("字体文件过小（%d 字节）", size)

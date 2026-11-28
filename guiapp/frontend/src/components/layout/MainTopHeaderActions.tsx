@@ -1,4 +1,4 @@
-import { type Dispatch, type SetStateAction } from 'react';
+import { type Dispatch, type MouseEvent as ReactMouseEvent, type SetStateAction } from 'react';
 import { ReadTutorial } from '../../../wailsjs/go/main/App';
 import { isSkillTool, isToolTab } from '../../config/toolCatalog';
 import { localizeText } from '../../i18n';
@@ -27,6 +27,13 @@ type MainTopHeaderActionsProps = {
     setShowInstallSkillModal: Dispatch<SetStateAction<boolean>>;
 };
 
+// These buttons render inside the window-drag title. Plain <button>s are
+// already excluded from drag arming, but a bubbling double-click would toggle
+// maximize on the header — same guard as SidebarToggleCluster / mth-bot-actions.
+const keepHeaderBehavior = (event: ReactMouseEvent) => {
+    event.stopPropagation();
+};
+
 export const MainTopHeaderActions = ({
     navTab,
     lang,
@@ -46,10 +53,10 @@ export const MainTopHeaderActions = ({
     <>
         {navTab === 'projects' && (
             <>
-                <button onClick={() => switchTool(activeTool)} className="btn-link" style={{ marginLeft: '10px', fontSize: '0.8rem', padding: '4px 12px' }} title="Back">
+                <button onMouseDown={keepHeaderBehavior} onDoubleClick={keepHeaderBehavior} onClick={() => switchTool(activeTool)} className="btn-link" style={{ marginLeft: '10px', fontSize: '0.8rem', padding: '4px 12px' }} title="Back">
                     &lt;&lt; {t('back') || zhHans.back}
                 </button>
-                <button className="btn-primary" style={{ marginLeft: '10px', padding: '4px 12px', fontSize: '0.8rem' }} onClick={handleAddNewProject}>
+                <button onMouseDown={keepHeaderBehavior} onDoubleClick={keepHeaderBehavior} className="btn-primary" style={{ marginLeft: '10px', padding: '4px 12px', fontSize: '0.8rem' }} onClick={handleAddNewProject}>
                     {t('addNewProject')}
                 </button>
             </>
@@ -57,6 +64,8 @@ export const MainTopHeaderActions = ({
         {navTab === 'tutorial' && (
             <button
                 className="btn-link"
+                onMouseDown={keepHeaderBehavior}
+                onDoubleClick={keepHeaderBehavior}
                 style={{ marginLeft: '10px', fontSize: '0.8rem', padding: '4px 12px' }}
                 onClick={async () => {
                     try {
@@ -78,15 +87,15 @@ export const MainTopHeaderActions = ({
         )}
         {isToolTab(navTab) && (
             <>
-                <button className="btn-link" onClick={() => setShowModelSettings(true)} style={{ marginLeft: '10px', padding: '2px 8px', fontSize: '0.8rem', borderColor: 'var(--theme-primary)', color: 'var(--theme-primary)', '--wails-draggable': 'no-drag' } as any}>
+                <button onMouseDown={keepHeaderBehavior} onDoubleClick={keepHeaderBehavior} className="btn-link" onClick={() => setShowModelSettings(true)} style={{ marginLeft: '10px', padding: '2px 8px', fontSize: '0.8rem', borderColor: 'var(--theme-primary)', color: 'var(--theme-primary)', '--wails-draggable': 'no-drag' } as any}>
                     {localizeText(lang, 'Provider Config', zhHans.providerConfig, zhHant.providerConfig)}
                 </button>
                 {isSkillTool(navTab) && (
-                    <button className="btn-link" onClick={() => { setSelectedSkillsToInstall([]); setShowInstallSkillModal(true); }} style={{ marginLeft: '10px', padding: '2px 8px', fontSize: '0.8rem', borderColor: 'var(--theme-success)', color: 'var(--theme-success)', '--wails-draggable': 'no-drag' } as any}>
+                    <button onMouseDown={keepHeaderBehavior} onDoubleClick={keepHeaderBehavior} className="btn-link" onClick={() => { setSelectedSkillsToInstall([]); setShowInstallSkillModal(true); }} style={{ marginLeft: '10px', padding: '2px 8px', fontSize: '0.8rem', borderColor: 'var(--theme-success)', color: 'var(--theme-success)', '--wails-draggable': 'no-drag' } as any}>
                         {t('installSkills')}
                     </button>
                 )}
-                <button className="btn-link" onClick={() => switchTool('api-store')} style={{ marginLeft: '10px', padding: '2px 8px', fontSize: '0.8rem', borderColor: 'var(--theme-warning)', color: 'var(--theme-warning)', '--wails-draggable': 'no-drag' } as any}>
+                <button onMouseDown={keepHeaderBehavior} onDoubleClick={keepHeaderBehavior} className="btn-link" onClick={() => switchTool('api-store')} style={{ marginLeft: '10px', padding: '2px 8px', fontSize: '0.8rem', borderColor: 'var(--theme-warning)', color: 'var(--theme-warning)', '--wails-draggable': 'no-drag' } as any}>
                     {t('apiStore')}
                 </button>
             </>

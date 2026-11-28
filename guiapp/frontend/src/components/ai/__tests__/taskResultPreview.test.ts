@@ -8,6 +8,7 @@ import {
     isPdfFileName,
     isPdfInlineDataURL,
     isTaskResultPdfPreviewURL,
+    taskResultPreviewURLRevision,
     localizeTaskResultExportError,
     localizeTaskResultPreviewError,
     objectURLFromPdfDataURL,
@@ -33,6 +34,15 @@ describe("isTaskResultPdfPreviewURL", () => {
         expect(isTaskResultPdfPreviewURL("/maclaw-preview/v1/file?t=abc")).toBe(false);
         expect(isTaskResultPdfPreviewURL("https://example.test/maclaw-preview/v1/file?t=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")).toBe(false);
         expect(isTaskResultPdfPreviewURL("//example.test/maclaw-preview/v1/file?t=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")).toBe(false);
+    });
+});
+
+describe("taskResultPreviewURLRevision", () => {
+    it("adds a cache-busting query and leaves an unstamped url alone", () => {
+        const url = "/maclaw-preview/v1/file?t=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        expect(taskResultPreviewURLRevision(url, "10:20")).toBe(`${url}&v=10%3A20`);
+        expect(taskResultPreviewURLRevision(url, "  ")).toBe(url);
+        expect(isTaskResultPdfPreviewURL(taskResultPreviewURLRevision(url, "10:20"))).toBe(true);
     });
 });
 

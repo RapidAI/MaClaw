@@ -92,6 +92,8 @@ export interface CodingAgentProgress {
     files?: string[];
     added?: number;
     removed?: number;
+    /** write_file created the path. Absent on older events. */
+    created?: boolean;
     fileChanges?: CodingAgentFileChange[];
 }
 
@@ -99,6 +101,10 @@ export interface CodingAgentFileChange {
     path: string;
     added: number;
     removed: number;
+    /** The turn created this path. */
+    created?: boolean;
+    /** The turn deleted this path. The preview does not open it. */
+    deleted?: boolean;
 }
 
 export interface CodingAgentToolTrace {
@@ -216,6 +222,7 @@ export function normalizeCodingAgentProgress(progress: CodingAgentProgress): Cod
         files: normalizeCodingAgentFiles(progress.files),
         added: Number.isFinite(progress.added) && progress.added !== undefined && progress.added >= 0 ? progress.added : undefined,
         removed: Number.isFinite(progress.removed) && progress.removed !== undefined && progress.removed >= 0 ? progress.removed : undefined,
+        ...(progress.created === true ? { created: true } : {}),
         fileChanges: normalizeCodingAgentFileChanges(progress.fileChanges),
     };
 }
@@ -232,11 +239,14 @@ function normalizeCodingAgentFileChanges(changes?: CodingAgentFileChange[]): Cod
     for (const change of changes) {
         const path = normalizeCodingAgentTitle(change?.path);
         if (!path) continue;
-        normalized.push({
+        const row: CodingAgentFileChange = {
             path,
             added: Number.isFinite(change.added) && change.added > 0 ? Math.round(change.added) : 0,
             removed: Number.isFinite(change.removed) && change.removed > 0 ? Math.round(change.removed) : 0,
-        });
+        };
+        if (change.created === true) row.created = true;
+        if (change.deleted === true) row.deleted = true;
+        normalized.push(row);
     }
     return normalized.length > 0 ? normalized : undefined;
 }
@@ -294,14 +304,20 @@ function uniqueCodingAgentFileChangeRows(rows: CodingAgentFileChange[]): CodingA
         if (!path) continue;
         const idx = out.findIndex((existing) => codingAgentFilePathsMatch(existing.path, path));
         if (idx < 0) {
-            out.push({ path, added: row.added, removed: row.removed });
+            const next: CodingAgentFileChange = { path, added: row.added, removed: row.removed };
+            if (row.created) next.created = true;
+            if (row.deleted) next.deleted = true;
+            out.push(next);
             continue;
         }
-        out[idx] = {
+        const merged: CodingAgentFileChange = {
             path: preferredCodingAgentFilePath(out[idx].path, path),
             added: Math.max(out[idx].added, row.added),
             removed: Math.max(out[idx].removed, row.removed),
         };
+        if (out[idx].created || row.created) merged.created = true;
+        if (out[idx].deleted || row.deleted) merged.deleted = true;
+        out[idx] = merged;
     }
     return out;
 }
@@ -682,11 +698,16 @@ export function parseCodingAgentEventProgress(content: string): CodingAgentProgr
         const fileChanges = Array.isArray(raw.file_changes)
             ? raw.file_changes
                 .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
-                .map((item) => ({
-                    path: typeof item.path === "string" ? item.path : "",
-                    added: typeof item.added === "number" ? item.added : 0,
-                    removed: typeof item.removed === "number" ? item.removed : 0,
-                }))
+                .map((item) => {
+                    const row: CodingAgentFileChange = {
+                        path: typeof item.path === "string" ? item.path : "",
+                        added: typeof item.added === "number" ? item.added : 0,
+                        removed: typeof item.removed === "number" ? item.removed : 0,
+                    };
+                    if (item.created === true) row.created = true;
+                    if (item.deleted === true) row.deleted = true;
+                    return row;
+                })
             : undefined;
         return normalizeCodingAgentProgress({
             phase: normalizeCodingAgentPhase(String(raw.phase || "")),
@@ -707,6 +728,7 @@ export function parseCodingAgentEventProgress(content: string): CodingAgentProgr
             files,
             added: typeof raw.added === "number" ? raw.added : undefined,
             removed: typeof raw.removed === "number" ? raw.removed : undefined,
+            ...(raw.created === true ? { created: true } : {}),
             fileChanges,
         });
     } catch {

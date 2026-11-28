@@ -4,12 +4,10 @@ package kokoro
 
 import "unsafe"
 
-// dotStridedFMA4x2 computes four output channels at two adjacent output
-// positions. Position 1 starts n elements (one row) after position 0;
-// x rows are shared across the four channels and weight rows across the two
-// positions. Pure-Go fallback for non-amd64 platforms; see
-// dot_strided_amd64.s for the AVX2+FMA implementation.
-func dotStridedFMA4x2(x []float32, xStride int, w []float32, wStride int, wOcStride int, taps, n int) (r0, r1, r2, r3, r4, r5, r6, r7 float32) {
+// dotStridedFMA4x2Scalar is the pure-Go body of dotStridedFMA4x2. arm64
+// dispatches the Android voice library to a NEON kernel and keeps this
+// path for darwin, so Mac audio does not move.
+func dotStridedFMA4x2Scalar(x []float32, xStride int, w []float32, wStride int, wOcStride int, taps, n int) (r0, r1, r2, r3, r4, r5, r6, r7 float32) {
 	w0 := unsafe.Pointer(unsafe.SliceData(w))
 	for t := 0; t < taps; t++ {
 		xo := t * xStride
@@ -30,9 +28,8 @@ func dotStridedFMA4x2(x []float32, xStride int, w []float32, wStride int, wOcStr
 	return r0, r1, r2, r3, r4, r5, r6, r7
 }
 
-// dotStridedFMA4 computes one output position for four output channels,
-// sharing each x row across all four weight rows.
-func dotStridedFMA4(x []float32, xStride int, w []float32, wStride int, wOcStride int, taps, n int) (r0, r1, r2, r3 float32) {
+// dotStridedFMA4Scalar is the pure-Go body of dotStridedFMA4.
+func dotStridedFMA4Scalar(x []float32, xStride int, w []float32, wStride int, wOcStride int, taps, n int) (r0, r1, r2, r3 float32) {
 	w0 := unsafe.Pointer(unsafe.SliceData(w))
 	for t := 0; t < taps; t++ {
 		xo := t * xStride

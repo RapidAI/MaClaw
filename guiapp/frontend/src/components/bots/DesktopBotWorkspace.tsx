@@ -7,6 +7,7 @@ import { createPortal } from 'react-dom';
 import { Z } from '../ui/zIndex';
 import { useDialog } from '../CustomDialog';
 import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime';
+import { EVENT_DESKTOP_STAGE_CLOSED } from '../../constants/events';
 import {
     askFrom,
     askKeepsTurn,
@@ -107,7 +108,8 @@ import { continueSessionForSend, desktopThreadOf, routedLine } from './desktopCo
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, sameDesktopScreen, screenNeedsOwnHold, screenPictureFallback, shownScreenURL, withSavedScreenMode, type BotScreen } from './desktopScreens';
 import { applyWatchResult, disconnectBot, pictureFromWatch } from './desktopViewState';
 import { RETURNED_HANDOFF_GRACE_MS, handoffResultAsksAgain, isMachineAttention, returnedHandoffLive, returnedHandoffVerdict, visibleDesktopText, watchMayRevokeGrant, type HandoffReport, type ReturnedHandoff } from './desktopHandoff';
-import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
+import { desktopStreamWidthForSurface, desktopStreamWidthOverride, desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
+import { DesktopBotH264Player } from './DesktopBotH264Player';
 import { wakeFailureReason } from './desktopWake';
 import {
     appendDesktopBotReport,
@@ -196,7 +198,6 @@ import { DesktopBotLocalTransfers } from './DesktopBotLocalTransfers';
 import { BotNetworkSettingsDialog, BotSettingsTabs, type BotSettingsTab, type DesktopProxyModeState, type DesktopProxyModeValue } from './BotNetworkSettingsDialog';
 import { BotVoiceSettingsDialog } from './BotVoiceSettingsDialog';
 import { TaskResultArtifacts } from '../ai/assistantTaskArtifacts';
-import { BugReportButton } from '../ai/BugReportButton';
 import { BotArtifactTable, BotFileArtifactCard } from './BotFileArtifactCard';
 import { artifactFileSizes, collectBotArtifacts, ensureSaidFilePath, saveDesktopDeliveredFile, type BotArtifactRow } from './botFileArtifacts';
 import { BotFilePreview } from './BotFilePreview';
@@ -207,6 +208,7 @@ import { BotCollabStatus } from './collab/BotCollabStatus';
 import { BotSaidInline, DesktopBotProcessNote, saidFileIsImage } from './collab/BotSaidInline';
 import { BotRoomsDialog } from './collab/BotRoomsDialog';
 import { applyBotStatusLine, applyRunScopedText, placeChatSays, shownDesktopBotActivity } from './collab/botCollab';
+import { noteDesktopBotRooms } from './desktopBotHeaderBridge';
 import './DesktopBotWorkspace.css';
 import { DemoSkillPanel } from './DemoSkillPanel';
 import { isChineseLang, isTraditionalLang, localizeText, normalizeLang } from '../../i18n';
@@ -3141,6 +3143,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const knownPathSizes = useRef<Record<string, number>>({});
     const selected = bots.find(bot => bot.id === selectedId) || null;
     const messages = (selected && messagesByBot[selected.id]) || NO_BOT_MESSAGES;
+    // 群聊按钮现在住在应用顶栏（MainTopHeader）。顶栏读不到这里的选中态，
+    // 把可见性与打开回调登记进 desktopBotHeaderBridge：与旧悬浮标题条一致，
+    // 只在选中了 Bot 且 hub 侧开了群聊时出现；卸载撤销登记。依赖收窄到可用
+    // 性布尔值 —— selected 的对象身份随 bots 刷新变化，不应反复登记。
+    const roomsAvailable = !!selected && collab.features.rooms;
+    useEffect(() => {
+        noteDesktopBotRooms({ visible: roomsAvailable, open: () => setRoomsOpen(true) });
+        return () => noteDesktopBotRooms(null);
+    }, [roomsAvailable]);
     // Keystrokes rebuild this component. Placement and the document list depend
     // on the transcript and what bots said, not on the characters being typed.
     const placedSays = useMemo(() => {
@@ -3531,16 +3542,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // Watch and control are different noVNC documents. Reusing the iframe leaves
     // the first page's viewOnly in place, so takeover looks active and clicks do nothing.
     const frameMode = stageInteractive ? 'live' : 'watch';
-    // Encode near the size the stage paints. A native-resolution feed into a
-    // smaller stage is all decode + canvas cost and no sharpness — that
-    // iframe's renderer grew ~900MB in minutes and hit the OOM page
+    // Encode near the size the embedded stage paints. A native-resolution
+    // feed into a smaller stage is all decode + canvas cost and no sharpness —
+    // that iframe's renderer grew ~900MB in minutes and hit the OOM page
     // (2026-11-24). Watch caps at 10fps like the mobile app; interactive
-    // keeps the server default. Sizing inputs that can change stage class
-    // are deps so expand/collapse remounts and resamples — watching a
-    // 640px feed upscaled to full screen is blurry enough to defeat the
-    // expand. What is NOT a dep (listWidth, the stage's own clientWidth)
-    // keeps a list-divider drag from reloading the mounted frame.
-    const desktopFrameSource = useMemo(() => {
+    // keeps the server default. Expand/restore is deliberately not a sizing
+    // dependency: it is a layout transition, and the frame must stay alive on
+    // the same browsing context rather than remount into a black cross-origin
+    // compositor layer.
+    const desktopStageStreamWidth = (expanded: boolean) => {
         // clientWidth is layout px; the shell's ui-zoom transform applies on
         // top of devicePixelRatio. rect/clientWidth folds the transform in.
         const host = workspaceRef.current;
@@ -3548,17 +3558,18 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const px = Math.min(2, (globalThis.devicePixelRatio || 1) * (uiScale || 1));
         // Embedded, the stage sits inside the ≤400px .desktop-bot-panel
         // (minus its 32px padding and an 8%-a-side stage gutter, 4% under
-        // the 960px viewport media query); is-fullscreen is position:fixed
-        // inset:0, i.e. the window itself.
+        // the 960px viewport media query).
         const panel = host ? Math.min(400, Math.max(0, host.clientWidth - listWidth)) : 0;
         const embedded = panel > 64 ? (panel - 32) * (globalThis.innerWidth <= 960 ? 0.92 : 0.84) : 0;
-        const cssWidth = takeover || screenExpanded
+        const cssWidth = expanded
             ? globalThis.innerWidth
             : stageRef.current?.clientWidth || embedded || globalThis.innerWidth || 1280;
-        const w = Math.max(640, Math.min(1920, Math.round(cssWidth * px)));
-        const stream = { w: w - (w % 2), ...(stageInteractive ? {} : { fps: 10 }) };
+        return desktopStreamWidthForSurface(cssWidth * px);
+    };
+    const desktopFrameSource = useMemo(() => {
+        const stream = { w: desktopStageStreamWidth(false), ...(stageInteractive ? {} : { fps: 10 }) };
         return desktopViewerSrc(desktopFrameSrc(shownDesktopUrl, stageInteractive), desktopViewer, stream);
-    }, [shownDesktopUrl, stageInteractive, desktopViewer, screenExpanded, takeover]);
+    }, [shownDesktopUrl, stageInteractive, desktopViewer]);
     // A hidden window keeps the stream's WebSocket and decoder burning
     // renderer memory for a picture nobody can see. Quick task switches keep
     // the frame; after a dwell it unmounts and reconnects on return. A live
@@ -3586,6 +3597,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         DesktopStageWindowSupported?: () => Promise<boolean>;
         DesktopStageWindowPreferred?: () => Promise<boolean>;
         DesktopStageWindowOpen?: () => Promise<boolean>;
+        DesktopStageWindowVisible?: () => Promise<boolean>;
+        DesktopStageWindowWidth?: () => Promise<number>;
         OpenDesktopStageWindow?: (url: string) => Promise<void>;
         CloseDesktopStageWindow?: () => Promise<void>;
     }
@@ -3601,18 +3614,136 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // WebView that OOPIF is not a reliable presentation surface at all: the
     // stream can arrive and decode while the iframe compositor stays black.
     const [stagePoppedOut, setStagePoppedOut] = useState(false);
-    const [stagePopOutSupported, setStagePopOutSupported] = useState(false);
-    const [stagePopOutPreferred, setStagePopOutPreferred] = useState(false);
-    const stagePopOutManualPanelRef = useRef(false);
-    const openStagePopOut = useCallback(async (url: string) => {
-        const w3App = stagePopOutBinding();
-        if (!w3App || !url) return false;
+    // Resize the existing H.264 socket rather than the iframe document. The
+    // player keeps its browsing context/compositing layer and reconnects only
+    // its video stream; noVNC scales itself and needs no renegotiation.
+    // The fullscreen class and the posted stream width follow a debounced
+    // value: takeover can flap (hold granted vs. agent activity resolution)
+    // a few times a second, and every is-fullscreen toggle is a layout
+    // transition that has killed the cross-origin player OOPIF under
+    // WebView2 composition hosting. Fast flaps must never reach the frame.
+    const stageFullscreenRaw = takeover || screenExpanded;
+    // Diagnostics: every drive-level transition is logged so a flap that
+    // precedes a dead frame is visible in maclaw.log with its source. This
+    // logs the RAW driver, not the debounced value — catching the flap is
+    // the point.
+    const stageFsDriveRef = useRef(stageFullscreenRaw);
+    const stageFsLogRef = useRef(0);
+    const stageFsSkippedRef = useRef(0);
+    useEffect(() => {
+        if (stageFsDriveRef.current === stageFullscreenRaw) return;
+        stageFsDriveRef.current = stageFullscreenRaw;
+        // Throttle to one line a second during a hard flap; the count keeps
+        // the skipped transitions visible instead of dropping them silently.
+        const now = Date.now();
+        if (now - stageFsLogRef.current < 1000) { stageFsSkippedRef.current += 1; return; }
+        stageFsLogRef.current = now;
+        const skipped = stageFsSkippedRef.current;
+        stageFsSkippedRef.current = 0;
         try {
-            await w3App.OpenDesktopStageWindow?.(url);
+            void Promise.resolve(LogFrontendDiagnostic({ tag: 'desktop-bot-stage', ev: 'fs-drive', on: stageFullscreenRaw, takeover, expanded: screenExpanded, n: skipped + 1 })).catch(() => undefined);
+        } catch { /* diagnostics never block the layout */ }
+    }, [stageFullscreenRaw, takeover, screenExpanded]);
+    const [stageFullscreen, setStageFullscreen] = useState(stageFullscreenRaw);
+    useEffect(() => {
+        if (stageFullscreen === stageFullscreenRaw) return;
+        // Entering follows the user action immediately; leaving (or a flap)
+        // must hold for 300ms before the frame's layout actually changes.
+        if (stageFullscreenRaw) { setStageFullscreen(true); return; }
+        const t = window.setTimeout(() => setStageFullscreen(false), 300);
+        return () => window.clearTimeout(t);
+    }, [stageFullscreenRaw, stageFullscreen]);
+    // The H.264 player renders in-document (DesktopBotH264Player) so it takes
+    // the debounced width as a prop — the old cross-origin iframe needed a
+    // postMessage round-trip that died with the OOPIF.
+    const stageStreamWidth = desktopStageStreamWidth(stageFullscreen);
+    // Diagnostics: which surface owns the stage right now. A black panel with
+    // a "frame:watch" branch means the iframe is mounted but its renderer is
+    // dead; a "picture"/"none" branch means React never re-rendered the frame
+    // at all — the two failures need different fixes and the logs must not
+    // conflate them.
+    const stageBranchRef = useRef('');
+    useEffect(() => {
+        const branch = !shownDesktopUrl ? 'none'
+            : ownPictureDown ? 'picture'
+            : stagePoppedOut ? 'popped'
+            : streamHidden ? 'hidden'
+            : (desktopViewer === 'h264' ? 'page:' : 'frame:') + frameMode + ':' + desktopViewer;
+        if (stageBranchRef.current === branch) return;
+        stageBranchRef.current = branch;
+        try {
+            void Promise.resolve(LogFrontendDiagnostic({ tag: 'desktop-bot-stage', ev: 'branch', branch, src: !!desktopFrameSource })).catch(() => undefined);
+        } catch { /* diagnostics never block the layout */ }
+    }, [shownDesktopUrl, ownPictureDown, stagePoppedOut, streamHidden, frameMode, desktopViewer, desktopFrameSource]);
+    const [stagePopOutSupported, setStagePopOutSupported] = useState(false);
+    const stagePopOutCloseRequestedRef = useRef(false);
+    const stagePopOutURLRef = useRef('');
+    const stagePopOutWidthRef = useRef(0);
+    const stagePopOutPendingWidthRef = useRef(0);
+    const stagePopOutOpenChainRef = useRef<Promise<void>>(Promise.resolve());
+    const stagePopOutOpenGenerationRef = useRef(0);
+    const openStagePopOutNow = useCallback(async (url: string, generation: number) => {
+        const w3App = stagePopOutBinding();
+        if (!w3App || !url || typeof w3App.OpenDesktopStageWindow !== 'function') return false;
+        if (generation !== stagePopOutOpenGenerationRef.current) return false;
+        let windowWidth = 1280;
+        try {
+            const reported = await w3App.DesktopStageWindowWidth?.();
+            if (typeof reported === 'number' && Number.isFinite(reported) && reported >= 640) windowWidth = reported;
+        } catch { /* older binding: use the native default width */ }
+        if (generation !== stagePopOutOpenGenerationRef.current) return false;
+        // DesktopStageWindowWidth is already physical pixels for the stage
+        // window's own screen; applying this window's devicePixelRatio again
+        // would be wrong on mixed-DPI multi-monitor setups.
+        const streamWidth = desktopStreamWidthForSurface(windowWidth);
+        const openURL = streamWidth ? desktopStreamWidthOverride(url, streamWidth) : url;
+        if (stagePopOutURLRef.current === openURL) {
+            stagePopOutWidthRef.current = streamWidth;
+            setStagePoppedOut(true);
+            return true;
+        }
+        stagePopOutCloseRequestedRef.current = false;
+        try {
+            await w3App.OpenDesktopStageWindow?.(openURL);
+            if (generation !== stagePopOutOpenGenerationRef.current) return false;
+            stagePopOutURLRef.current = openURL;
+            stagePopOutWidthRef.current = streamWidth;
             setStagePoppedOut(true);
             return true;
         } catch { /* probe race or window subsystem busy — keep the iframe */ }
         return false;
+    }, []);
+    // Serialize navigations in invocation order. Backend window creation is
+    // already serialized, but without this overlapping async callers can still
+    // finish out of order and leave stagePopOutURLRef describing a different
+    // player URL from the one actually loaded in the native window. The
+    // generation invalidates queued/in-flight opens after any deliberate close,
+    // so an old resize navigation cannot reopen a window the user just closed.
+    const openStagePopOut = useCallback((url: string): Promise<boolean> => {
+        const generation = stagePopOutOpenGenerationRef.current;
+        const run = stagePopOutOpenChainRef.current.then(() => (
+            openStagePopOutNow(url, generation)
+        ));
+        stagePopOutOpenChainRef.current = run.then(() => undefined, () => undefined);
+        return run;
+    }, [openStagePopOutNow]);
+    const closeStagePopOut = useCallback((): Promise<void> => {
+        stagePopOutOpenGenerationRef.current += 1;
+        const run = stagePopOutOpenChainRef.current.then(async () => {
+            const w3App = stagePopOutBinding();
+            try { await w3App?.CloseDesktopStageWindow?.(); } catch { /* window may already be gone */ }
+        });
+        stagePopOutOpenChainRef.current = run.then(() => undefined, () => undefined);
+        return run;
+    }, []);
+    useEffect(() => {
+        const off = EventsOn(EVENT_DESKTOP_STAGE_CLOSED, () => {
+            stagePopOutOpenGenerationRef.current += 1;
+            stagePopOutCloseRequestedRef.current = false;
+            stagePopOutURLRef.current = '';
+            setStagePoppedOut(false);
+        });
+        return () => { if (typeof off === 'function') off(); };
     }, []);
     useEffect(() => {
         let cancelled = false;
@@ -3621,8 +3752,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 const w3App = stagePopOutBinding();
                 const supported = await w3App?.DesktopStageWindowSupported?.();
                 if (!cancelled && supported) setStagePopOutSupported(true);
-                const preferred = await w3App?.DesktopStageWindowPreferred?.();
-                if (!cancelled && preferred) setStagePopOutPreferred(true);
             } catch { /* older builds: binding absent — keep the iframe */ }
         };
         void probe();
@@ -3635,54 +3764,90 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (!stagePoppedOut || !desktopFrameSource) return;
         void openStagePopOut(desktopFrameSource);
     }, [stagePoppedOut, desktopFrameSource, openStagePopOut]);
-    // RDP composition hosting is the environment where the cross-origin iframe
-    // blacks out despite a healthy stream. Prefer the native top-level window
-    // there automatically; an explicit "回到主窗口" remains authoritative.
-    useEffect(() => {
-        if (!stagePopOutPreferred || !stagePopOutSupported || stagePoppedOut || stagePopOutManualPanelRef.current) return;
-        if (!showDesktop || streamHidden || !desktopFrameSource) return;
-        void openStagePopOut(desktopFrameSource);
-    }, [stagePopOutPreferred, stagePopOutSupported, stagePoppedOut, showDesktop, streamHidden, desktopFrameSource, openStagePopOut]);
+    // The stage no longer auto-pops out: the H.264 player renders in-document
+    // now, so the embedded stage survives the layout transitions that used to
+    // kill the cross-origin iframe's OOPIF. The native window stays a manual
+    // option only.
     // Closing the native window directly must return the panel to a consistent
     // state. Treat that as the same user intent as "回到主窗口" so the RDP
     // auto-preference does not fight the close every second.
     useEffect(() => {
         if (!stagePoppedOut) return;
         let cancelled = false;
+        let probing = false;
+        let resizeOpenInFlight = false;
         const timer = window.setInterval(() => {
+            if (probing) return;
+            probing = true;
             void (async () => {
                 try {
-                    const open = await stagePopOutBinding()?.DesktopStageWindowOpen?.();
+                    const binding = stagePopOutBinding();
+                    const open = await binding?.DesktopStageWindowOpen?.();
                     if (!cancelled && open === false) {
-                        stagePopOutManualPanelRef.current = true;
+                        stagePopOutOpenGenerationRef.current += 1;
+                        stagePopOutCloseRequestedRef.current = false;
+                        stagePopOutURLRef.current = '';
                         setStagePoppedOut(false);
+                        return;
+                    }
+                    const reportedWidth = await binding?.DesktopStageWindowWidth?.();
+                    const surfaceWidth = desktopStreamWidthForSurface(typeof reportedWidth === 'number' ? reportedWidth : 0);
+                    if (cancelled || !surfaceWidth || !desktopFrameSource) return;
+                    if (stagePopOutPendingWidthRef.current !== surfaceWidth) {
+                        stagePopOutPendingWidthRef.current = surfaceWidth;
+                        return;
+                    }
+                    if (!resizeOpenInFlight && Math.abs(surfaceWidth - stagePopOutWidthRef.current) >= 64) {
+                        resizeOpenInFlight = true;
+                        void openStagePopOut(desktopFrameSource).finally(() => { resizeOpenInFlight = false; });
                     }
                 } catch { /* older binding or transient window subsystem failure */ }
+                finally { probing = false; }
             })();
-        }, 1000);
+        }, 250);
         return () => { cancelled = true; window.clearInterval(timer); };
-    }, [stagePoppedOut]);
-    // Hidden panels unmount their iframe after the same dwell; the native stream
-    // must not keep a hidden decoder alive either. A live frame is exempt from
+    }, [stagePoppedOut, desktopFrameSource, openStagePopOut]);
+    // Hidden panels unmount their iframe after the same dwell. The native
+    // window is different: minimizing the main window does not minimize the
+    // pop-out, so close it only when the pop-out itself is no longer visible
+    // (or when the desktop panel is closed). A live frame is exempt from
     // streamHidden already, so this only affects watch mode.
     useEffect(() => {
         if (!stagePoppedOut || (!streamHidden && showDesktop)) return;
-        const w3App = stagePopOutBinding();
-        void (async () => {
-            try { await w3App?.CloseDesktopStageWindow?.(); } catch { /* window may already be gone */ }
-        })();
-        setStagePoppedOut(false);
-    }, [stagePoppedOut, streamHidden, showDesktop]);
+        let cancelled = false;
+        const closeIfOwnerless = async () => {
+            const w3App = stagePopOutBinding();
+            if (streamHidden && showDesktop && typeof w3App?.DesktopStageWindowVisible === 'function') {
+                try {
+                    if (await w3App.DesktopStageWindowVisible()) return;
+                } catch { /* older binding or closing window: fail closed below */ }
+            }
+            if (cancelled) return;
+            stagePopOutCloseRequestedRef.current = true;
+            stagePopOutURLRef.current = '';
+            await closeStagePopOut();
+            if (!cancelled) setStagePoppedOut(false);
+        };
+        void closeIfOwnerless();
+        const timer = window.setInterval(() => { void closeIfOwnerless(); }, 5_000);
+        return () => { cancelled = true; window.clearInterval(timer); };
+    }, [stagePoppedOut, streamHidden, showDesktop, closeStagePopOut]);
+    // The native window is a rendering surface for this panel, not an
+    // independent browsing session. Leaving it open after the workspace
+    // unmounts would keep the stream and decoder alive with no owner.
+    useEffect(() => () => {
+        void closeStagePopOut();
+    }, [closeStagePopOut]);
     const toggleStagePopOut = async () => {
         const w3App = stagePopOutBinding();
         if (!w3App) return;
         if (stagePoppedOut) {
-            stagePopOutManualPanelRef.current = true;
-            try { await w3App.CloseDesktopStageWindow?.(); } catch { /* window may already be gone */ }
+            stagePopOutCloseRequestedRef.current = true;
+            stagePopOutURLRef.current = '';
+            await closeStagePopOut();
             setStagePoppedOut(false);
             return;
         }
-        stagePopOutManualPanelRef.current = false;
         await openStagePopOut(desktopFrameSource);
     };
     useEffect(() => {
@@ -4330,7 +4495,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         };
     }, [selectedId, showDesktop, selectedNoComputer]);
 
-    // The H.264 player posts this when its WebSocket closes. noVNC does not.
+    // A framed viewer may post "disconnect" when its WebSocket closes
+    // (the h264 player is in-document now and reports via onDisconnect;
+    // this only matters for a framed viewer that keeps the convention).
     // The player reconnects on its own, so this does not unmount the iframe
     // and does not decide the desktop is asleep. It re-checks the watch for
     // the bot this frame is showing, and only a message from that frame.
@@ -7985,10 +8152,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     <path d="M6 3.5 11 8l-5 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
                                 </svg>
                             </button>
-                            {collab.features.rooms ? (
-                                <button type="button" className="btn-secondary desktop-bot-chat__rooms-btn" data-testid="bot-rooms-open" onClick={() => setRoomsOpen(true)}>群聊</button>
-                            ) : null}
-                            <BugReportButton lang={lang} />
                         </header>
                         {collab.features.assignments ? <BotCollabStatus assignments={collab.assignments} bots={bots} lang={lang} busy={bots.flatMap(bot => { const phase = busyPhase(bot.id, messagesByBot[bot.id] || messagesForBot(userId, bot.id)); return phase === 'execute' || phase === 'plan' ? [{ bot: bot.id, phase, task: shownDesktopBotActivity(activityByBot[bot.id]) }] : []; })} /> : null}
                         <div
@@ -8465,7 +8628,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     ) : null}
                                 </div>
                             ) : !ownPictureDown && shownDesktopUrl ? (
-                                <div ref={stageRef} className={'desktop-bot-stage' + (stageInteractive ? ' is-user' : ' is-bot') + ((takeover || screenExpanded) ? ' is-fullscreen' : '')} data-testid="desktop-bot-stage">
+                                <div ref={stageRef} className={'desktop-bot-stage' + (stageInteractive ? ' is-user' : ' is-bot') + (stageFullscreen ? ' is-fullscreen' : '')} data-testid="desktop-bot-stage">
                                     <div className="desktop-bot-stage__bar">
                                         <p title={stageStatusText}>{stageStatusText}</p>
                                         {controlBlocked ? <p className="desktop-bot-stage__held" data-testid="desktop-bot-control-held" role="status">{text.controlHeldElsewhere}</p> : null}
@@ -8483,9 +8646,35 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         ) : null}
                                     </div>
                                     <div className="desktop-bot-stage__frame">
-                                        {streamHidden || stagePoppedOut ? null : (
+                                        {stagePoppedOut ? (
+                                            <div className="desktop-bot-stage__loading" data-testid="desktop-bot-stage-popped">
+                                                {localizeText(lang, 'Desktop is open in the native window.', '桌面已在独立窗口打开。', '桌面已在獨立視窗開啟。')}
+                                            </div>
+                                        ) : null}
+                                        {streamHidden || stagePoppedOut ? null : desktopViewer === 'h264' ? (
+                                        <DesktopBotH264Player
+                                            key={frameMode}
+                                            url={desktopFrameSource}
+                                            streamWidth={stageStreamWidth}
+                                            onDisconnect={() => {
+                                                const botId = frameBotRef.current;
+                                                if (botId) watchKickRef.current[botId]?.();
+                                            }}
+                                            onStopped={() => {
+                                                // The gate already knows the
+                                                // display is down; swap to the
+                                                // asleep view now instead of
+                                                // waiting for the next poll.
+                                                const botId = frameBotRef.current;
+                                                if (!botId) return;
+                                                setAsleepByBot(prev => prev[botId] ? prev : { ...prev, [botId]: true });
+                                                watchKickRef.current[botId]?.();
+                                            }}
+                                            onUnsupported={() => setDesktopViewer('vnc')}
+                                        />
+                                        ) : (
                                         <iframe
-                                            key={frameMode + ':' + desktopViewer + ((takeover || screenExpanded) ? ':full' : '')}
+                                            key={frameMode + ':' + desktopViewer}
                                             ref={handoffRef}
                                             className="desktop-bot-chat__handoff"
                                             data-testid="desktop-bot-handoff"
@@ -8501,7 +8690,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         {stageInteractive ? null : (
                                             <div className="desktop-bot-stage__shield" data-testid="desktop-bot-screen-shield" aria-hidden="true" />
                                         )}
-                                        {takeover ? null : screenExpanded ? (
+                                        {takeover || stagePoppedOut ? null : screenExpanded ? (
                                             <button type="button" ref={restoreBtnRef} className="desktop-bot-stage__fit is-restore" data-testid="desktop-bot-screen-restore" aria-keyshortcuts="Escape" onClick={() => restoreScreen(selected.id)}>
                                                 <ScreenRestoreIcon />
                                                 {text.restoreScreen}
@@ -8546,7 +8735,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             title={text.viewerHint}
                                             onClick={switchDesktopViewer}
                                         >
-                                            {desktopViewer === 'h264' ? text.viewerH264 : text.viewerVnc}
+                                            <span className={'desktop-bot-stage__viewer-opt' + (desktopViewer === 'h264' ? ' is-on' : '')}>{text.viewerH264}</span>
+                                            <span className="desktop-bot-stage__viewer-sep" aria-hidden="true">/</span>
+                                            <span className={'desktop-bot-stage__viewer-opt' + (desktopViewer === 'vnc' ? ' is-on' : '')}>{text.viewerVnc}</span>
                                         </button>
                                         {stagePopOutSupported && !screenExpanded ? (
                                             <button

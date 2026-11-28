@@ -1,12 +1,14 @@
 package docgen
 
 import (
+	_ "embed"
 	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	gopdf "github.com/VantageDataChat/GoPDF2"
+	ttfcore "github.com/VantageDataChat/GoPDF2/fontmaker/core"
 )
 
 // Generator renders Markdown documents into mobile-friendly PDFs.
@@ -36,10 +39,106 @@ type pdfPageLayout struct {
 	footerY  float64
 }
 
-var detectSystemFontsOnce sync.Once
-var detectedRegularFontData []byte
-var detectedBoldFontData []byte
-var detectedFontFailure string
+// embeddedFallbackFontData is a subset of Noto Sans SC (SIL OFL, see
+// fonts/OFL.txt) instanced at wght=400 and cut down to the GB2312 charset,
+// ASCII, and Latin-1/Extended-A — every character a common Chinese or
+// western document needs, in a TrueType face the PDF engine can embed. It
+// is the last-resort candidate so PDF generation works on bare hosts with
+// no system CJK fonts at all.
+//
+//go:embed fonts/NotoSansSCSubset.ttf
+var embeddedFallbackFontData []byte
+
+// embeddedFallbackBoldData is the same subset instanced at wght=700. Without
+// it the fallback would render bold text — headings, emphasis — in the
+// regular weight, and on hosts where the full-font download never arrives
+// every document would stay flat forever.
+//
+//go:embed fonts/NotoSansSCSubset-Bold.ttf
+var embeddedFallbackBoldData []byte
+
+var (
+	fontDetectMu            sync.Mutex
+	detectedRegularFontData []byte
+	detectedBoldFontData    []byte
+	detectedFontFailure     string
+)
+
+var (
+	embeddedFallbackFontCheck sync.Once
+	embeddedFallbackValid     bool
+)
+
+// embeddedFallbackFont returns the embedded subset face after a one-time
+// coverage validation. A corrupt embed (which cannot happen in practice —
+// the bytes are compiled in and unit-tested) yields nil so detection falls
+// through to the no-font error instead of rendering garbage.
+func embeddedFallbackFont() []byte {
+	embeddedFallbackFontCheck.Do(func() {
+		if err := fontCoversCJK(embeddedFallbackFontData); err != nil {
+			log.Printf("[DocGen] 内嵌兜底字体校验失败: %v", err)
+			return
+		}
+		embeddedFallbackValid = true
+	})
+	if !embeddedFallbackValid {
+		return nil
+	}
+	return embeddedFallbackFontData
+}
+
+// embeddedFallbackBold returns the bold cut of the fallback face. A corrupt
+// or missing bold degrades to the regular face — wrong weight beats no font.
+func embeddedFallbackBold() []byte {
+	regular := embeddedFallbackFont()
+	if len(regular) == 0 {
+		return nil
+	}
+	if len(embeddedFallbackBoldData) == 0 {
+		return regular
+	}
+	return embeddedFallbackBoldData
+}
+
+var (
+	embeddedCmapOnce sync.Once
+	embeddedCmap     map[int]uint
+)
+
+// EmbeddedFallbackCovers reports whether r has a glyph in the embedded
+// fallback face. PDF hosts use it to warn when a document needs characters
+// the subset cannot print; the charmap is parsed once per process. A parse
+// failure reports coverage — a false negative would produce false alarms,
+// and the face is compile-time constant anyway.
+func EmbeddedFallbackCovers(r rune) bool {
+	embeddedCmapOnce.Do(func() {
+		face := embeddedFallbackFont()
+		if len(face) == 0 {
+			return
+		}
+		var parser ttfcore.TTFParser
+		if err := parser.ParseFontData(face); err != nil {
+			return
+		}
+		embeddedCmap = parser.Chars()
+	})
+	if embeddedCmap == nil {
+		return true
+	}
+	_, ok := embeddedCmap[int(r)]
+	return ok
+}
+
+// UsingEmbeddedFallback reports whether rendering currently relies on the
+// embedded subset face because no system or downloaded font could be
+// embedded. Callers use it to trigger font provisioning: the subset covers
+// common Chinese but a full face has wider coverage and real bold cuts.
+func UsingEmbeddedFallback() bool {
+	valid := len(embeddedFallbackFont()) > 0 // sync.Once is thread-safe on its own
+	fontDetectMu.Lock()
+	defer fontDetectMu.Unlock()
+	return len(detectedRegularFontData) == 0 && valid
+}
 
 // New creates a document generator using detected system fonts. A candidate
 // counts only if it parses into embeddable TrueType data (.ttc collections
@@ -92,55 +191,56 @@ func SystemCJKFontBytes() ([]byte, error) {
 // reason matters: "font not found" is misleading when the system fonts exist
 // but no candidate can be embedded (e.g. CFF-only collections).
 func noFontError() error {
-	if detectedFontFailure == "" {
+	fontDetectMu.Lock()
+	failure := detectedFontFailure
+	fontDetectMu.Unlock()
+	if failure == "" {
 		return fmt.Errorf("未找到可用的中文字体，无法生成 PDF")
 	}
-	return fmt.Errorf("未找到可嵌入 PDF 的中文字体，无法生成 PDF（最后一个候选不可用原因: %s）", detectedFontFailure)
+	return fmt.Errorf("未找到可嵌入 PDF 的中文字体，无法生成 PDF（最后一个候选不可用原因: %s）", failure)
 }
 
+// detectSystemFonts probes the candidates and caches the result — but only
+// on success with a REAL font. A bare host falls through to the embedded
+// subset, and that fallback is deliberately not cached: every probe re-walks
+// the candidate list, so a font installed or downloaded after the first
+// render is picked up on the next one without a process restart.
 func detectSystemFonts() (regular, bold []byte) {
-	detectSystemFontsOnce.Do(func() {
-		detectedRegularFontData, detectedBoldFontData, detectedFontFailure =
-			loadFontCandidates(fontCandidates())
-		selectStyleRuleGlyph(detectedRegularFontData)
-	})
-	return detectedRegularFontData, detectedBoldFontData
-}
-
-// loadFontCandidates picks the first candidate that parses into embeddable
-// TrueType data. Existence is not enough: on macOS and Linux the system CJK
-// faces live in .ttc collections and some (PingFang) are CFF-only, so an
-// unusable candidate must fall through to the next one instead of failing
-// the export.
-// loadFontCandidates returns the first usable candidate. The rejection reason
-// is returned rather than stashed in a package global so that the function is
-// pure: callers can test it without resetting process-wide state.
-func loadFontCandidates(candidates []fontCandidate) (regular, bold []byte, failure string) {
-	// First pass demands CJK coverage so a Chinese document never ends up as
-	// empty boxes; the second pass accepts any embeddable font so that
-	// Latin-only systems can still export English documents.
-	if regular, bold, failure := firstEmbeddableFont(candidates, true); len(regular) > 0 {
-		return regular, bold, failure
+	fontDetectMu.Lock()
+	defer fontDetectMu.Unlock()
+	if len(detectedRegularFontData) > 0 {
+		return detectedRegularFontData, detectedBoldFontData
 	}
-	regular, bold, _ = firstEmbeddableFont(candidates, false)
-	return regular, bold, recordFailure("", nil)
+	candidates := candidateSource()
+	// Only a CJK-covering face counts as real success. The embedded subset
+	// covers ASCII too, so it strictly dominates a Latin-only system font for
+	// a Chinese document — detection never settles for one.
+	regular, bold, failure := firstEmbeddableFont(candidates)
+	detectedFontFailure = failure
+	if len(regular) > 0 {
+		detectedRegularFontData, detectedBoldFontData = regular, bold
+		selectStyleRuleGlyph(regular)
+		return regular, bold
+	}
+	if fallback := embeddedFallbackFont(); len(fallback) > 0 {
+		selectStyleRuleGlyph(fallback)
+		return fallback, embeddedFallbackBold()
+	}
+	return nil, nil
 }
 
-// firstEmbeddableFont walks candidates until one loads and, when requireCJK,
-// covers Chinese glyphs. failure reports the last rejection so diagnostics can
-// name it.
-func firstEmbeddableFont(candidates []fontCandidate, requireCJK bool) (regular, bold []byte, failure string) {
+// firstEmbeddableFont walks candidates until one loads and covers Chinese
+// glyphs. failure reports the last rejection so diagnostics can name it.
+func firstEmbeddableFont(candidates []fontCandidate) (regular, bold []byte, failure string) {
 	for _, c := range candidates {
 		regularData, err := loadFontFile(c.regular)
 		if err != nil {
 			failure = recordFailure(c.regular, err)
 			continue
 		}
-		if requireCJK {
-			if err := fontCoversCJK(regularData); err != nil {
-				failure = recordFailure(c.regular, err)
-				continue
-			}
+		if err := fontCoversCJK(regularData); err != nil {
+			failure = recordFailure(c.regular, err)
+			continue
 		}
 		if c.bold == "" || c.bold == c.regular {
 			return regularData, regularData, failure
@@ -155,13 +255,21 @@ func firstEmbeddableFont(candidates []fontCandidate, requireCJK bool) (regular, 
 }
 
 // recordFailure logs why a candidate was skipped and formats it for the
-// user-facing no-font error.
+// user-facing no-font error. Identical rejections are logged once per
+// process: detection re-probes on every render while a bare host relies on
+// the embedded fallback, and the same candidates fail the same way each
+// time — without dedupe the log repeats the same lines forever.
+var failureLogDedupe sync.Map // string -> struct{}
+
 func recordFailure(path string, err error) string {
 	if err == nil {
 		return ""
 	}
-	log.Printf("[DocGen] 跳过候选字体 %s: %v", path, err)
-	return fmt.Sprintf("%s (%v)", path, err)
+	msg := fmt.Sprintf("%s (%v)", path, err)
+	if _, seen := failureLogDedupe.LoadOrStore(msg, struct{}{}); !seen {
+		log.Printf("[DocGen] 跳过候选字体 %s: %v", path, err)
+	}
+	return msg
 }
 
 type fontCandidate struct {
@@ -169,8 +277,60 @@ type fontCandidate struct {
 	bold    string
 }
 
+// candidateSource is indirect so tests can simulate a bare host: detecting
+// the fallback path is impossible while the dev machine's real system fonts
+// answer every probe.
+var candidateSource = fontCandidates
+
 func fontCandidates() []fontCandidate {
-	return fontCandidatesFor(runtime.GOOS)
+	return append(fontCacheDirCandidates(FontCacheDir()), fontCandidatesFor(runtime.GOOS)...)
+}
+
+// FontCacheDir is where provisioned fonts live: the font provisioning
+// download drops a full CJK face here, and users can copy any .ttf/.ttc in
+// to override font detection without touching system directories.
+// MACLAW_FONT_DIR overrides the default ~/.maclaw/fonts.
+func FontCacheDir() string {
+	if dir := strings.TrimSpace(os.Getenv("MACLAW_FONT_DIR")); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".maclaw", "fonts")
+}
+
+// fontCacheDirCandidates scans the cache dir for font files. Every file gets
+// the same face for regular and bold: provisioned fonts are single-weight,
+// and a wrong bold is still better than no font. Files that cannot embed are
+// rejected by the usual candidate validation, so a stray non-font file in
+// the directory is harmless.
+func fontCacheDirCandidates(dir string) []fontCandidate {
+	if dir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(entry.Name())) {
+		case ".ttf", ".ttc", ".otf":
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Strings(names)
+	out := make([]fontCandidate, 0, len(names))
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		out = append(out, fontCandidate{regular: path, bold: path})
+	}
+	return out
 }
 
 func fontCandidatesFor(goos string) []fontCandidate {
@@ -200,10 +360,15 @@ func fontCandidatesFor(goos string) []fontCandidate {
 			{"/Library/Fonts/Arial Unicode.ttf", "/Library/Fonts/Arial Unicode.ttf"},
 		}
 	default:
+		// DroidSansFallbackFull is deliberately absent: it passes the CJK
+		// probe but is a complement face by design — no ASCII digits or
+		// letters at all — and the embedded fallback strictly dominates it
+		// for any real document. wqy-microhei (the fonts-wqy-microhei
+		// package path) covers both scripts.
 		return []fontCandidate{
 			{"/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc"},
 			{"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"},
-			{"/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"},
+			{"/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"},
 		}
 	}
 }
@@ -512,21 +677,36 @@ func resolvePDFPageLayout(paperSize string) (pdfPageLayout, error) {
 	}, nil
 }
 
+// fonts resolves the font data at render time rather than trusting the
+// construction-time capture: a Generator built while the host relied on the
+// embedded subset would otherwise pin that subset forever — the type is
+// documented as safe to share and reuse, and long-lived holders (the swarm
+// orchestrator lives as long as the app) must still pick up a font that
+// arrives later. detectSystemFonts is the authority: a detected real font
+// is cached, so the re-resolve costs one mutex; on a bare host it re-walks
+// the candidates, which is the intended self-heal probe.
+func (g *Generator) fonts() (regular, bold []byte) {
+	if r, b := detectSystemFonts(); len(r) > 0 {
+		return r, b
+	}
+	return g.fontRegularData, g.fontBoldData
+}
+
 // addFonts registers the detected regular/bold font data with the document.
 func (g *Generator) addFonts(pdf *gopdf.GoPdf) error {
-	if err := pdf.AddTTFFontData("regular", g.fontRegularData); err != nil {
+	regularData, boldData := g.fonts()
+	if err := pdf.AddTTFFontData("regular", regularData); err != nil {
 		return fmt.Errorf("加载常规字体失败: %w", err)
 	}
 	// There is no CJK italic cut. Register the body face under the italic
 	// style so a lookup still finds a font. A missing style makes GoPDF drop
 	// the word back to regular, and bold inside that word disappears with it.
-	if err := pdf.AddTTFFontDataWithOption("regular", g.fontRegularData, gopdf.TtfOption{Style: gopdf.Italic}); err != nil {
+	if err := pdf.AddTTFFontDataWithOption("regular", regularData, gopdf.TtfOption{Style: gopdf.Italic}); err != nil {
 		return fmt.Errorf("加载常规字体失败: %w", err)
 	}
-	boldData := g.fontBoldData
 	if err := pdf.AddTTFFontDataWithOption("bold", boldData, gopdf.TtfOption{Style: gopdf.Bold}); err != nil {
 		log.Printf("[DocGen] 粗体字体加载失败，使用常规体: %v", err)
-		boldData = g.fontRegularData
+		boldData = regularData
 		if err := pdf.AddTTFFontDataWithOption("bold", boldData, gopdf.TtfOption{Style: gopdf.Bold}); err != nil {
 			return fmt.Errorf("加载常规字体失败: %w", err)
 		}

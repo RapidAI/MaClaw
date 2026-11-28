@@ -1342,7 +1342,10 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
       appBar: AppBar(
         leading: IconButton(
           tooltip: context.S.cloudSessionList,
-          onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+          onPressed: () {
+            ref.read(botsProvider.notifier).refresh();
+            _scaffoldKey.currentState?.openEndDrawer();
+          },
           icon: const Icon(Icons.segment),
         ),
         titleSpacing: 0,
@@ -2351,9 +2354,13 @@ class _BotListDrawer extends ConsumerWidget {
                                 )
                               : const Icon(Icons.chevron_right),
                           onTap: () {
+                            // 先抓路由再关抽屉：pop 之后这个 element 就没用了。
+                            final router = GoRouter.of(context);
                             Navigator.pop(context);
                             if (bot.id != currentBotId) {
-                              context.push('/bot/${Uri.encodeComponent(bot.id)}');
+                              router.push(
+                                '/bot/${Uri.encodeComponent(bot.id)}',
+                              );
                             }
                           },
                         ),

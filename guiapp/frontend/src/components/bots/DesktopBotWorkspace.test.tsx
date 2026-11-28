@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { ReactElement } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { DialogProvider } from '../CustomDialog';
+import { EVENT_DESKTOP_STAGE_CLOSED } from '../../constants/events';
 
 // Loose signatures: these mocks are exercised with mockResolvedValue,
 // mockImplementation, and promise-resolve captures across tests, so no single
@@ -27,6 +28,7 @@ const hubLink = vi.hoisted(() => vi.fn(async () => ({ state: 'connected' }) as R
 const handBack = vi.hoisted(() => vi.fn(async (_botId?: string): Promise<{ handed_back: boolean; accepted?: boolean; run_id?: string; status?: string; client_message_id?: string; joined?: boolean; reply?: { text: string; send_to_user?: string } }> => ({ handed_back: true, accepted: true, run_id: 'run_1', status: 'running' })));
 const setDesktopMode = vi.hoisted(() => vi.fn(async (_botId?: string, mode?: string) => mode || 'shared'));
 const desktopAdmin = vi.hoisted(() => vi.fn(async () => false));
+const collabFeatures = vi.hoisted(() => vi.fn(async () => ({ assignments: false, peer_review: false, say: false, rooms: false })));
 const releaseWatch = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number) => undefined));
 const saveSecret = vi.hoisted(() => vi.fn(async (_name?: string, _value?: string) => undefined));
 const recallSecret = vi.hoisted(() => vi.fn(async (_name?: string) => false));
@@ -131,6 +133,9 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     ReconnectHub: () => Promise.resolve({ state: 'connected' }),
     SetDesktopBotDesktopMode: (botId: string, mode: string) => setDesktopMode(botId, mode),
     DesktopBotDesktopAdmin: () => desktopAdmin(),
+    GetBotCollabFeatures: () => collabFeatures(),
+    ListBotSaid: () => Promise.resolve([]),
+    ListBotAssignments: () => Promise.resolve([]),
     SaveBotSecret: (name: string, value: string) => saveSecret(name, value),
     StageDesktopBotSecret: vi.fn(),
     RecallBotSecret: (name: string) => recallSecret(name),
@@ -243,6 +248,7 @@ import { appearancesForUser, resetBotLookCacheForTest, saveBotAppearance, setBot
 import type { BotPhase } from './desktopBots';
 import { appendDesktopBotReport, applySupplementOutcomes, messagesForBot, saveBotMessages } from './desktopBots';
 import { adoptExistingBotReplies, setBotWindowForeground, unreadBotReplyCount } from './botUnread';
+import { currentDesktopBotRoomsVisible, resetDesktopBotHeaderBridgeForTests } from './desktopBotHeaderBridge';
 
 const RETURN_TASK = '登录或验证已在当前桌面浏览器完成，请沿用这个登录状态继续。';
 const CONFIRM_TASK = '安排已确认。请按你上一条安排执行。做完、失败或需要我时，在对话里告诉我。';
@@ -293,9 +299,55 @@ function clickBotAction(botId: string, action: 'edit' | 'style' | 'delete') {
     return item;
 }
 
+// jsdom has no WebCodecs — without these stubs the in-document H.264 player
+// takes its real unsupported path and the stage swaps to the noVNC iframe.
+class FakeVideoDecoder {
+    static isConfigSupported() { return Promise.resolve({ supported: true }); }
+    state = 'configured';
+    decodeQueueSize = 0;
+    constructor(_init: { output?: (frame: unknown) => void; error?: (e: unknown) => void }) {}
+    configure() {}
+    decode() {}
+    reset() {}
+    close() { this.state = 'closed'; }
+}
+// The player's video socket. Instances are recorded so a test can assert
+// which /h264 URL a renegotiation opened.
+const desktopWSInstances: { url: string; readyState: number }[] = [];
+class FakeDesktopWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+    url: string;
+    binaryType = '';
+    readyState = 0;
+    onopen: (() => void) | null = null;
+    onmessage: ((ev: { data: unknown }) => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor(url: string) {
+        this.url = url;
+        desktopWSInstances.push(this);
+    }
+    send() {}
+    close() {
+        if (this.readyState >= 2) return;
+        this.readyState = 3;
+        const onclose = this.onclose;
+        // The real socket fires close asynchronously; an immediate invoke
+        // keeps the player's 80ms renegotiate path ordered in tests.
+        if (onclose) onclose();
+    }
+}
+
 beforeEach(() => {
     localStorage.clear();
     resetBotLookCacheForTest();
+    desktopWSInstances.length = 0;
+    vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+    vi.stubGlobal('EncodedVideoChunk', class { constructor(_init: unknown) {} });
+    vi.stubGlobal('WebSocket', FakeDesktopWebSocket);
     setAppearance.mockReset();
     setAppearance.mockResolvedValue({});
     // Most cases check the noVNC URL; the H.264 player has its own case.
@@ -361,6 +413,9 @@ beforeEach(() => {
     recallSecret.mockResolvedValue(false);
     fillSecret.mockReset();
     fillSecret.mockResolvedValue({ filled: 'SITE_PASSWORD' });
+    collabFeatures.mockReset();
+    collabFeatures.mockResolvedValue({ assignments: false, peer_review: false, say: false, rooms: false });
+    resetDesktopBotHeaderBridgeForTests();
     listBots.mockReset();
     listBots.mockResolvedValue([]);
     getDesktopBusy.mockReset();
@@ -1014,7 +1069,7 @@ describe('DesktopBotWorkspace', () => {
         const sentBeforeExit = sendTask.mock.calls.length;
         fireEvent.click(screen.getByTestId('desktop-bot-exit-takeover'));
         const released = screen.getByTestId('desktop-bot-handoff');
-        expect(screen.getByTestId('desktop-bot-stage').className).not.toContain('is-fullscreen');
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-stage').className).not.toContain('is-fullscreen'));
         expect(released).not.toBe(controlling);
         expect(released.getAttribute('data-input')).toBe('watch');
         expect(released.getAttribute('src') || '').toContain('view_only=1');
@@ -1389,7 +1444,7 @@ describe('DesktopBotWorkspace', () => {
         expect(sendTask).not.toHaveBeenCalled();
 
         fireEvent.click(restore);
-        expect(screen.getByTestId('desktop-bot-stage').className).not.toContain('is-fullscreen');
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-stage').className).not.toContain('is-fullscreen'));
         expect(screen.getByTestId('desktop-bot-chat').inert).toBe(false);
         expect(screen.getByTestId('desktop-bot-screen-expand')).toBeTruthy();
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
@@ -1397,7 +1452,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(screen.getByTestId('desktop-bot-screen-expand'));
         expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-fullscreen');
         fireEvent.keyDown(window, { key: 'Escape' });
-        expect(screen.getByTestId('desktop-bot-stage').className).not.toContain('is-fullscreen');
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-stage').className).not.toContain('is-fullscreen'));
 
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('tabindex')).toBeNull();
 
@@ -1415,9 +1470,11 @@ describe('DesktopBotWorkspace', () => {
     });
 
     it('pops the desktop stage out to a native window when the binding is supported', async () => {
+        localStorage.removeItem('maclaw.desktop.viewer');
         const stageBinding = {
             DesktopStageWindowSupported: vi.fn(async () => true),
-            OpenDesktopStageWindow: vi.fn(async () => undefined),
+            DesktopStageWindowWidth: vi.fn(async () => 1500),
+            OpenDesktopStageWindow: vi.fn(async (_url: string) => undefined),
             CloseDesktopStageWindow: vi.fn(async () => undefined),
         };
         (window as unknown as { go?: unknown }).go = { main: { App: stageBinding } };
@@ -1439,13 +1496,310 @@ describe('DesktopBotWorkspace', () => {
         await waitFor(() => expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledWith(expect.stringContaining('/api/v1/desktop-handoff/abc/h264.html')));
         expect(stageBinding.OpenDesktopStageWindow.mock.calls[0][0]).toContain('view_only=1');
         expect(stageBinding.OpenDesktopStageWindow.mock.calls[0][0]).toContain('fps=10');
+        expect(stageBinding.OpenDesktopStageWindow.mock.calls[0][0]).toContain('w=1500');
         // the in-panel iframe is unmounted while the native window streams
         expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+        expect(screen.getByTestId('desktop-bot-stage-popped')).toBeTruthy();
         expect(popout.textContent).toContain('回到主窗口');
 
         fireEvent.click(popout);
         await waitFor(() => expect(stageBinding.CloseDesktopStageWindow).toHaveBeenCalled());
         expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
+    });
+
+    it('serializes overlapping native stage open navigations in invocation order', async () => {
+        localStorage.removeItem('maclaw.desktop.viewer');
+        let stageWidth = 1280;
+        const openResolvers: Array<() => void> = [];
+        const stageBinding = {
+            DesktopStageWindowSupported: vi.fn(async () => true),
+            DesktopStageWindowWidth: vi.fn(async () => stageWidth),
+            OpenDesktopStageWindow: vi.fn((_url: string) => new Promise<void>(resolve => openResolvers.push(resolve))),
+            CloseDesktopStageWindow: vi.fn(async () => undefined),
+        };
+        (window as unknown as { go?: unknown }).go = { main: { App: stageBinding } };
+        onTestFinished(() => { delete (window as unknown as { go?: unknown }).go; });
+
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+
+        fireEvent.click(await screen.findByTestId('desktop-bot-stage-popout'));
+        await waitFor(() => expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledTimes(1));
+        expect(stageBinding.OpenDesktopStageWindow.mock.calls[0][0]).toContain('w=1280');
+
+        stageWidth = 1800;
+        fireEvent.click(screen.getByTestId('desktop-bot-stage-popout'));
+        await act(async () => { await Promise.resolve(); });
+        expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledTimes(1);
+
+        openResolvers[0]();
+        await waitFor(() => expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledTimes(2));
+        expect(stageBinding.OpenDesktopStageWindow.mock.calls[1][0]).toContain('w=1800');
+        openResolvers[1]?.();
+    });
+
+    it('drops queued native stage navigations after a direct close', async () => {
+        localStorage.removeItem('maclaw.desktop.viewer');
+        let stageWidth = 1280;
+        const openResolvers: Array<() => void> = [];
+        const stageBinding = {
+            DesktopStageWindowSupported: vi.fn(async () => true),
+            DesktopStageWindowWidth: vi.fn(async () => stageWidth),
+            OpenDesktopStageWindow: vi.fn((_url: string) => new Promise<void>(resolve => openResolvers.push(resolve))),
+            CloseDesktopStageWindow: vi.fn(async () => undefined),
+        };
+        (window as unknown as { go?: unknown }).go = { main: { App: stageBinding } };
+        onTestFinished(() => { delete (window as unknown as { go?: unknown }).go; });
+
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+
+        fireEvent.click(await screen.findByTestId('desktop-bot-stage-popout'));
+        await waitFor(() => expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledTimes(1));
+        stageWidth = 1800;
+        fireEvent.click(screen.getByTestId('desktop-bot-stage-popout'));
+        await act(async () => { await Promise.resolve(); });
+
+        // A direct native close invalidates the navigation that was still
+        // queued behind the first open; it must not reopen the window later.
+        act(() => { responseListeners.byEvent[EVENT_DESKTOP_STAGE_CLOSED]?.(null); });
+        await act(async () => {
+            openResolvers[0]();
+            for (let i = 0; i < 10; i += 1) await Promise.resolve();
+        });
+        expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledTimes(1);
+    });
+
+    it('queues owner cleanup behind an in-flight native stage open', async () => {
+        localStorage.removeItem('maclaw.desktop.viewer');
+        const openResolvers: Array<() => void> = [];
+        const stageBinding = {
+            DesktopStageWindowSupported: vi.fn(async () => true),
+            DesktopStageWindowWidth: vi.fn(async () => 1280),
+            OpenDesktopStageWindow: vi.fn((_url: string) => new Promise<void>(resolve => openResolvers.push(resolve))),
+            CloseDesktopStageWindow: vi.fn(async () => undefined),
+        };
+        (window as unknown as { go?: unknown }).go = { main: { App: stageBinding } };
+        onTestFinished(() => { delete (window as unknown as { go?: unknown }).go; });
+
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        const view = renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-stage-popout'));
+        await waitFor(() => expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledTimes(1));
+
+        view.unmount();
+        await act(async () => { await Promise.resolve(); });
+        expect(stageBinding.CloseDesktopStageWindow).not.toHaveBeenCalled();
+
+        await act(async () => {
+            openResolvers[0]();
+            for (let i = 0; i < 10; i += 1) await Promise.resolve();
+        });
+        expect(stageBinding.CloseDesktopStageWindow).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the embedded frame when the native open binding is unavailable', async () => {
+        localStorage.removeItem('maclaw.desktop.viewer');
+        const stageBinding = {
+            DesktopStageWindowSupported: vi.fn(async () => true),
+            CloseDesktopStageWindow: vi.fn(async () => undefined),
+        };
+        (window as unknown as { go?: unknown }).go = { main: { App: stageBinding } };
+        onTestFinished(() => { delete (window as unknown as { go?: unknown }).go; });
+
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-stage-popout'));
+        await act(async () => { await Promise.resolve(); });
+
+        expect(stageBinding.CloseDesktopStageWindow).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('desktop-bot-stage-popped')).toBeNull();
+        expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
+    });
+
+    it('does not auto-pop on composition-hosted RDP; the embedded stage stays and a manual pop-out still works', async () => {
+        localStorage.removeItem('maclaw.desktop.viewer');
+        const stageBinding = {
+            DesktopStageWindowSupported: vi.fn(async () => true),
+            DesktopStageWindowPreferred: vi.fn(async () => true),
+            DesktopStageWindowOpen: vi.fn(async () => true),
+            OpenDesktopStageWindow: vi.fn(async (_url: string) => undefined),
+            CloseDesktopStageWindow: vi.fn(async () => undefined),
+        };
+        (window as unknown as { go?: unknown }).go = { main: { App: stageBinding } };
+        onTestFinished(() => { delete (window as unknown as { go?: unknown }).go; });
+
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+
+        // The in-document player removed the reason RDP preferred the native
+        // window: the embedded stage must stay embedded even when preferred.
+        await act(async () => { await Promise.resolve(); });
+        expect(stageBinding.OpenDesktopStageWindow).not.toHaveBeenCalled();
+        expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
+
+        fireEvent.click(await screen.findByTestId('desktop-bot-stage-popout'));
+        await waitFor(() => expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalled());
+        expect(stageBinding.OpenDesktopStageWindow.mock.calls[0][0]).toContain('/api/v1/desktop-handoff/abc/h264.html');
+        expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+        expect(screen.getByTestId('desktop-bot-stage-popped')).toBeTruthy();
+    });
+
+    it('renegotiates the stream width after a native stage resize settles', async () => {
+        localStorage.removeItem('maclaw.desktop.viewer');
+        let stageWidth = 1280;
+        const stageBinding = {
+            DesktopStageWindowSupported: vi.fn(async () => true),
+            DesktopStageWindowPreferred: vi.fn(async () => true),
+            DesktopStageWindowOpen: vi.fn(async () => true),
+            DesktopStageWindowWidth: vi.fn(async () => stageWidth),
+            OpenDesktopStageWindow: vi.fn(async (_url: string) => undefined),
+            CloseDesktopStageWindow: vi.fn(async () => undefined),
+        };
+        (window as unknown as { go?: unknown }).go = { main: { App: stageBinding } };
+        onTestFinished(() => { delete (window as unknown as { go?: unknown }).go; });
+
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        vi.useFakeTimers();
+        try {
+            renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.click(screen.getByText('值班'));
+            fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+            await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+            fireEvent.click(screen.getByTestId('desktop-bot-stage-popout'));
+            await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+            expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledTimes(1);
+            expect(stageBinding.OpenDesktopStageWindow.mock.calls[0][0]).toContain('w=1280');
+
+            stageWidth = 1800;
+            await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+            expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledTimes(2);
+            expect(stageBinding.OpenDesktopStageWindow.mock.calls[1][0]).toContain('w=1800');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('treats closing the native window directly as a manual return to the panel', async () => {
+        localStorage.removeItem('maclaw.desktop.viewer');
+        let stageOpen = false;
+        const stageBinding = {
+            DesktopStageWindowSupported: vi.fn(async () => true),
+            DesktopStageWindowPreferred: vi.fn(async () => true),
+            DesktopStageWindowOpen: vi.fn(async () => stageOpen),
+            OpenDesktopStageWindow: vi.fn(async (_url: string) => { stageOpen = true; }),
+            CloseDesktopStageWindow: vi.fn(async () => { stageOpen = false; }),
+        };
+        (window as unknown as { go?: unknown }).go = { main: { App: stageBinding } };
+        onTestFinished(() => { delete (window as unknown as { go?: unknown }).go; });
+
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        vi.useFakeTimers();
+        try {
+            renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.click(screen.getByText('值班'));
+            fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+            await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+            fireEvent.click(screen.getByTestId('desktop-bot-stage-popout'));
+            await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+            expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledTimes(1);
+            expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+
+            // The backend reports a direct native-window close as an event;
+            // the panel returns immediately and remembers that manual choice.
+            stageOpen = false;
+            act(() => { responseListeners.byEvent[EVENT_DESKTOP_STAGE_CLOSED]?.(null); });
+            expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
+
+            fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+            await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+            expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledTimes(1);
+            expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('keeps a visible native stage open while the main window is hidden, but closes a minimized one', async () => {
+        localStorage.removeItem('maclaw.desktop.viewer');
+        let stageOpen = false;
+        let stageVisible = true;
+        const stageBinding = {
+            DesktopStageWindowSupported: vi.fn(async () => true),
+            DesktopStageWindowPreferred: vi.fn(async () => true),
+            DesktopStageWindowOpen: vi.fn(async () => stageOpen),
+            DesktopStageWindowVisible: vi.fn(async () => stageVisible),
+            OpenDesktopStageWindow: vi.fn(async (_url: string) => { stageOpen = true; stageVisible = true; }),
+            CloseDesktopStageWindow: vi.fn(async () => { stageOpen = false; }),
+        };
+        (window as unknown as { go?: unknown }).go = { main: { App: stageBinding } };
+        onTestFinished(() => { delete (window as unknown as { go?: unknown }).go; });
+
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        const visibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+        const hiddenProp = Object.getOwnPropertyDescriptor(document, 'hidden');
+        const setHidden = (value: boolean) => {
+            Object.defineProperty(document, 'visibilityState', { configurable: true, value: value ? 'hidden' : 'visible' });
+            Object.defineProperty(document, 'hidden', { configurable: true, value });
+        };
+        vi.useFakeTimers();
+        try {
+            renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.click(screen.getByText('值班'));
+            fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+            await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+            fireEvent.click(screen.getByTestId('desktop-bot-stage-popout'));
+            await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+            expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledTimes(1);
+            expect(screen.getByTestId('desktop-bot-stage-popped')).toBeTruthy();
+
+            setHidden(true);
+            await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+            await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
+            expect(stageBinding.CloseDesktopStageWindow).not.toHaveBeenCalled();
+            expect(screen.getByTestId('desktop-bot-stage-popped')).toBeTruthy();
+
+            stageVisible = false;
+            await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+            expect(stageBinding.CloseDesktopStageWindow).toHaveBeenCalled();
+            expect(screen.queryByTestId('desktop-bot-stage-popped')).toBeNull();
+
+            setHidden(false);
+            await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+            await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+            // No auto-reopen: pop-out is manual-only, so the panel keeps the
+            // embedded player after the window closes.
+            expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledTimes(1);
+            expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
+        } finally {
+            setHidden(false);
+            vi.useRealTimers();
+            if (visibility) Object.defineProperty(document, 'visibilityState', visibility);
+            if (hiddenProp) Object.defineProperty(document, 'hidden', hiddenProp);
+        }
     });
 
     it('scales the watch stream to the stage and caps it at 10fps, while a live frame keeps the server rate', async () => {
@@ -1485,23 +1839,37 @@ describe('DesktopBotWorkspace', () => {
         });
     });
 
-    it('reloads the stream when the stage resizes to fullscreen and back', async () => {
+    it('keeps the same stream frame alive when the stage resizes to fullscreen and back', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
         watchBot.mockResolvedValue({
             novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
             user_control: false,
         });
+        const innerWidth = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1800 });
+        onTestFinished(() => { if (innerWidth) Object.defineProperty(window, 'innerWidth', innerWidth); });
+        localStorage.removeItem('maclaw.desktop.viewer');
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(await screen.findByText('值班'));
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
         const embedded = await screen.findByTestId('desktop-bot-handoff');
+        const src = embedded.getAttribute('src') || '';
+        Object.defineProperty(screen.getByTestId('desktop-bot-stage'), 'clientWidth', { configurable: true, value: 800 });
         fireEvent.click(screen.getByTestId('desktop-bot-screen-expand'));
         const full = screen.getByTestId('desktop-bot-handoff');
-        // A remount resamples ?w= for the fullscreen stage — the embedded
-        // feed upscaled to the window would stay blurry for the session.
-        expect(full).not.toBe(embedded);
+        // Fullscreen is layout-only. The in-document player keeps its socket
+        // and simply renegotiates the encode width on the next connect.
+        expect(full).toBe(embedded);
+        expect(full.getAttribute('src')).toBe(src);
         fireEvent.click(screen.getByTestId('desktop-bot-screen-restore'));
-        expect(screen.getByTestId('desktop-bot-handoff')).not.toBe(full);
+        expect(screen.getByTestId('desktop-bot-handoff')).toBe(full);
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src')).toBe(src);
+        // Restoring renegotiates the open socket: the latest video socket
+        // carries the embedded stage width rather than the fullscreen one.
+        await waitFor(() => {
+            const last = desktopWSInstances[desktopWSInstances.length - 1];
+            expect(last && last.url).toContain('w=800');
+        });
     });
 
     it('unmounts a watch frame after a minute hidden and reconnects on return, but never drops a live frame', async () => {
@@ -3257,12 +3625,47 @@ describe('DesktopBotWorkspace', () => {
         const src = frame.getAttribute('src') || '';
         expect(src).toContain('/abc/h264.html?view_only=1&vnc=');
         expect(new URL(src).searchParams.get('vnc')).toBe('vnc.html?autoconnect=1&view_only=1');
-        expect(frame.getAttribute('allow')).toContain('clipboard-write');
+        // The in-document player needs no iframe `allow` grant; data-viewer
+        // marks which renderer owns the surface.
+        expect(frame.getAttribute('data-viewer')).toBe('h264');
         fireEvent.click(screen.getByTestId('desktop-bot-viewer-switch'));
         await waitFor(() => {
             expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src')).toBe(cached + '&view_only=1');
         });
         expect(localStorage.getItem('maclaw.desktop.viewer')).toBe('vnc');
+    });
+
+    it('swaps straight to the asleep view when the stream reports a stopped display', async () => {
+        localStorage.removeItem('maclaw.desktop.viewer');
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        const cached = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        getScreen.mockResolvedValue({ novnc_url: cached, user_control: false, desktop_mode: 'shared' });
+        // The first hold tick reports running so the stage mounts; after the
+        // stream's stopped message, the next tick agrees with the gate.
+        let watchCalls = 0;
+        watchBot.mockImplementation(async () => ({
+            novnc_url: cached,
+            user_control: false,
+            desktop_mode: 'shared',
+            desktop_state: ++watchCalls <= 1 ? 'running' : 'display_stopped',
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        await screen.findByTestId('desktop-bot-handoff');
+        const sock = desktopWSInstances[desktopWSInstances.length - 1];
+        expect(sock).toBeTruthy();
+        // The gate knows the display is down; the stage must not sit on the
+        // player's "not running" text while the watch catches up.
+        await act(async () => {
+            (sock as { onmessage?: (ev: { data: unknown }) => void }).onmessage?.({
+                data: JSON.stringify({ type: 'hello', display_state: 'stopped' }),
+            });
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('desktop-bot-sleep')).toBeTruthy();
+            expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+        });
     });
 
     it('shows a retry when the watch fails even if the screen list still has a picture', async () => {
@@ -3456,7 +3859,7 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-fullscreen');
         const sentBeforeRelease = sendTask.mock.calls.length;
         fireEvent.click(screen.getByTestId('desktop-bot-exit-takeover'));
-        expect(screen.getByTestId('desktop-bot-stage').className).not.toContain('is-fullscreen');
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-stage').className).not.toContain('is-fullscreen'));
         expect(screen.getByTestId('desktop-bot-panel')).toBeTruthy();
         expect(screen.getByTestId('desktop-bot-return-control')).toBeTruthy();
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=0');
@@ -4218,6 +4621,23 @@ describe('DesktopBotWorkspace', () => {
         }
     });
 
+    it('registers the top-header rooms entry while a bot is selected and revokes it on unmount', async () => {
+        collabFeatures.mockResolvedValue({ assignments: false, peer_review: false, say: false, rooms: true });
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst', created_at: '2026-01-01T00:00:00Z' }]);
+        const { unmount } = renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        try {
+            // Nothing selected yet: the header must not offer the rooms entry.
+            await waitFor(() => expect(collabFeatures).toHaveBeenCalled());
+            expect(currentDesktopBotRoomsVisible()).toBe(false);
+            fireEvent.click(await screen.findByText('值班'));
+            await waitFor(() => expect(currentDesktopBotRoomsVisible()).toBe(true));
+        } finally {
+            unmount();
+        }
+        // Unmount revokes the registration so other tabs never inherit it.
+        expect(currentDesktopBotRoomsVisible()).toBe(false);
+    });
+
     it('drags the identity chip, remembers the place, and a plain click still opens the desktop', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst', created_at: '2026-01-01T00:00:00Z' }]);
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
@@ -4225,8 +4645,9 @@ describe('DesktopBotWorkspace', () => {
         const chat = screen.getByTestId('desktop-bot-chat');
         const header = screen.getByTestId('desktop-bot-identity');
         const button = screen.getByTestId('desktop-bot-open-desktop');
-        // Every agent-chat header carries the bug-report control.
-        expect(screen.getByTestId('task-bug-report-btn')).toBeTruthy();
+        // The bug-report control moved to the app top header (bots tab);
+        // the floating identity chip no longer carries one.
+        expect(screen.queryByTestId('task-bug-report-btn')).toBeNull();
         Object.defineProperty(chat, 'clientWidth', { configurable: true, value: 800 });
         Object.defineProperty(chat, 'clientHeight', { configurable: true, value: 600 });
         Object.defineProperty(header, 'offsetWidth', { configurable: true, value: 160 });

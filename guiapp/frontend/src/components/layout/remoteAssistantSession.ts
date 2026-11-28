@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { CodingAgentTrailBuilder, type CodingAgentTimelineItem } from '../ai/codingAgentTimeline';
+import { isCodingAgentChatHiddenEvent, isCodingAgentProgressContent, parseCodingAgentProgress } from '../ai/CodingAgentProgressStatus';
 import { emptyViewerState, reduceViewerEvent, type ViewerReduceState } from '../ai/reduceViewerEvent';
 import {
     appendToolCallMarker,
@@ -161,8 +162,11 @@ export type RemoteAssistantSession = {
     cloudKind?: string;
     /** Which maclawsrv runs this cloud task: private node address or the official service label. */
     serverLabel?: string;
-    /** Coding-instance repository binding; absent for session instances. */
-    cloudGit?: { connected: boolean; repo?: string };
+    /** Coding-instance repository binding; absent for session instances.
+     *  service/origin name the provider so the header repo chip can link to
+     *  the provider's web page; both may be empty when the view predates
+     *  them or the read failed. */
+    cloudGit?: { connected: boolean; repo?: string; service?: string; origin?: string };
     canSend: boolean;
     offline: boolean;
     error: string;
@@ -354,6 +358,34 @@ export function remoteLiveToolCalls(parts: RemoteLivePart[], content: string): {
         next = appendToolCallMarker(next, id);
     }
     return calls.length ? { content: next, toolCalls: calls } : { content: next };
+}
+
+/**
+ * True when the synthetic live row carries anything the bubble paints as its
+ * own live rows: streamed text, open or filled thinking, styled tool calls,
+ * or a visible coding-timeline event. Plain progress lines stay in the tray
+ * (hidden audit events paint nowhere), so they must NOT silence the Working
+ * trail — a local turn keeps that trail under tray rows too. Recovery-card
+ * fields are the one deliberate divergence from the live-row append
+ * condition: the cards paint, but they are not a liveness cursor, so the
+ * trail stays. The gates here mirror the live-row append condition and
+ * CodingAgentTrailBuilder's own filters, so the trail and the bubble can
+ * never disagree about who owns the liveness marker.
+ */
+export function remoteLiveRoundPaintsRows(round: RemoteLiveRound | null | undefined): boolean {
+    if (!round || round.responded) return false;
+    for (const part of round.parts) {
+        if (part.kind === 'text' && part.text) return true;
+        if (part.kind === 'thinking' && (!part.done || !!part.text)) return true;
+        if (part.kind !== 'progress' || !part.text) continue;
+        const parsed = parseAssistantToolStatus(part.text);
+        if (parsed && !isProgressOnlyToolAction(parsed.action)) return true;
+        if (isCodingAgentProgressContent(part.text)) {
+            const event = parseCodingAgentProgress(part.text);
+            if (!event || !isCodingAgentChatHiddenEvent(event)) return true;
+        }
+    }
+    return false;
 }
 
 function closeLiveThinking(round: RemoteLiveRound) {
@@ -1037,6 +1069,11 @@ function sessionKey(session: RemoteAssistantSession | null) {
         session.machineName,
         session.taskName,
         session.serverLabel || '',
+        // The connect dialog republishes ONLY this field after a successful
+        // connect (noteCloudGitConnected / refreshCloudGit). Leaving it out
+        // makes emit() swallow that publish as unchanged, so the 未连接代码库
+        // hint survives the connect until an unrelated publish re-renders it.
+        session.cloudGit ? `git:${session.cloudGit.connected ? '1' : '0'}:${session.cloudGit.repo || ''}:${session.cloudGit.service || ''}:${session.cloudGit.origin || ''}` : '',
         session.error,
         session.activity ? JSON.stringify(session.activity) : '',
         liveStamp(session.live),

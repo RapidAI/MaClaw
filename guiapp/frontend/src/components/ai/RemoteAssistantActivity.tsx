@@ -2,11 +2,12 @@ import { useEffect, useState } from "react";
 import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
 import { localizeText } from "../../i18n";
 import { workflowStatusForTask } from "../layout/SidebarTaskManagement";
-import { remoteAssistantSend, type RemoteAssistantSession } from "../layout/remoteAssistantSession";
+import { remoteAssistantSend, remoteLiveRoundPaintsRows, type RemoteAssistantSession } from "../layout/remoteAssistantSession";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { formatProjectSearchTime } from "./projectSearchTime";
 import { renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
+import { cloudAgentTurnFileChanges } from "./cloudAgentPreview";
 import {
     buildCodingBannerChrome,
     codingChecklistAllDone,
@@ -71,9 +72,10 @@ function remoteWorkbenchSteps(session: RemoteAssistantSession): CodingStepStatus
  * uses. It sits above the input, centered; the message stream does not host
  * the rows. Approval stays on the other computer, so this bar has no gate.
  */
-export function RemoteCodingPlanChecklist({ session, lang, theme: t }: { session: RemoteAssistantSession; lang: string; theme: Theme }) {
+export function RemoteCodingPlanChecklist({ session, lang, theme: t, onOpenFile }: { session: RemoteAssistantSession; lang: string; theme: Theme; onOpenFile?: (path: string) => void }) {
     const steps = remoteWorkbenchSteps(session);
     const understanding = (session.workbench?.requirement_restatement || "").trim();
+    const fileChanges = cloudAgentTurnFileChanges(session);
     const failed = steps.some(step => codingStepIsFailed(step.status));
     // Same retirement as the local composer bar. All-passed folds on its own.
     // A completed or cancelled task also folds a leftover running cursor, a
@@ -95,12 +97,11 @@ export function RemoteCodingPlanChecklist({ session, lang, theme: t }: { session
     const closed = !stopping && !working && remoteWorkflowClosed(session.activity?.workflow?.status);
     const projection = codingSharedExecutionStatus(session.workbench);
     const projectionOpen = projection === "failed" || projection === "waiting_review";
-    if (
+    const retired = (
         (!gateOpen && !failed && !projectionOpen && (codingChecklistAllDone(steps) || (closed && (steps.length > 0 || !!understanding))))
         || (steps.length === 0 && !understanding)
-    ) {
-        return null;
-    }
+    );
+    if (retired && fileChanges.length === 0) return null;
     const workflowStatus = workflowStatusForTask(session.activity?.workflow, lang);
     // A stored running mark is only "in progress" while this turn is live.
     // Paused, interrupted, and review keep their own outcome on that cursor.
@@ -123,27 +124,26 @@ export function RemoteCodingPlanChecklist({ session, lang, theme: t }: { session
             lang={lang}
             theme={t}
             chrome={buildCodingBannerChrome({ isDark: !!t.isDark, remote: true, theme: t })}
-            steps={steps}
-            understanding={understanding}
-            pendingApproval={!!session.cloud && gateOpen}
+            steps={retired ? [] : steps}
+            understanding={retired ? "" : understanding}
+            pendingApproval={retired ? false : !!session.cloud && gateOpen}
             executionLive={working}
             executionStatusLabel={heldLabel}
-            {...cloudGate}
+            fileChanges={fileChanges}
+            onOpenFile={onOpenFile}
+            {...(retired ? {} : cloudGate)}
         />
     );
 }
 
 /**
- * Live status surface for a remote-control task. The get_task poll carries a
- * workflow snapshot and a heartbeat; the mirrored live round carries the same
- * coding feed / plan checklist the controlled desktop shows, so this panel
- * renders the working trail instead of a bare "working" banner.
+ * Live status for a remote or cloud task. The Working trail fills a busy
+ * round only while the bubble is not already painting that round.
  */
 export function RemoteAssistantActivity({ session, lang, theme: t }: { session: RemoteAssistantSession; lang: string; theme: Theme }) {
     const activity = session.activity;
     const busy = !!session.busy && !session.loading;
     const workflow = activity?.workflow || undefined;
-    const workflowStatus = workflowStatusForTask(workflow, lang);
     const paused = /(paused|pause|已暂停|暂停)/.test(`${workflow?.status || ""} ${workflow?.phase || ""}`.toLowerCase());
     const review = !!workflow?.pending_review && !paused && !remoteTerminalStatus(workflow?.status);
     // "busy" is awaitingReply-or-running, but paused / review-needed are the
@@ -157,19 +157,31 @@ export function RemoteAssistantActivity({ session, lang, theme: t }: { session: 
     // Step rows live on the composer bar (RemoteCodingPlanChecklist). This
     // panel only names the current step; it does not draw the list.
     const workbench = session.workbench || null;
-    const activeStep = remoteWorkbenchSteps(session).find(step => codingStepIsActive(step.status));
 
     const showPanel = (busy || paused || review || hasLive || !!workbench?.pending_approval) && !session.loading;
     const [now, setNow] = useState(() => Date.now());
+    // The heartbeat meta is the only consumer of the ticking clock; without
+    // a heartbeat to show, a per-second re-render runs for nobody.
+    const metaVisible = busy && !!(activity?.busySince || activity?.lastActivityAt);
     useEffect(() => {
-        // The elapsed/heartbeat meta only renders while busy — ticking in a
-        // paused or waiting state would re-render for nobody.
-        if (!busy) return;
+        if (!metaVisible) return;
         const timer = window.setInterval(() => setNow(Date.now()), TICK_BUSY_MS);
         return () => window.clearInterval(timer);
-    }, [busy]);
+    }, [metaVisible]);
 
     if (!showPanel) return null;
+
+    // Below the visibility gate: these feed only the collapsible panel's
+    // labels, so an idle session's poll re-renders skip the step-payload
+    // and workflow-status work entirely.
+    const workflowStatus = workflowStatusForTask(workflow, lang);
+    const activeStep = remoteWorkbenchSteps(session).find(step => codingStepIsActive(step.status));
+    // The trail yields only to rows the bubble actually paints. A raw part
+    // count is not that: plain progress lines render in the tray (a local
+    // turn keeps the trail under them too), and hidden audit events paint
+    // nowhere — silencing the trail for those left a busy round with no
+    // live marker at all.
+    const bubbleOwnsLiveRows = remoteLiveRoundPaintsRows(session.live);
 
     // A cloud agent session runs on the cloud server, not a controlled
     // computer — the labels name 云端 instead of 对方.
@@ -203,23 +215,22 @@ export function RemoteAssistantActivity({ session, lang, theme: t }: { session: 
             : "",
     ].filter(Boolean).join(" · ");
 
-    // The mirrored round's rows (thoughts, tool calls, coding events) are
-    // owned by the assistant bubble's process timeline — the same single
-    // surface a local coding turn uses. Repeating them here painted every
-    // call twice. While the round simply works, this surface shrinks to the
-    // local one-line Working trail; the collapsible panel stays only for
-    // the attention states that have no rows of their own.
     const attention = !activity?.stopping && !paused && !review && !session.syncing
         && !(workbench?.pending_approval && !hasLive)
         && !(activity?.awaitingReply && (!workflowStatus || workflowStatus.tone !== "info"))
         && (busy || hasLive);
     if (attention) {
+        const trail = bubbleOwnsLiveRows
+            ? null
+            : renderCodingAgentWorkingTrail({ text: t.text, fieldLabel: t.fieldLabel }, lang);
+        const metaRow = busy && meta ? (
+            <div className="aap-remote-activity-meta" data-testid="remote-activity-meta">{meta}</div>
+        ) : null;
+        if (!trail && !metaRow) return null;
         return (
             <div className="aap-remote-activity" data-testid="remote-activity">
-                {renderCodingAgentWorkingTrail({ text: t.text, fieldLabel: t.fieldLabel }, lang)}
-                {busy && meta ? (
-                    <div className="aap-remote-activity-meta" data-testid="remote-activity-meta">{meta}</div>
-                ) : null}
+                {trail}
+                {metaRow}
             </div>
         );
     }

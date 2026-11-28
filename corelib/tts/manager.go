@@ -81,7 +81,11 @@ func NewKokoroManager(modelPath, voiceDir, voiceID string) *Manager {
 			}
 			return &KokoroRuntime{Model: model, Voice: voice, VoiceDir: voiceDir, VoiceID: voiceID}, nil
 		},
-		Close:       func(m *KokoroRuntime) {},
+		Close: func(m *KokoroRuntime) {
+			if m != nil && m.Model != nil {
+				m.Model.ReleaseNPU()
+			}
+		},
 		UnloadDelay: defaultTTSUnloadDelay,
 	})
 	return &Manager{kokoro: mm}

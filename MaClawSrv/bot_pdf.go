@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/MaClawSrv/cloudagent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
 )
@@ -76,6 +77,9 @@ func (m botPDFModule) InvokeTool(ctx context.Context, request agentruntime.TurnR
 			if generator == nil || !generator.HasFont() {
 				return nil, fmt.Errorf("PDF font is unavailable on this server")
 			}
+			// Same self-repair trigger as the cloud session tools: a host
+			// running only hub bots must still download the full font.
+			cloudagent.MaybeProvisionCJKFont()
 			return generator.GenerateSpecDoc("", title, text)
 		}
 	}
@@ -92,15 +96,27 @@ func (m botPDFModule) InvokeTool(ctx context.Context, request agentruntime.TurnR
 	if ctx != nil && ctx.Err() != nil {
 		return "", ctx.Err()
 	}
+	// A bare host renders with the embedded subset face: warn the model
+	// about any characters that printed as blank boxes, same as the cloud
+	// session tools do — the defect is identical for a bot-delivered PDF.
+	glyphNote := cloudagent.PDFMissingGlyphNote(title + "\n" + content)
 	if desktopShotSlotFrom(ctx) != nil && base64.StdEncoding.EncodedLen(len(pdf)) <= desktopHubReplyFileMax {
 		if err := noteDesktopFileItem(ctx, name, "application/pdf", pdf, desktopArg(args, "item_id")); err != nil {
 			return "", err
 		}
-		return desktopDeliveredWithEvidence(name, len(pdf), pdf), nil
+		msg := desktopDeliveredWithEvidence(name, len(pdf), pdf)
+		if glyphNote != "" {
+			msg += "\n" + glyphNote
+		}
+		return msg, nil
 	}
 	scope, _, err := desktopScopeForTurn(request)
 	if err != nil {
 		return "", err
 	}
-	return deliverFileOnItsOwn(ctx, scope, name, pdf, desktopArg(args, "item_id"))
+	msg, err := deliverFileOnItsOwn(ctx, scope, name, pdf, desktopArg(args, "item_id"))
+	if err == nil && glyphNote != "" {
+		msg += "\n" + glyphNote
+	}
+	return msg, err
 }

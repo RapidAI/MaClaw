@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync/atomic"
 
 	gopdf "github.com/VantageDataChat/GoPDF2"
 	ttfcore "github.com/VantageDataChat/GoPDF2/fontmaker/core"
@@ -187,11 +188,32 @@ func styledTitleColors(style Style) (title, subtitle, project, brand, size strin
 
 // styleRuleGlyph is the body-font character used for a markdown rule.
 // selectStyleRuleGlyph picks the first one the embedded face actually maps.
-// A missing box-drawing glyph would print as .notdef.
-var styleRuleGlyph = "━"
+// A missing box-drawing glyph would print as .notdef. Stored in an
+// atomic.Value because detection re-selects it whenever the active face
+// changes (embedded fallback → late-arriving real font) while renders on
+// other goroutines read it.
+var styleRuleGlyph atomic.Value // string
+
+func ruleGlyph() string {
+	if v := styleRuleGlyph.Load(); v != nil {
+		return v.(string)
+	}
+	return "━"
+}
+
+// styleRuleFont dedupes selection: both call sites run inside
+// detectSystemFonts under fontDetectMu, and parsing a CJK face costs ~12ms —
+// far too much to repeat on every probe of a bare host, where the same
+// embedded face is re-selected each time. The slice itself is retained
+// (not just the head pointer) so the backing array can never be freed and
+// its address reused by a different font.
+var styleRuleFont []byte
 
 func selectStyleRuleGlyph(font []byte) {
 	if len(font) == 0 {
+		return
+	}
+	if len(styleRuleFont) > 0 && &styleRuleFont[0] == &font[0] {
 		return
 	}
 	var parser ttfcore.TTFParser
@@ -201,7 +223,8 @@ func selectStyleRuleGlyph(font []byte) {
 	chars := parser.Chars()
 	for _, r := range []rune{'━', '—', '－'} {
 		if _, ok := chars[int(r)]; ok {
-			styleRuleGlyph = string(r)
+			styleRuleGlyph.Store(string(r))
+			styleRuleFont = font
 			return
 		}
 	}
@@ -211,7 +234,7 @@ func styledRuleHTML(style Style) string {
 	if style.ID == "" {
 		return "<hr/>"
 	}
-	return fmt.Sprintf(`<p style="font-size:6pt; color:%s">%s</p>`, cssHex(style.Colors.Rule), strings.Repeat(styleRuleGlyph, 68))
+	return fmt.Sprintf(`<p style="font-size:6pt; color:%s">%s</p>`, cssHex(style.Colors.Rule), strings.Repeat(ruleGlyph(), 68))
 }
 
 // styleMarkGlyph is a fullwidth bar from the CJK font. Block-element bars such

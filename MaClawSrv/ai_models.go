@@ -423,13 +423,23 @@ func (s *HTTPServer) decorateAssistantMessageMetadata(ctx context.Context, p age
 		if plan == "" {
 			plan = out["outcome_unblock"]
 		}
-		if err := desktopRunContinueSend(ctx, s.svc, p, inst.ID, sess.ID, run.ID, out["outcome_blocker"], plan); err != nil {
+		if err := desktopRunContinueSend(ctx, s.svc, p, inst.ID, sess.ID, run.ID, out["outcome_status"], out["outcome_blocker"], plan); err != nil {
 			out["outcome_next"] = "ask_user"
 			out["outcome_remediated"] = "true"
-			out["send_to_user"] = desktopRunFinishSentence(desktopRunFinish{
-				Status: "failure", Blocker: out["outcome_blocker"],
-				Unblock: strings.Split(out["outcome_unblock"], "\n"), Next: "ask_user", Remediated: true,
-			})
+			list := func(v string) []string {
+				if strings.TrimSpace(v) == "" {
+					return nil
+				}
+				return strings.Split(v, "\n")
+			}
+			terminal := desktopRunFinish{
+				Status: out["outcome_status"], Results: list(out["outcome_results"]),
+				Blocker: out["outcome_blocker"], Unblock: list(out["outcome_unblock"]),
+				Next: "ask_user", Plan: out["outcome_plan"], Remediated: true,
+				Record: out["outcome_record"],
+			}
+			_ = desktopStoreRunFinish(run.ID, msg.Content, out["task_outcome_evidence"], terminal)
+			out["send_to_user"] = desktopRunFinishSentence(terminal)
 			out["send_to_user_kind"] = "report"
 		}
 	}

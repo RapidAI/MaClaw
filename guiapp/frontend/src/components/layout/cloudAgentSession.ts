@@ -132,6 +132,25 @@ export function cloudAgentTrail(key: string): CodingAgentTimelineItem[] | null {
     return trail.builder.snapshot();
 }
 
+/**
+ * Persisted cloud_get_task events, in seq order. Thinking rows are already
+ * sealed. An empty list stays undefined so a caller can fall back.
+ */
+export function codingTimelineFromTurnEvents(events: Array<{ kind?: string; text?: string; seq?: number }> | null | undefined): CodingAgentTimelineItem[] | undefined {
+    if (!events?.length) return undefined;
+    const builder = new CodingAgentTrailBuilder();
+    for (const event of events) {
+        const text = String(event?.text || '');
+        if (!text) continue;
+        const kind = String(event?.kind || '');
+        const seq = typeof event?.seq === 'number' && event.seq > 0 ? event.seq : undefined;
+        if (kind === 'thinking') builder.thinkingDone(text);
+        else if (kind === 'progress') builder.progress(text, seq);
+    }
+    const snapshot = builder.snapshot();
+    return snapshot.length ? snapshot : undefined;
+}
+
 /** Request id the stored trail belongs to ('' before the first round frame). */
 export function cloudAgentTrailRequestId(key: string): string {
     return trails.get(key)?.requestId || '';

@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"unsafe"
 )
 
 func (m *Model) GeneratorForward(feat *DecoderFeatures, f0n *F0NResult, voice *TensorFile) ([]float32, error) {
@@ -25,6 +26,12 @@ func (m *Model) GeneratorForward(feat *DecoderFeatures, f0n *F0NResult, voice *T
 	x := append([]float32(nil), feat.X...)
 	frames := feat.Frames
 	inC := 512
+	// Both stages consume the same harmonic spectrum. Building it once
+	// avoids a second full-rate sine bank and STFT.
+	har, err := m.sourceHarmonicSpectrum(f0n.F0)
+	if err != nil {
+		return nil, err
+	}
 	upsampleRates := []int{10, 6}
 	upsampleKernels := []int{20, 12}
 	for i := 0; i < 2; i++ {
@@ -45,7 +52,7 @@ func (m *Model) GeneratorForward(feat *DecoderFeatures, f0n *F0NResult, voice *T
 			x = reflectionPadLeft1(x, inC, frames)
 			frames++
 		}
-		xSource, err := m.generatorSourceForStage(f0n.F0, frames, outC, s, i)
+		xSource, err := m.generatorSourceForStage(har, frames, outC, s, i)
 		if err != nil {
 			return nil, err
 		}
@@ -56,21 +63,12 @@ func (m *Model) GeneratorForward(feat *DecoderFeatures, f0n *F0NResult, voice *T
 			x = sum
 			continue
 		}
-		var sum []float32
-		for j := 0; j < 3; j++ {
-			blockIdx := i*3 + j
-			y, err := m.generatorAdaINResBlock1(x, inC, frames, s, fmt.Sprintf("decoder.module.generator.resblocks.%d", blockIdx))
-			if err != nil {
-				return nil, err
-			}
-			if sum == nil {
-				sum = y
-			} else {
-				addInplace32(sum, y)
-			}
+		// CPU stages average three resblocks. xSource has been added into x,
+		// so the helper may overwrite it as the block-1/2 scratch.
+		x, err = m.averageGeneratorResBlocks(x, xSource, inC, frames, s, i)
+		if err != nil {
+			return nil, err
 		}
-		mulNumberInplace32(sum, 1.0/3)
-		x = sum
 	}
 	leakyReLUInplace(x, 0.01)
 	x, err = m.weightNormConv1D(x, 128, frames, 22, 7, 1, 3, 1, 1, "decoder.module.generator.conv_post")
@@ -105,29 +103,110 @@ func (m *Model) GeneratorForward(feat *DecoderFeatures, f0n *F0NResult, voice *T
 	return pcm, nil
 }
 
+// averageGeneratorResBlocks averages the three AdaIN resblocks of one
+// vocoder stage. Block 0 is written into a fresh accumulator the caller
+// keeps. Blocks 1 and 2 share one scratch. scratch is used for that when
+// it has the same length and does not overlap x or the temps; otherwise a
+// pooled buffer is used and returned on the way out. x is only read.
+// xt and mid are shared across the three blocks; each block overwrites them.
+func (m *Model) averageGeneratorResBlocks(x, scratch []float32, channels, frames int, style []float32, stage int) ([]float32, error) {
+	sum := make([]float32, len(x))
+	xt := getFloat32Buffer(len(x))
+	mid := getFloat32Buffer(len(x))
+	defer putFloat32Buffer(xt)
+	defer putFloat32Buffer(mid)
+	if err := m.generatorAdaINResBlock1Temps(sum, x, xt, mid, channels, frames, style, fmt.Sprintf("decoder.module.generator.resblocks.%d", stage*3)); err != nil {
+		return nil, err
+	}
+	extra := scratch
+	pooled := false
+	if len(extra) != len(x) || float32Overlaps(extra, x) || float32Overlaps(extra, xt) || float32Overlaps(extra, mid) || float32Overlaps(extra, sum) {
+		extra = getFloat32Buffer(len(x))
+		pooled = true
+	}
+	defer func() {
+		if pooled {
+			putFloat32Buffer(extra)
+		}
+	}()
+	for j := 1; j < 3; j++ {
+		if err := m.generatorAdaINResBlock1Temps(extra, x, xt, mid, channels, frames, style, fmt.Sprintf("decoder.module.generator.resblocks.%d", stage*3+j)); err != nil {
+			return nil, err
+		}
+		addInplace32(sum, extra)
+	}
+	mulNumberInplace32(sum, 1.0/3)
+	return sum, nil
+}
+
+// float32Overlaps reports whether a and b share any element.
+func float32Overlaps(a, b []float32) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	as := uintptr(unsafe.Pointer(unsafe.SliceData(a)))
+	bs := uintptr(unsafe.Pointer(unsafe.SliceData(b)))
+	ae := as + uintptr(len(a))*unsafe.Sizeof(a[0])
+	be := bs + uintptr(len(b))*unsafe.Sizeof(b[0])
+	return as < be && bs < ae
+}
+
+// generatorAdaINResBlock1 allocates its output. Debug stats and the noise
+// resblock keep a private buffer so a later block cannot overwrite it.
 func (m *Model) generatorAdaINResBlock1(x []float32, channels, frames int, style []float32, prefix string) ([]float32, error) {
 	out := make([]float32, len(x))
-	copy(out, x)
-	for i := 0; i < 3; i++ {
-		xt := make([]float32, len(out))
-		if err := adaINSnake1D(xt, out, channels, frames, style, mustTensorData(m, fmt.Sprintf("%s.adain1.%d.fc.weight", prefix, i)), mustTensorData(m, fmt.Sprintf("%s.adain1.%d.fc.bias", prefix, i)), mustTensorData(m, fmt.Sprintf("%s.alpha1.%d", prefix, i))); err != nil {
-			return nil, err
-		}
-		var err error
-		xt, err = m.weightNormConv1D(xt, channels, frames, channels, kernelForGeneratorBlock(prefix), 1, paddingForKernel(kernelForGeneratorBlock(prefix), dilationForIndex(i)), dilationForIndex(i), 1, fmt.Sprintf("%s.convs1.%d", prefix, i))
-		if err != nil {
-			return nil, err
-		}
-		xt2 := make([]float32, len(xt))
-		if err := adaINSnake1D(xt2, xt, channels, frames, style, mustTensorData(m, fmt.Sprintf("%s.adain2.%d.fc.weight", prefix, i)), mustTensorData(m, fmt.Sprintf("%s.adain2.%d.fc.bias", prefix, i)), mustTensorData(m, fmt.Sprintf("%s.alpha2.%d", prefix, i))); err != nil {
-			return nil, err
-		}
-		// convs2 accumulates straight into out (fused residual epilogue).
-		if err := m.weightNormConv1DResidual(out, xt2, channels, frames, channels, kernelForGeneratorBlock(prefix), 1, paddingForKernel(kernelForGeneratorBlock(prefix), 1), 1, 1, fmt.Sprintf("%s.convs2.%d", prefix, i), out); err != nil {
-			return nil, err
-		}
+	if err := m.generatorAdaINResBlock1Into(out, x, channels, frames, style, prefix); err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+// generatorAdaINResBlock1Into writes one resblock into dst. dst may alias x.
+// dst must not alias the temps this function checks out.
+func (m *Model) generatorAdaINResBlock1Into(dst, x []float32, channels, frames int, style []float32, prefix string) error {
+	if len(dst) != len(x) {
+		return fmt.Errorf("kokoro: resblock out length %d, want %d", len(dst), len(x))
+	}
+	xt := getFloat32Buffer(len(dst))
+	mid := getFloat32Buffer(len(dst))
+	defer putFloat32Buffer(xt)
+	defer putFloat32Buffer(mid)
+	return m.generatorAdaINResBlock1Temps(dst, x, xt, mid, channels, frames, style, prefix)
+}
+
+// generatorAdaINResBlock1Temps writes one resblock into dst using caller-owned
+// temps. The first dilation reads x and adds it as the residual, which is the
+// old opening copy followed by an in-place residual. Later dilations read dst.
+// conv1 copies xt before it returns, so the second snake reuses xt. A dirty
+// dst is fully overwritten by that first residual conv.
+func (m *Model) generatorAdaINResBlock1Temps(dst, x, xt, mid []float32, channels, frames int, style []float32, prefix string) error {
+	if len(dst) != len(x) || len(xt) != len(dst) || len(mid) != len(dst) {
+		return fmt.Errorf("kokoro: resblock lengths dst %d x %d xt %d mid %d", len(dst), len(x), len(xt), len(mid))
+	}
+	for i := 0; i < 3; i++ {
+		src := dst
+		residual := dst
+		if i == 0 {
+			src = x
+			residual = x
+		}
+		k := kernelForGeneratorBlock(prefix)
+		dil := dilationForIndex(i)
+		if err := adaINSnake1D(xt, src, channels, frames, style, mustTensorData(m, fmt.Sprintf("%s.adain1.%d.fc.weight", prefix, i)), mustTensorData(m, fmt.Sprintf("%s.adain1.%d.fc.bias", prefix, i)), mustTensorData(m, fmt.Sprintf("%s.alpha1.%d", prefix, i))); err != nil {
+			return err
+		}
+		if err := m.weightNormConv1DInto(mid, xt, channels, frames, channels, k, 1, paddingForKernel(k, dil), dil, 1, fmt.Sprintf("%s.convs1.%d", prefix, i)); err != nil {
+			return err
+		}
+		if err := adaINSnake1D(xt, mid, channels, frames, style, mustTensorData(m, fmt.Sprintf("%s.adain2.%d.fc.weight", prefix, i)), mustTensorData(m, fmt.Sprintf("%s.adain2.%d.fc.bias", prefix, i)), mustTensorData(m, fmt.Sprintf("%s.alpha2.%d", prefix, i))); err != nil {
+			return err
+		}
+		// convs2 accumulates straight into dst (fused residual epilogue).
+		if err := m.weightNormConv1DResidual(dst, xt, channels, frames, channels, k, 1, paddingForKernel(k, 1), 1, 1, fmt.Sprintf("%s.convs2.%d", prefix, i), residual); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // adaINSnake1D fuses adaIN1D with the following snake activation: it writes
@@ -138,12 +217,14 @@ func adaINSnake1D(out, x []float32, channels, frames int, style, fcW, fcB, alpha
 	if len(out) != channels*frames || len(x) != channels*frames {
 		return fmt.Errorf("kokoro: adain snake shape mismatch")
 	}
-	params := make([]float32, channels*2)
+	params := getFloat32Buffer(channels * 2)
+	defer putFloat32Buffer(params)
 	if err := Linear(params, style, fcW, fcB, len(style), channels*2); err != nil {
 		return err
 	}
 	normRange := func(c0, c1 int) {
-		scratch := make([]float32, frames)
+		scratch := getFloat32Buffer(frames)
+		defer putFloat32Buffer(scratch)
 		for c := c0; c < c1; c++ {
 			row := x[c*frames : (c+1)*frames]
 			dst := out[c*frames : (c+1)*frames]
@@ -302,9 +383,10 @@ func reflectionPadLeft1(x []float32, channels, frames int) []float32 {
 	return out
 }
 
-func (m *Model) generatorSourceForStage(f0 []float32, frames, channels int, style []float32, stage int) ([]float32, error) {
+// sourceHarmonicSpectrum packs 11 magnitude bins and 11 phase bins of the
+// F0 harmonic source. Both vocoder stages read this same buffer.
+func (m *Model) sourceHarmonicSpectrum(f0 []float32) ([]float32, error) {
 	const sourceScale = 300
-	harmonics := synthHarmonicsKokoro(f0, 24000, sourceScale, 8, 0.1)
 	merged := make([]float32, len(f0)*sourceScale)
 	w, err := m.tensorData("decoder.module.generator.m_source.l_linear.weight")
 	if err != nil {
@@ -314,13 +396,9 @@ func (m *Model) generatorSourceForStage(f0 []float32, frames, channels int, styl
 	if err != nil {
 		return nil, err
 	}
-	for t := range merged {
-		sum := b[0]
-		for h := 0; h < 9; h++ {
-			sum += harmonics[t*9+h] * w[h]
-		}
-		merged[t] = sum
-	}
+	// Mix in harmonic order directly. That is the same sum as materializing
+	// the 9-channel bank and dotting it with this weight.
+	mixSourceHarmonics(merged, f0, 24000, sourceScale, 8, 0.1, w, b[0])
 	// tanh elementwise via exp: tanh(x) = 1 - 2/(e^{2x}+1); one fused
 	// vector pass instead of 1.7M scalar math.Tanh calls.
 	tanhInplace32(merged)
@@ -330,6 +408,15 @@ func (m *Model) generatorSourceForStage(f0 []float32, frames, channels int, styl
 		copy(har[c*stftFrames:(c+1)*stftFrames], mag[c*stftFrames:(c+1)*stftFrames])
 		copy(har[(11+c)*stftFrames:(12+c)*stftFrames], phase[c*stftFrames:(c+1)*stftFrames])
 	}
+	return har, nil
+}
+
+func (m *Model) generatorSourceForStage(har []float32, frames, channels int, style []float32, stage int) ([]float32, error) {
+	if len(har)%22 != 0 || channels <= 0 {
+		return nil, fmt.Errorf("kokoro: harmonic spectrum length %d channels %d", len(har), channels)
+	}
+	stftFrames := len(har) / 22
+	var err error
 	var source []float32
 	if stage == 0 {
 		source, err = m.plainConv1D(har, 22, stftFrames, channels, 12, 6, 3, 1, 1, "decoder.module.generator.noise_convs.0")
@@ -429,34 +516,15 @@ func synthHarmonicsKokoro(f0 []float32, sampleRate, upsampleScale, harmonicNum i
 	dim := harmonicNum + 1
 	outLen := len(f0) * upsampleScale
 	out := make([]float32, outLen*dim)
-	if len(f0) == 0 || upsampleScale <= 0 {
+	if len(f0) == 0 || upsampleScale <= 0 || harmonicNum < 0 {
 		return out
 	}
+	lo, frac := buildHarmonicGrid(outLen, len(f0), upsampleScale)
 	phaseLow := make([]float32, len(f0))
 	phase := make([]float32, outLen)
 	for h := 0; h < dim; h++ {
-		cumsum := float64(0)
-		mul := float64(h + 1)
-		for t, base := range f0 {
-			rad := math.Mod(float64(base)*mul/float64(sampleRate), 1)
-			if rad < 0 {
-				rad += 1
-			}
-			cumsum += rad
-			phaseLow[t] = float32(cumsum * 2 * math.Pi * float64(upsampleScale))
-		}
-		for t := 0; t < outLen; t++ {
-			pos := (float64(t)+0.5)/float64(upsampleScale) - 0.5
-			lo := int(math.Floor(pos))
-			frac := float32(pos - float64(lo))
-			if lo < 0 {
-				phase[t] = phaseLow[0]
-			} else if lo >= len(f0)-1 {
-				phase[t] = phaseLow[len(f0)-1]
-			} else {
-				phase[t] = phaseLow[lo]*(1-frac) + phaseLow[lo+1]*frac
-			}
-		}
+		fillHarmonicPhaseLow(phaseLow, f0, sampleRate, upsampleScale, h)
+		interpHarmonicPhase(phase, phaseLow, lo, frac)
 		sinInplace32(phase)
 		for t, v := range phase {
 			if f0[t/upsampleScale] > 10 {
@@ -467,6 +535,90 @@ func synthHarmonicsKokoro(f0 []float32, sampleRate, upsampleScale, harmonicNum i
 		}
 	}
 	return out
+}
+
+// mixSourceHarmonics writes bias plus the harmonic bank dotted with w.
+// Harmonic 0 is added first. The upsample grid is built once and reused
+// for every harmonic. dst length is len(f0)*upsampleScale.
+func mixSourceHarmonics(dst, f0 []float32, sampleRate, upsampleScale, harmonicNum int, amp float32, w []float32, bias float32) {
+	if len(dst) == 0 || len(f0) == 0 || upsampleScale <= 0 || harmonicNum < 0 {
+		return
+	}
+	for i := range dst {
+		dst[i] = bias
+	}
+	lo, frac := buildHarmonicGrid(len(dst), len(f0), upsampleScale)
+	phaseLow := make([]float32, len(f0))
+	phase := make([]float32, len(dst))
+	for h := 0; h <= harmonicNum; h++ {
+		fillHarmonicPhaseLow(phaseLow, f0, sampleRate, upsampleScale, h)
+		interpHarmonicPhase(phase, phaseLow, lo, frac)
+		sinInplace32(phase)
+		wh := w[h]
+		for t, v := range phase {
+			if f0[t/upsampleScale] > 10 {
+				dst[t] += (amp * v) * wh
+			}
+		}
+	}
+}
+
+// buildHarmonicGrid records the half-pixel upsample used by the harmonic
+// bank. lo < 0 selects the first low-rate sample. lo >= nLow-1 selects the
+// last one. Other entries lerp phaseLow[lo] and phaseLow[lo+1] by frac.
+func buildHarmonicGrid(outLen, nLow, scale int) (lo []int32, frac []float32) {
+	lo = make([]int32, outLen)
+	frac = make([]float32, outLen)
+	if outLen <= 0 || nLow <= 0 || scale <= 0 {
+		return lo, frac
+	}
+	scaleF := float64(scale)
+	last := int32(nLow - 1)
+	for t := 0; t < outLen; t++ {
+		pos := (float64(t)+0.5)/scaleF - 0.5
+		l := int32(math.Floor(pos))
+		if l < 0 {
+			lo[t] = -1
+			continue
+		}
+		if l >= last {
+			lo[t] = last
+			continue
+		}
+		lo[t] = l
+		frac[t] = float32(pos - float64(l))
+	}
+	return lo, frac
+}
+
+func fillHarmonicPhaseLow(phaseLow, f0 []float32, sampleRate, upsampleScale, harmonic int) {
+	cumsum := float64(0)
+	mul := float64(harmonic + 1)
+	for t, base := range f0 {
+		rad := math.Mod(float64(base)*mul/float64(sampleRate), 1)
+		if rad < 0 {
+			rad += 1
+		}
+		cumsum += rad
+		phaseLow[t] = float32(cumsum * 2 * math.Pi * float64(upsampleScale))
+	}
+}
+
+func interpHarmonicPhase(phase, phaseLow []float32, lo []int32, frac []float32) {
+	last := int32(len(phaseLow) - 1)
+	for t := range phase {
+		l := lo[t]
+		if l < 0 {
+			phase[t] = phaseLow[0]
+			continue
+		}
+		if l >= last {
+			phase[t] = phaseLow[last]
+			continue
+		}
+		f := frac[t]
+		phase[t] = phaseLow[l]*(1-f) + phaseLow[l+1]*f
+	}
 }
 
 func resizeChannelTime(x []float32, channels, inT, outT int) []float32 {

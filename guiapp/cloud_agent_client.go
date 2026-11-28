@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
 
@@ -80,48 +81,173 @@ func (a *App) CreateCloudAgent(name, kind string) (CloudAgentRow, error) {
 }
 
 // cloudAgentDefaultLLM resolves the 云端 Agent global default model from the
-// desktop config. It matches the provider by stable ID first, then by name,
-// and skips hub-service rows or rows without real endpoint credentials — the
-// same usability rule the settings panel applies. The second return reports
-// whether a custom default should be applied at all.
+// desktop config. The cloud profile lives in MaclawLLMProfiles.Cloud
+// (settings → 大模型配置): nil means never configured and follows the
+// assistant, InheritAssistant follows the assistant explicitly, and an
+// assigned row pushes that provider. Providers are matched by stable ID
+// first, then by name — the legacy cloud_agent_llm_provider pair stored
+// either — and hub-service rows or rows without real endpoint credentials
+// are skipped, the same usability rule the settings panels apply. The second
+// return reports whether a custom default should be applied at all.
 func (a *App) cloudAgentDefaultLLM() (CloudLLMSet, bool) {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return CloudLLMSet{}, false
 	}
-	providerID := strings.TrimSpace(cfg.CloudAgentLLMProvider)
-	if providerID == "" {
+	providers := cfg.MaclawLLMProviders
+	if len(providers) == 0 {
+		providers = defaultMaclawLLMProviders()
+	}
+	provider, model, ok := cloudAgentLLMDefaultSelection(cfg, providers, cfg.MaclawLLMCurrentProvider)
+	if !ok {
 		return CloudLLMSet{}, false
 	}
-	for _, provider := range cfg.MaclawLLMProviders {
-		id, name := strings.TrimSpace(provider.ID), strings.TrimSpace(provider.Name)
-		if id != providerID && name != providerID {
+	return CloudLLMSet{
+		URL:             provider.URL,
+		Key:             provider.Key,
+		Model:           model,
+		Label:           provider.Name,
+		Protocol:        provider.Protocol,
+		WireAPI:         provider.WireAPI,
+		AgentType:       provider.AgentType,
+		ContextLength:   provider.ContextLength,
+		TimeoutSec:      provider.TimeoutSec,
+		MaxOutputTokens: provider.MaxOutputTokens,
+		// The same global level a local coding turn is stamped with —
+		// the srv applies it so cloud and local requests match.
+		ThinkingMode: a.cloudAgentThinkingLevel(),
+	}, true
+}
+
+// cloudAgentLLMDefaultSelection resolves the 云端 Agent default to one usable
+// desktop provider and model. ok=false means the Hub official model applies
+// (never configured with an unusable assistant, an explicit official pin, or
+// an unusable selection). The legacy cloud_agent_llm_provider pair never
+// reaches this function directly: effectiveMaclawLLMProfiles has already
+// seeded it into the Cloud profile.
+func cloudAgentLLMDefaultSelection(cfg corelib.AppConfig, providers []corelib.MaclawLLMProvider, current string) (corelib.MaclawLLMProvider, string, bool) {
+	profiles, profilesErr := effectiveMaclawLLMProfiles(cfg, providers, current)
+	if profilesErr != nil {
+		// A legacy config whose current provider no longer matches has no
+		// resolvable assistant — but its cloud_agent_llm_provider pick still
+		// applies on its own. Nothing configured resolves to the official
+		// model.
+		if cfg.MaclawLLMProfiles != nil {
+			return corelib.MaclawLLMProvider{}, "", false
+		}
+		profiles = &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion}
+		seedCloudAgentLegacyDefault(profiles, cfg, providers)
+		if profiles.Cloud == nil {
+			return corelib.MaclawLLMProvider{}, "", false
+		}
+	}
+	cloud := profiles.Cloud
+	if cloud == nil {
+		// The new default: a never-configured cloud default follows the
+		// assistant's live selection.
+		cloud = &corelib.MaclawLLMProfile{InheritAssistant: true}
+	}
+	selected := *cloud
+	if selected.InheritAssistant {
+		provider, model, err := effectiveMaclawLLMProfileSelection(maclawLLMProfileAssistant, corelib.AppConfig{MaclawLLMProfiles: profiles, MaclawLLMProviders: providers, MaclawLLMCurrentProvider: current}, providers, current, profiles)
+		if err != nil {
+			return corelib.MaclawLLMProvider{}, "", false
+		}
+		selected = corelib.MaclawLLMProfile{ProviderID: maclawLLMProviderIDForRead(provider), Model: model}
+	}
+	if !maclawLLMProfileAssigned(selected) {
+		return corelib.MaclawLLMProvider{}, "", false
+	}
+	provider, ok := resolveMaclawLLMProviderByID(providers, selected.ProviderID)
+	if !ok {
+		// Legacy picks stored the display name when the row had no ID yet.
+		for _, candidate := range providers {
+			if corelib.MaclawLLMProviderNameEqual(candidate.Name, selected.ProviderID) {
+				provider, ok = candidate, true
+				break
+			}
+		}
+	}
+	if !ok {
+		return corelib.MaclawLLMProvider{}, "", false
+	}
+	if provider.IsHubService || isHubServiceProviderName(strings.TrimSpace(provider.Name)) ||
+		strings.TrimSpace(provider.URL) == "" || strings.TrimSpace(provider.Key) == "" {
+		return corelib.MaclawLLMProvider{}, "", false
+	}
+	model := strings.TrimSpace(selected.Model)
+	if model == "" {
+		model = strings.TrimSpace(provider.Model)
+	}
+	if model == "" {
+		return corelib.MaclawLLMProvider{}, "", false
+	}
+	return provider, model, true
+}
+
+// cloudAgentLLMDefaultFingerprint is the comparable outcome of resolving the
+// 云端 Agent default for one profile snapshot. Follow states resolve through
+// the assistant's selection, so an assistant edit under follow counts as a
+// change and re-applies the default to existing instances. The zero value is
+// the Hub official model.
+type cloudAgentLLMDefaultFingerprint struct {
+	custom     bool
+	providerID string
+	model      string
+}
+
+func computeCloudAgentLLMDefaultFingerprint(cfg corelib.AppConfig, providers []corelib.MaclawLLMProvider, current string) cloudAgentLLMDefaultFingerprint {
+	provider, model, ok := cloudAgentLLMDefaultSelection(cfg, providers, current)
+	if !ok {
+		return cloudAgentLLMDefaultFingerprint{}
+	}
+	return cloudAgentLLMDefaultFingerprint{custom: true, providerID: maclawLLMProviderIDForRead(provider), model: strings.TrimSpace(model)}
+}
+
+// applyCloudAgentLLMDefaultAfterProfilesChangeFn is the post-save fan-out
+// entry; a func var so tests run it synchronously against their stub Hub.
+var applyCloudAgentLLMDefaultAfterProfilesChangeFn = (*App).applyCloudAgentLLMDefaultAfterProfilesChange
+
+// applyCloudAgentLLMDefaultAfterProfilesChange re-applies the 云端 Agent
+// default model to every existing instance after a model-assignment save
+// changed it. Follow-assistant is live: an assistant edit reaches existing
+// instances the same way an explicit default edit does. Every failure is
+// logged and non-fatal — the default still applies to new instances and to
+// the next successful save.
+func (a *App) applyCloudAgentLLMDefaultAfterProfilesChange() {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return
+	}
+	if strings.TrimSpace(cfg.RemoteMachineID) == "" {
+		return // not signed in to the Hub; nothing to update
+	}
+	list, listErr := a.ListCloudAgents()
+	if listErr != nil || !list.Enabled || len(list.Instances) == 0 {
+		return
+	}
+	def, defOK := a.cloudAgentDefaultLLM()
+	for _, row := range list.Instances {
+		if defOK && row.LLMMode == "custom" && row.LLMModel == def.Model && row.LLMLabel == def.Label {
+			// Already sitting on exactly this default; a repeated save must
+			// not churn every instance with identical pushes.
 			continue
 		}
-		if provider.IsHubService || isHubServiceProviderName(name) || strings.TrimSpace(provider.URL) == "" || strings.TrimSpace(provider.Key) == "" {
-			return CloudLLMSet{}, false
+		if !defOK && row.LLMMode != "custom" {
+			// Official instances already sit on the official default; a reset
+			// would only churn them.
+			continue
 		}
-		model := strings.TrimSpace(cfg.CloudAgentLLMModel)
-		if model == "" {
-			model = strings.TrimSpace(provider.Model)
+		var applyErr error
+		if defOK {
+			_, applyErr = a.SetCloudAgentLLM(row.ID, def)
+		} else {
+			_, applyErr = a.ResetCloudAgentLLM(row.ID)
 		}
-		return CloudLLMSet{
-			URL:             provider.URL,
-			Key:             provider.Key,
-			Model:           model,
-			Label:           name,
-			Protocol:        provider.Protocol,
-			WireAPI:         provider.WireAPI,
-			AgentType:       provider.AgentType,
-			ContextLength:   provider.ContextLength,
-			TimeoutSec:      provider.TimeoutSec,
-			MaxOutputTokens: provider.MaxOutputTokens,
-			// The same global level a local coding turn is stamped with —
-			// the srv applies it so cloud and local requests match.
-			ThinkingMode: a.cloudAgentThinkingLevel(),
-		}, true
+		if applyErr != nil {
+			log.Printf("[cloud-agent] apply default llm to %s after profiles change: %v", row.ID, applyErr)
+		}
 	}
-	return CloudLLMSet{}, false
 }
 
 // cloudAgentThinkingLevel reads the desktop's global thinking level — the

@@ -1752,6 +1752,241 @@ func TestCodingParallelToolPathsStayOnCheckout(t *testing.T) {
 		}
 	}
 
+	// The child's start directory is not the parent's. A relative name after
+	// start /d, forfiles /p, or Start-Process -WorkingDirectory is the tree
+	// that child is standing in.
+	for _, launched := range []string{
+		`start /b /wait /d ..\..\.. cmd /c "copy Repo\a.go ." 2>nul`,
+		`start /b /wait /d..\..\.. cmd /c "copy Repo\a.go ." 2>nul`,
+		`forfiles /p ..\..\.. /m notepad.exe /c "cmd /c copy Repo\a.go ." 2>nul`,
+		`Start-Process -FilePath cmd.exe -WorkingDirectory ..\..\.. -ArgumentList 'copy Repo\a.go .' -Wait`,
+		`Start-Process -FilePath cmd.exe -ArgumentList 'copy Repo\a.go .' -WorkingDirectory ..\..\.. -Wait`,
+		`Start-Process -FilePath cmd.exe -Work ..\..\.. -ArgumentList 'copy Repo\a.go .' -Wait`,
+		`Start-Process -FilePath cmd.exe -WorkingDirectory:..\..\.. -ArgumentList 'copy Repo\a.go .' -Wait`,
+	} {
+		if msg := cb.parallelCheckoutCommandRejection(launched, exec); msg == "" {
+			t.Fatalf("child start directory was allowed to enter the shared tree: %s", launched)
+		}
+		launchedArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": launched})
+		got, _ := launchedArgs["command"].(string)
+		want := strings.Replace(launched, `copy Repo\a.go .`, `copy `+filepath.Join(wt, "a.go")+` .`, 1)
+		if got != want {
+			t.Fatalf("child start directory = %q", got)
+		}
+	}
+	quotedWD := `Start-Process -FilePath cmd.exe -WorkingDirectory '..\..\..\Repo' -ArgumentList 'dir' -Wait`
+	if msg := cb.parallelCheckoutCommandRejection(quotedWD, exec); msg == "" {
+		t.Fatal("working directory inside the shared tree was allowed")
+	}
+	quotedWDArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": quotedWD})
+	if got, _ := quotedWDArgs["command"].(string); got != `Start-Process -FilePath cmd.exe -WorkingDirectory '`+wt+`' -ArgumentList 'dir' -Wait` {
+		t.Fatalf("quoted working directory = %q", got)
+	}
+	// cmd start: the first quote is the window title, even after /d.
+	// Switches resolve in the parent. Only the program tail is the child.
+	title := `start /b /wait /d ..\..\.. "cmd /c copy Repo\a.go ." 2>nul`
+	if msg := cb.parallelCheckoutCommandRejection(title, exec); msg != "" {
+		t.Fatalf("start window title rejected: %s", msg)
+	}
+	titleArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": title})
+	if got, _ := titleArgs["command"].(string); got != title {
+		t.Fatalf("start window title = %q", got)
+	}
+	titled := `start /b /wait "cmd /c copy Repo\a.go ." /d ..\..\.. cmd /c copy Repo\b.go . 2>nul`
+	if msg := cb.parallelCheckoutCommandRejection(titled, exec); msg == "" {
+		t.Fatal("start program after a title was allowed to enter the shared tree")
+	}
+	titledArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": titled})
+	if got, _ := titledArgs["command"].(string); got != `start /b /wait "cmd /c copy Repo\a.go ." /d ..\..\.. cmd /c copy `+filepath.Join(wt, "b.go")+` . 2>nul` {
+		t.Fatalf("start program after a title = %q", got)
+	}
+	unquoted := `start /b /wait /d ..\..\.. cmd /c copy Repo\a.go . 2>nul`
+	if msg := cb.parallelCheckoutCommandRejection(unquoted, exec); msg == "" {
+		t.Fatal("unquoted start command was allowed to enter the shared tree")
+	}
+	unquotedArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": unquoted})
+	if got, _ := unquotedArgs["command"].(string); got != `start /b /wait /d ..\..\.. cmd /c copy `+filepath.Join(wt, "a.go")+` . 2>nul` {
+		t.Fatalf("unquoted start command = %q", got)
+	}
+	startRoot := `start /b /wait /d ..\..\..\Repo cmd /c copy a.go . 2>nul`
+	if msg := cb.parallelCheckoutCommandRejection(startRoot, exec); msg == "" {
+		t.Fatal("start /d inside the shared tree was allowed")
+	}
+	startRootArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": startRoot})
+	if got, _ := startRootArgs["command"].(string); got != `start /b /wait /d `+wt+` cmd /c copy a.go . 2>nul` {
+		t.Fatalf("start /d inside the shared tree = %q", got)
+	}
+	spBare := `Start-Process -FilePath cmd.exe -WorkingDirectory ..\..\.. -ArgumentList copy Repo\a.go . -Wait`
+	if msg := cb.parallelCheckoutCommandRejection(spBare, exec); msg == "" {
+		t.Fatal("unquoted Start-Process arguments were allowed to enter the shared tree")
+	}
+	spBareOut := cb.withDefaultWorkingDir(map[string]interface{}{"command": spBare})
+	if got, _ := spBareOut["command"].(string); got != `Start-Process -FilePath cmd.exe -WorkingDirectory ..\..\.. -ArgumentList copy `+filepath.Join(wt, "a.go")+` . -Wait` {
+		t.Fatalf("unquoted Start-Process arguments = %q", got)
+	}
+	pyArgs := `Start-Process -FilePath python.exe -ArgumentList 'cd ..\..\.. & copy Repo\a.go .'`
+	if msg := cb.parallelCheckoutCommandRejection(pyArgs, exec); msg != "" {
+		t.Fatalf("non-shell ArgumentList rejected: %s", msg)
+	}
+	pyOut := cb.withDefaultWorkingDir(map[string]interface{}{"command": pyArgs})
+	if got, _ := pyOut["command"].(string); got != pyArgs {
+		t.Fatalf("non-shell ArgumentList = %q", got)
+	}
+	psStart := `start /d ..\..\..`
+	if msg := cb.parallelCheckoutCommandRejection(psStart, exec); msg != "" {
+		t.Fatalf("powershell start /d rejected: %s", msg)
+	}
+	psStartOut := cb.withDefaultWorkingDir(map[string]interface{}{"command": psStart})
+	if got, _ := psStartOut["command"].(string); got != psStart {
+		t.Fatalf("powershell start /d = %q", got)
+	}
+	for _, parent := range []string{
+		`start /b /wait /d ..\..\.. cmd /c "cd" 2>nul & Copy-Item Repo .`,
+		`Start-Process -FilePath cmd.exe -WorkingDirectory ..\..\.. -ArgumentList 'cd' -Wait; Copy-Item Repo .`,
+	} {
+		if msg := cb.parallelCheckoutCommandRejection(parent, exec); msg != "" {
+			t.Fatalf("parent command was rejected after a child start directory: %s", msg)
+		}
+		parentArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": parent})
+		if got, _ := parentArgs["command"].(string); got != parent {
+			t.Fatalf("parent command = %q", got)
+		}
+	}
+	// Windows PowerShell 5.1 ignores powershell.exe -WorkingDirectory.
+	psWD := `powershell -NoProfile -WorkingDirectory ..\..\.. -Command "Copy-Item Repo ."`
+	if msg := cb.parallelCheckoutCommandRejection(psWD, exec); msg != "" {
+		t.Fatalf("powershell -WorkingDirectory rejected: %s", msg)
+	}
+	psWDArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": psWD})
+	if got, _ := psWDArgs["command"].(string); got != psWD {
+		t.Fatalf("powershell -WorkingDirectory = %q", got)
+	}
+
+	// cmd runs the command after if, and an unquoted /c tail is that shell's
+	// script. saps is Start-Process. A comma between ArgumentList elements
+	// is one command line. The launcher that owns the payload supplies the
+	// child directory, including when it is not the first token.
+	for _, owned := range []string{
+		`if exist C:\Windows start /b /wait /d ..\..\.. cmd /c "copy Repo\a.go ." 2>nul`,
+		`if exist C:\Windows forfiles /p ..\..\.. /c "cmd /c copy Repo\a.go ." 2>nul`,
+		`if exist C:\Windows forfiles /p ..\..\.. /c "copy Repo\a.go ." 2>nul`,
+		`@start /b /wait /d ..\..\.. cmd /c "copy Repo\a.go ." 2>nul`,
+		`cmd /c start /b /wait /d ..\..\.. cmd /c "copy Repo\a.go ."`,
+		`powershell -NoProfile -Command Start-Process -FilePath cmd.exe -WorkingDirectory ..\..\.. -ArgumentList 'copy Repo\a.go .' -Wait`,
+		`saps -FilePath cmd.exe -WorkingDirectory ..\..\.. -ArgumentList 'copy Repo\a.go .' -Wait`,
+		`Start-Process -FilePath cmd.exe -WorkingDirectory ..\..\.. -ArgumentList '/c','copy Repo\a.go .' -Wait`,
+	} {
+		if msg := cb.parallelCheckoutCommandRejection(owned, exec); msg == "" {
+			t.Fatalf("payload owner was allowed to enter the shared tree: %s", owned)
+		}
+		ownedArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": owned})
+		got, _ := ownedArgs["command"].(string)
+		want := strings.Replace(owned, `copy Repo\a.go .`, `copy `+filepath.Join(wt, "a.go")+` .`, 1)
+		if got != want {
+			t.Fatalf("payload owner = %q", got)
+		}
+	}
+	cmdTailParent := `cmd /c start /b /wait /d ..\..\.. cmd /c "cd"; Copy-Item Repo .`
+	if msg := cb.parallelCheckoutCommandRejection(cmdTailParent, exec); msg != "" {
+		t.Fatalf("parent command was rejected after an unquoted shell tail: %s", msg)
+	}
+	cmdTailParentArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": cmdTailParent})
+	if got, _ := cmdTailParentArgs["command"].(string); got != cmdTailParent {
+		t.Fatalf("parent command after an unquoted shell tail = %q", got)
+	}
+	// forfiles /p is relative to the process start /d already started.
+	// ..\..\.. from C:\Windows is C:\, which is not the shared tree.
+	nestedRel := `start /d C:\Windows forfiles /p ..\..\.. /c "cmd /c copy Repo\a.go ." 2>nul`
+	if msg := cb.parallelCheckoutCommandRejection(nestedRel, exec); msg != "" {
+		t.Fatalf("forfiles /p under start /d rejected: %s", msg)
+	}
+	nestedRelArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": nestedRel})
+	if got, _ := nestedRelArgs["command"].(string); got != nestedRel {
+		t.Fatalf("forfiles /p under start /d = %q", got)
+	}
+	nestedAbs := `start /d C:\Windows forfiles /p ` + root + ` /c "cmd /c copy a.go ." 2>nul`
+	if msg := cb.parallelCheckoutCommandRejection(nestedAbs, exec); msg == "" {
+		t.Fatal("forfiles /p inside the shared tree was allowed")
+	}
+	nestedAbsArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": nestedAbs})
+	if got, _ := nestedAbsArgs["command"].(string); got != `start /d C:\Windows forfiles /p `+wt+` /c "cmd /c copy a.go ." 2>nul` {
+		t.Fatalf("forfiles /p inside the shared tree = %q", got)
+	}
+
+	// PowerShell's comma operator splits -ArgumentList even when the comma
+	// is glued to a word. @() and () are that array, not a new statement.
+	for _, listed := range []string{
+		`Start-Process -FilePath cmd.exe -WorkingDirectory ..\..\.. -ArgumentList /c,copy,Repo\a.go,. -Wait`,
+		`Start-Process -FilePath cmd.exe -WorkingDirectory ..\..\.. -ArgumentList /c, copy, Repo\a.go, . -Wait`,
+		`Start-Process -FilePath cmd.exe -WorkingDirectory ..\..\.. -ArgumentList /c,'copy Repo\a.go .' -Wait`,
+		`Start-Process -FilePath cmd.exe -WorkingDirectory ..\..\.. -ArgumentList @('/c','copy Repo\a.go .') -Wait`,
+		`Start-Process -FilePath cmd.exe -WorkingDirectory ..\..\.. -ArgumentList ('/c','copy Repo\a.go .') -Wait`,
+		`start -FilePath cmd.exe -WorkingDirectory ..\..\.. -ArgumentList @('/c','copy Repo\a.go .') -Wait`,
+	} {
+		if msg := cb.parallelCheckoutCommandRejection(listed, exec); msg == "" {
+			t.Fatalf("argument list was allowed to enter the shared tree: %s", listed)
+		}
+		listedArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": listed})
+		got, _ := listedArgs["command"].(string)
+		want := listed
+		want = strings.Replace(want, `copy,Repo\a.go,.`, `copy,`+filepath.Join(wt, "a.go")+",.", 1)
+		want = strings.Replace(want, `copy, Repo\a.go, .`, `copy, `+filepath.Join(wt, "a.go")+`, .`, 1)
+		want = strings.Replace(want, `copy Repo\a.go .`, `copy `+filepath.Join(wt, "a.go")+` .`, 1)
+		if got != want {
+			t.Fatalf("argument list = %q", got)
+		}
+	}
+	pyArray := `Start-Process -FilePath python.exe -ArgumentList @('cd ..\..\.. & copy Repo\a.go .')`
+	if msg := cb.parallelCheckoutCommandRejection(pyArray, exec); msg != "" {
+		t.Fatalf("non-shell array rejected: %s", msg)
+	}
+	pyArrayOut := cb.withDefaultWorkingDir(map[string]interface{}{"command": pyArray})
+	if got, _ := pyArrayOut["command"].(string); got != pyArray {
+		t.Fatalf("non-shell array = %q", got)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	homeRoot := filepath.Join(home, "Repo")
+	homeWt := filepath.Join(home, "wt")
+	homeBase := filepath.Join(homeWt, "pkg")
+	homeMap := func(logical string) (string, bool) {
+		rel, inside := workRootRelative(homeRoot, logical)
+		if !inside {
+			return "", false
+		}
+		if rel == "." {
+			return homeWt, true
+		}
+		mapped := filepath.Join(homeWt, filepath.FromSlash(rel))
+		if sameNormalizedPath(mapped, logical) {
+			return "", false
+		}
+		return mapped, true
+	}
+	homeFile := filepath.Join(homeWt, "a.go")
+	tildeCases := []struct{ in, want string }{
+		{`Set-Location ~; Copy-Item Repo\a.go .`, `Set-Location ~; Copy-Item ` + homeFile + ` .`},
+		{`Set-Location FileSystem::~; Copy-Item Repo\a.go .`, `Set-Location FileSystem::~; Copy-Item ` + homeFile + ` .`},
+		{`Copy-Item ~\Repo\a.go .`, `Copy-Item ` + homeFile + ` .`},
+		{`Copy-Item FileSystem::~\Repo\a.go .`, `Copy-Item ` + homeFile + ` .`},
+	}
+	for _, tilde := range tildeCases {
+		if !commandReachesProtectedRoot(tilde.in, homeRoot, homeBase) {
+			t.Fatalf("tilde path was allowed to enter the shared tree: %s", tilde.in)
+		}
+		got := walkShellCommand(tilde.in, newCommandShellDir(homeBase), homeMap, parsePowerShell)
+		if got != tilde.want {
+			t.Fatalf("tilde path = %q", got)
+		}
+	}
+	cmdTilde := `cd ~ & copy Repo\a.go . 2>nul`
+	if commandReachesProtectedRoot(cmdTilde, homeRoot, homeBase) {
+		t.Fatal("cmd treated ~ as the home directory")
+	}
+
 	// /d/Repo is a root-relative PowerShell name, and D:\Repo to nested bash.
 	msys := `bash -lc "cat /d/Repo/pkg/a.go"`
 	if msg := cb.parallelCheckoutCommandRejection(msys, exec); msg == "" {

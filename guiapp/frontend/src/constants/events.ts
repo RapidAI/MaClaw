@@ -262,3 +262,6 @@ export type OpenTaskLaunchDetail = {
     expertIcon?: string;
     latexRelativePath?: string;
 };
+
+/** The user closed the native desktop-stage window itself (not a programmatic panel close). */
+export const EVENT_DESKTOP_STAGE_CLOSED = "desktop-stage:closed";

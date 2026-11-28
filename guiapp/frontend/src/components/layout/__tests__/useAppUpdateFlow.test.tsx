@@ -192,3 +192,102 @@ describe('useAppUpdateFlow check_failed transparency', () => {
         expect(cancelDownloadMock).not.toHaveBeenCalled();
     });
 });
+
+
+describe('useAppUpdateFlow stale downloaded events', () => {
+    it('a completed download of a different version must not hijack the live target', () => {
+        const { result } = renderFlow();
+        // User already picked a newer beta target in the dialog.
+        act(() => {
+            result.current.handleUpdateResultChange({
+                has_update: true,
+                latest_version: 'V9.0.0.12100',
+                channel: 'beta',
+            });
+        });
+        // A background silent download of the older stable build completes.
+        act(() => {
+            emit(EVENT_APP_UPDATE_DOWNLOADED, {
+                latest_version: 'V8.2.0.12010',
+                channel: 'stable',
+                installer_path: 'C:/Downloads/MaClaw-Setup-8.2.0.12010.exe',
+            });
+        });
+        // The dialog still decides on the beta target; the stale completion
+        // must not reset it, steal the installer path, or cancel downloads.
+        expect(result.current.updateResult?.latest_version).toBe('V9.0.0.12100');
+        expect(result.current.updateResult?.channel).toBe('beta');
+        expect(result.current.installerPath).toBe('');
+        expect(cancelDownloadMock).not.toHaveBeenCalled();
+        // The notice still records the ready stable installer.
+        expect(result.current.appUpdateAvailable?.latest_version).toBe('V8.2.0.12010');
+    });
+
+    it('a completed download matching the live target takes over as usual', () => {
+        const { result } = renderFlow();
+        act(() => {
+            result.current.handleUpdateResultChange({
+                has_update: true,
+                latest_version: 'V8.2.0.12010',
+                channel: 'stable',
+            });
+        });
+        act(() => {
+            emit(EVENT_APP_UPDATE_DOWNLOADED, {
+                latest_version: 'V8.2.0.12010',
+                channel: 'stable',
+                installer_path: 'C:/Downloads/MaClaw-Setup-8.2.0.12010.exe',
+            });
+        });
+        expect(result.current.updateResult?.latest_version).toBe('V8.2.0.12010');
+        expect(result.current.installerPath).toBe('C:/Downloads/MaClaw-Setup-8.2.0.12010.exe');
+    });
+});
+
+
+describe('useAppUpdateFlow notice preservation', () => {
+    it('deciding an older version keeps a newer update notice alive', async () => {
+        const { result } = renderFlow();
+        // A newer stable release was notified in the background.
+        act(() => {
+            emit(EVENT_APP_UPDATE_AVAILABLE, {
+                has_update: true,
+                latest_version: 'V8.3.0.12050',
+                channel: 'stable',
+            });
+        });
+        // The dialog is deciding on the older downloaded target.
+        act(() => {
+            result.current.handleUpdateResultChange({
+                has_update: true,
+                latest_version: 'V8.2.0.12010',
+                channel: 'stable',
+            });
+        });
+        await act(async () => { await result.current.handleDeferInstall(2); });
+        // Deferring v8.2 must not destroy the v8.3 notice: its one-shot emit
+        // was already consumed, so a cleared notice would never resurface.
+        expect(result.current.appUpdateAvailable?.latest_version).toBe('V8.3.0.12050');
+        expect(result.current.showUpdateModal).toBe(false);
+    });
+
+    it('deciding the notified version retires its notice', async () => {
+        const { result } = renderFlow();
+        act(() => {
+            emit(EVENT_APP_UPDATE_AVAILABLE, {
+                has_update: true,
+                latest_version: 'V8.2.0.12010',
+                channel: 'stable',
+            });
+        });
+        act(() => {
+            result.current.handleUpdateResultChange({
+                has_update: true,
+                latest_version: 'V8.2.0.12010',
+                channel: 'stable',
+            });
+        });
+        await act(async () => { await result.current.handleDeferInstall(2); });
+        expect(result.current.appUpdateAvailable).toBeNull();
+    });
+});

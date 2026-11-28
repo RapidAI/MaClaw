@@ -5,6 +5,8 @@ import { getHeaderTitle } from './mainTopHeaderTitle';
 import { MainTopHeaderActions } from './MainTopHeaderActions';
 import { SidebarToggleCluster } from './SidebarToggleCluster';
 import { WindowCloseIcon, WindowMaximizeIcon, WindowRestoreIcon } from './WindowControlIcons';
+import { BugReportButton } from '../ai/BugReportButton';
+import { openDesktopBotRoomsFromHeader, useDesktopBotRoomsVisible } from '../bots/desktopBotHeaderBridge';
 import { localizeText } from '../../i18n';
 
 
@@ -81,6 +83,12 @@ export const MainTopHeader = ({
     const safeActiveTool = normalizeToolTab(activeTool);
     const toolOptions = getAllToolOptions();
     const showToolSwitcher = isToolTab(navTab);
+    // bots 页签把 群聊/故障报告 从桌面 Bot 悬浮标题条移到了这里：群聊按钮
+    // 由 DesktopBotWorkspace 经 desktopBotHeaderBridge 登记（只在选中 Bot 且
+    // hub 开了群聊时出现），故障报告是窗口级控件，bots 页签常驻。hook 必须
+    // 无条件调用，可见性再与 navTab 合取。
+    const botRoomsRegistered = useDesktopBotRoomsVisible();
+    const roomsVisible = navTab === 'bots' && botRoomsRegistered;
     return (
     <div className="top-header" {...windowDragHandleProps(true, { userSelect: 'none' })} onDoubleClick={() => handleWindowMaximizeToggle()}>
         <div className="mth-row">
@@ -121,10 +129,40 @@ export const MainTopHeader = ({
                     setShowInstallSkillModal={setShowInstallSkillModal}
                 />
             </h2>
+            {/* bots 页签的动作簇是 .top-header-window-controls 的兄弟节点而不是
+                子节点：pet-store 的 `.top-header-window-controls button` 会把
+                控制区按钮强制钳到 32x32（!important，为图标钮设计），文本按钮
+                「群聊」放进那个容器必然破版。 */}
+            {navTab === 'bots' ? (
+                // data-window-no-drag + mousedown stop mirror
+                // SidebarToggleCluster: the cluster sits in a window-drag
+                // region, and a bubbling double-click would toggle
+                // maximize on the header.
+                <div
+                    className="mth-bot-actions"
+                    data-window-no-drag
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                >
+                    {roomsVisible ? (
+                        <button
+                            type="button"
+                            className="btn-secondary mth-bot-rooms-btn"
+                            data-testid="bot-rooms-open"
+                            onClick={openDesktopBotRoomsFromHeader}
+                        >群聊</button>
+                    ) : null}
+                    <BugReportButton lang={lang} />
+                </div>
+            ) : null}
             <div className="top-header-window-controls mth-window-controls">
                 <span className="mc-header-ready"><i aria-hidden="true" />{localizeText(lang, 'Ready', '准备就绪')}</span>
                 <button
                     onMouseDown={handleWindowHide}
+                    // Stop the double-click: the header's dblclick-to-maximize
+                    // would otherwise fire on the just-hidden window and leave
+                    // it maximized when the user restores it from the tray.
+                    onDoubleClick={(event) => event.stopPropagation()}
                     aria-label={localizeText(lang, 'Hide window', zhHans.hideWindow)}
                     title={localizeText(lang, 'Hide window', zhHans.hideWindow)}
                     style={windowControlBtnStyle}
@@ -133,6 +171,10 @@ export const MainTopHeader = ({
                 </button>
                 <button
                     onMouseDown={handleWindowMaximizeToggle}
+                    // Two mousedowns of a double-click already toggle and
+                    // revert; the header's dblclick handler would add a third
+                    // toggle and leave the window maximized.
+                    onDoubleClick={(event) => event.stopPropagation()}
                     aria-label={windowMaximized ? localizeText(lang, 'Restore window', zhHans.restoreWindow) : localizeText(lang, 'Maximize window', zhHans.maximizeWindow)}
                     title={windowMaximized ? localizeText(lang, 'Restore window', zhHans.restoreWindow) : localizeText(lang, 'Maximize window', zhHans.maximizeWindow)}
                     style={windowControlBtnStyle}

@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { dismissCloudAgentPreviewOpens } from '../cloudAgentVisualPreview';
 import { __resetWorkspaceDirectoryCacheForTests, CodePreviewWorkspace, isLikelyBinaryName, isLocalDiskPath, workspaceErrorMessage, workspaceFileIconKind, workspaceVisualAbsPath } from '../CodePreviewWorkspace';
 
 const getDirectory = vi.fn();
@@ -30,6 +31,16 @@ vi.mock('../../CustomDialog', () => ({
         showPrompt: vi.fn(),
     }),
 }));
+
+async function withCloudWorkspacePrepare(prepare: (...args: unknown[]) => unknown, run: () => Promise<void>) {
+    const previous = (window as unknown as { go?: unknown }).go;
+    (window as unknown as { go: unknown }).go = { main: { App: { PrepareCloudWorkspacePreviewFile: prepare } } };
+    try {
+        await run();
+    } finally {
+        (window as unknown as { go?: unknown }).go = previous;
+    }
+}
 
 const theme = {
     bg: '#fff', text: '#182230', textMuted: '#607080', border: '#d8dee8', lineNumBg: '#f8fafc', lineNumText: '#94a3b8',
@@ -545,6 +556,8 @@ describe('CodePreviewWorkspace context menu', () => {
         expect(workspaceErrorMessage('delete is only available for cloud workspaces', true, 'zh-Hans')).toBe('仅云端工作区支持删除文件。');
         expect(workspaceErrorMessage('local file deleted, but remote delete failed: hub returned 500', true, 'zh-Hans')).toBe('本地缓存已删除，但云端文件删除失败。');
         expect(workspaceErrorMessage('remote file deleted, but local cache remove failed: access denied', true, 'zh-Hans')).toBe('云端文件已删除，但本地缓存未能移除。');
+        expect(workspaceErrorMessage('cloud workspace file is not in the local cache', true, 'zh-Hans')).toBe('云端文件还没有下载到本地，暂时无法预览。');
+        expect(workspaceErrorMessage('preview is not ready', true, 'zh-Hans')).toBe('预览还没准备好，请重试。');
     });
 
     it('does not launch a second local open while the first is still in flight', async () => {
@@ -552,10 +565,10 @@ describe('CodePreviewWorkspace context menu', () => {
         openLocally.mockImplementationOnce(() => new Promise((resolve) => { resolveOpen = resolve; }));
         getDirectory.mockResolvedValue({
             root: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws',
-            entries: [{ name: 'notes.pdf', path: 'notes.pdf', is_dir: false }],
+            entries: [{ name: 'notes.zip', path: 'notes.zip', is_dir: false }],
         });
         render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
-        const file = await screen.findByText('notes.pdf');
+        const file = await screen.findByText('notes.zip');
         fireEvent.click(file);
         await waitFor(() => expect(openLocally).toHaveBeenCalledTimes(1));
         fireEvent.click(file);
@@ -570,28 +583,175 @@ describe('CodePreviewWorkspace context menu', () => {
         openLocally.mockRejectedValueOnce(new Error('entry cannot be opened locally'));
         getDirectory.mockResolvedValue({
             root: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws',
-            entries: [{ name: 'notes.pdf', path: 'notes.pdf', is_dir: false }],
+            entries: [{ name: 'notes.zip', path: 'notes.zip', is_dir: false }],
         });
         render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
-        const file = await screen.findByText('notes.pdf');
+        const file = await screen.findByText('notes.zip');
         fireEvent.click(file);
         expect((await screen.findByTestId('code-preview-workspace-notice')).textContent || '').toContain('无法在本地打开该项。');
         fireEvent.click(file);
         await waitFor(() => expect(openLocally).toHaveBeenCalledTimes(2));
     });
 
-    it('opens a cloud PDF from the local cache on click without previewing', async () => {
+    it('opens a cloud PDF from the local cache in the viewer', async () => {
         const onOpenFile = vi.fn();
+        const prepare = vi.fn(async () => ({
+            abs_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws/南京天气预报报告.pdf',
+            size: 4,
+            size_known: true,
+            modified_at: 10,
+            modified_unix_nano: 10_000,
+        }));
         getDirectory.mockResolvedValue({
             root: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws',
             entries: [{ name: '南京天气预报报告.pdf', path: '南京天气预报报告.pdf', is_dir: false }],
         });
-        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
-        fireEvent.click(await screen.findByText('南京天气预报报告.pdf'));
-        await waitFor(() => expect(openLocally).toHaveBeenCalledWith('cloud-task', '南京天气预报报告.pdf'));
-        expect(getFilePreview).not.toHaveBeenCalled();
-        expect(onOpenFile).not.toHaveBeenCalled();
-        expect(screen.queryByTestId('code-preview-workspace-notice')).toBeNull();
+        await withCloudWorkspacePrepare(prepare, async () => {
+            render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+            const file = await screen.findByText('南京天气预报报告.pdf');
+            expect(file.closest('button')?.getAttribute('title')).toContain('单击预览');
+            fireEvent.click(file);
+            await waitFor(() => expect(prepare).toHaveBeenCalledWith('cloud-task', '南京天气预报报告.pdf'));
+            expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({
+                filePath: '南京天气预报报告.pdf',
+                language: 'pdf',
+                content: '',
+                absPath: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws/南京天气预报报告.pdf',
+                previewRevision: '10000:4',
+            }));
+            expect(openLocally).not.toHaveBeenCalled();
+            expect(getFilePreview).not.toHaveBeenCalled();
+            expect(getEntryProperties).not.toHaveBeenCalled();
+            expect(screen.queryByTestId('code-preview-workspace-notice')).toBeNull();
+        });
+    });
+
+    it('stamps a cloud-workspace PDF with the cache file version', async () => {
+        const onOpenFile = vi.fn();
+        const prepare = vi.fn();
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws',
+            entries: [{ name: 'report.pdf', path: 'report.pdf', is_dir: false }],
+        });
+        prepare.mockResolvedValueOnce({
+            abs_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws/report.pdf',
+            size: 12,
+            size_known: true,
+            modified_at: 10,
+            modified_unix_nano: 10_000,
+        });
+        await withCloudWorkspacePrepare(prepare, async () => {
+            render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+            fireEvent.click(await screen.findByText('report.pdf'));
+            await waitFor(() => expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({
+                absPath: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws/report.pdf',
+                previewRevision: '10000:12',
+            })));
+            prepare.mockResolvedValueOnce({
+                abs_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws/report.pdf',
+                size: 12,
+                size_known: true,
+                modified_at: 11,
+                modified_unix_nano: 11_000,
+            });
+            fireEvent.click(screen.getByText('report.pdf'));
+            await waitFor(() => expect(onOpenFile).toHaveBeenLastCalledWith(expect.objectContaining({
+                previewRevision: '11000:12',
+            })));
+            expect(getEntryProperties).not.toHaveBeenCalled();
+        });
+    });
+
+    it('does not open a cloud-workspace PDF when the download fails', async () => {
+        const onOpenFile = vi.fn();
+        const prepare = vi.fn(async () => { throw new Error('cloud workspace file is not in the local cache'); });
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws',
+            entries: [{ name: 'report.pdf', path: 'report.pdf', is_dir: false }],
+        });
+        await withCloudWorkspacePrepare(prepare, async () => {
+            render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+            fireEvent.click(await screen.findByText('report.pdf'));
+            expect((await screen.findByTestId('code-preview-workspace-notice')).textContent || '').toContain('云端文件还没有下载到本地');
+            expect(onOpenFile).not.toHaveBeenCalled();
+            expect(openLocally).not.toHaveBeenCalled();
+        });
+    });
+
+    it('opens the cloud-workspace file the download wrote', async () => {
+        const onOpenFile = vi.fn();
+        const live = 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_live/report.pdf';
+        const prepare = vi.fn(async () => ({
+            abs_path: live,
+            size: 9,
+            size_known: true,
+            modified_unix_nano: 20_000,
+        }));
+        getDirectory.mockResolvedValue({
+            root: '',
+            entries: [{ name: 'report.pdf', path: 'report.pdf', is_dir: false }],
+        });
+        await withCloudWorkspacePrepare(prepare, async () => {
+            render(<CodePreviewWorkspace projectPath="C:/Users/me/.maclaw/data/cloud-workspaces-readonly/tenant/cws_live/cwi_old" cloudMode lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+            fireEvent.click(await screen.findByText('report.pdf'));
+            await waitFor(() => expect(prepare).toHaveBeenCalledWith(
+                'C:/Users/me/.maclaw/data/cloud-workspaces-readonly/tenant/cws_live/cwi_old',
+                'report.pdf',
+            ));
+            expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({
+                absPath: live,
+                previewRevision: '20000:9',
+            }));
+        });
+    });
+
+    it('does not open a cloud-workspace PDF when the download omits its path', async () => {
+        const onOpenFile = vi.fn();
+        const prepare = vi.fn(async () => ({ size: 12, size_known: true, modified_unix_nano: 10_000 }));
+        getDirectory.mockResolvedValue({
+            root: '',
+            entries: [{ name: 'report.pdf', path: 'report.pdf', is_dir: false }],
+        });
+        await withCloudWorkspacePrepare(prepare, async () => {
+            render(<CodePreviewWorkspace projectPath="C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_live" cloudMode lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+            fireEvent.click(await screen.findByText('report.pdf'));
+            expect((await screen.findByTestId('code-preview-workspace-notice')).textContent || '').toContain('云端文件还没有下载到本地');
+            expect(onOpenFile).not.toHaveBeenCalled();
+        });
+    });
+
+    it('does not open a cloud-workspace PDF from listing size alone', async () => {
+        const onOpenFile = vi.fn();
+        const prepare = vi.fn(async () => ({ size: 12, size_known: true }));
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws',
+            entries: [{ name: 'report.pdf', path: 'report.pdf', is_dir: false }],
+        });
+        await withCloudWorkspacePrepare(prepare, async () => {
+            render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+            fireEvent.click(await screen.findByText('report.pdf'));
+            expect((await screen.findByTestId('code-preview-workspace-notice')).textContent || '').toContain('云端文件还没有下载到本地');
+            expect(onOpenFile).not.toHaveBeenCalled();
+        });
+    });
+
+    it('drops a cloud-workspace PDF download that finishes after the preview closed', async () => {
+        let release: (props: unknown) => void = () => {};
+        const onOpenFile = vi.fn();
+        const prepare = vi.fn(() => new Promise((resolve) => { release = resolve; }));
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws',
+            entries: [{ name: 'report.pdf', path: 'report.pdf', is_dir: false }],
+        });
+        await withCloudWorkspacePrepare(prepare, async () => {
+            render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+            fireEvent.click(await screen.findByText('report.pdf'));
+            await waitFor(() => expect(prepare).toHaveBeenCalled());
+            dismissCloudAgentPreviewOpens('cloud-task');
+            await act(async () => { release({ size: 4, size_known: true, modified_unix_nano: 10_000 }); });
+            expect(onOpenFile).not.toHaveBeenCalled();
+            expect(screen.queryByTestId('code-preview-workspace-notice')).toBeNull();
+        });
     });
 
     it('opens an unrecognized cloud binary locally after preview rejects it', async () => {
@@ -705,7 +865,7 @@ describe('CodePreviewWorkspace context menu', () => {
         await waitFor(() => expect(downloadEntry).toHaveBeenCalledWith('cloud-task', 'docs'));
     });
 
-    it('opens a cloud file from the local cache on double-click without previewing', async () => {
+    it('double-click still opens a cloud pdf with the OS app', async () => {
         const onOpenFile = vi.fn();
         getDirectory.mockResolvedValue({
             root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
@@ -715,19 +875,84 @@ describe('CodePreviewWorkspace context menu', () => {
         fireEvent.doubleClick(await screen.findByText('人工智能数学入门教程.pdf'));
         await waitFor(() => expect(openLocally).toHaveBeenCalledWith('cloud-task', '人工智能数学入门教程.pdf'));
         expect(openLocally).toHaveBeenCalledTimes(1);
-        expect(onOpenFile).not.toHaveBeenCalled();
         expect(getFilePreview).not.toHaveBeenCalled();
     });
 
-    it('hides Preview for cloud PDFs because they open locally instead', async () => {
+    it('offers Preview for a cloud PDF and still offers Open locally', async () => {
         getDirectory.mockResolvedValue({
             root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
             entries: [{ name: 'guide.pdf', path: 'guide.pdf', is_dir: false }],
         });
         render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
         fireEvent.contextMenu(await screen.findByText('guide.pdf'), { clientX: 30, clientY: 30 });
-        expect(screen.queryByTestId('code-preview-workspace-context-preview')).toBeNull();
+        expect(screen.getByTestId('code-preview-workspace-context-preview').textContent).toBe('预览');
         expect(screen.getByTestId('code-preview-workspace-context-open-local').textContent).toBe('在本地打开');
+    });
+
+    it('caches a cloud-agent PDF locally before opening it in the viewer', async () => {
+        const onOpenFile = vi.fn();
+        const materialize = vi.fn(async () => 'C:/Users/me/AppData/Local/Temp/maclaw-cloud-preview/cag/report.pdf');
+        const previous = (window as unknown as { go?: unknown }).go;
+        (window as unknown as { go: unknown }).go = { main: { App: { MaterializeCloudAgentPreviewFile: materialize } } };
+        getDirectory.mockResolvedValue({
+            root: 'cloud-agent',
+            entries: [{ name: 'report.pdf', path: 'docs/report.pdf', is_dir: false }],
+        });
+        try {
+            render(<CodePreviewWorkspace projectPath="cloud-agent:cag_test" cloudMode lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+            fireEvent.click(await screen.findByText('report.pdf'));
+            await waitFor(() => expect(materialize).toHaveBeenCalledWith('cloud-agent:cag_test', 'docs/report.pdf'));
+            expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({
+                filePath: 'docs/report.pdf',
+                language: 'pdf',
+                absPath: 'C:/Users/me/AppData/Local/Temp/maclaw-cloud-preview/cag/report.pdf',
+                content: '',
+            }));
+            expect(openLocally).not.toHaveBeenCalled();
+            expect(getFilePreview).not.toHaveBeenCalled();
+        } finally {
+            (window as unknown as { go?: unknown }).go = previous;
+        }
+    });
+
+    it('does not open a cloud-agent PDF after the preview was closed', async () => {
+        let release: (saved: string) => void = () => {};
+        const onOpenFile = vi.fn();
+        const materialize = vi.fn(() => new Promise<string>((resolve) => { release = resolve; }));
+        const previous = (window as unknown as { go?: unknown }).go;
+        (window as unknown as { go: unknown }).go = { main: { App: { MaterializeCloudAgentPreviewFile: materialize } } };
+        getDirectory.mockResolvedValue({
+            root: 'cloud-agent',
+            entries: [{ name: 'report.pdf', path: 'docs/report.pdf', is_dir: false }],
+        });
+        try {
+            render(<CodePreviewWorkspace projectPath="cloud-agent:cag_closed" cloudMode lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+            fireEvent.click(await screen.findByText('report.pdf'));
+            await waitFor(() => expect(materialize).toHaveBeenCalled());
+            dismissCloudAgentPreviewOpens('cloud-agent:cag_closed');
+            await act(async () => { release('C:/temp/report.pdf'); });
+            expect(onOpenFile).not.toHaveBeenCalled();
+            expect(openLocally).not.toHaveBeenCalled();
+        } finally {
+            (window as unknown as { go?: unknown }).go = previous;
+        }
+    });
+
+    it('opens a cloud-agent PDF locally when the cache step fails', async () => {
+        const materialize = vi.fn(async () => { throw new Error('preview is not ready'); });
+        const previous = (window as unknown as { go?: unknown }).go;
+        (window as unknown as { go: unknown }).go = { main: { App: { MaterializeCloudAgentPreviewFile: materialize } } };
+        getDirectory.mockResolvedValue({
+            root: 'cloud-agent',
+            entries: [{ name: 'report.docx', path: 'report.docx', is_dir: false }],
+        });
+        try {
+            render(<CodePreviewWorkspace projectPath="cloud-agent:cag_test" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+            fireEvent.click(await screen.findByText('report.docx'));
+            await waitFor(() => expect(openLocally).toHaveBeenCalledWith('cloud-agent:cag_test', 'report.docx'));
+        } finally {
+            (window as unknown as { go?: unknown }).go = previous;
+        }
     });
 
     it('offers Open locally on cloud files and opens the cached copy', async () => {

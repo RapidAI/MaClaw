@@ -17,6 +17,7 @@ package asr
 import (
 	"fmt"
 	"math"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -87,6 +88,11 @@ type SenseVoiceModel struct {
 	// Metal GPU encoder (sensevoice_metal.go); nil = CPU path. Guarded by mu.
 	gpu       *svGPU
 	gpuReason string
+
+	// NNAPI accelerator encoder (sensevoice_npu.go); nil = CPU or Metal path.
+	npu       *svNPU
+	npuReason string
+	modelPath string
 }
 
 // svEncoderBufs holds pre-allocated buffers for encoder forward pass.
@@ -142,7 +148,7 @@ func NewSenseVoice(modelPath string) (*SenseVoiceModel, error) {
 		FeatsDim:    gguf.GetMetaI32(mf.Meta, "sv.input_size", svFeatsDim),
 	}
 
-	m := &SenseVoiceModel{hp: hp, mmap: mf}
+	m := &SenseVoiceModel{hp: hp, mmap: mf, modelPath: modelPath}
 	if err := m.loadWeights(mf); err != nil {
 		mf.CloseMmap()
 		return nil, err
@@ -150,6 +156,7 @@ func NewSenseVoice(modelPath string) (*SenseVoiceModel, error) {
 	m.loadVocab(mf)
 	m.loadCMVN(mf)
 	m.initGPU()
+	m.initNPU()
 	return m, nil
 }
 
@@ -166,6 +173,7 @@ func (m *SenseVoiceModel) Close() {
 		m.gpu.release()
 		m.gpu = nil
 	}
+	m.releaseNPU()
 }
 
 // ensureEncBufs ensures encoder buffers are allocated for the given frame count.
@@ -263,8 +271,12 @@ func (m *SenseVoiceModel) Transcribe(pcm []float32) (string, error) {
 	// 3. CMVN intentionally skipped for this GGUF convention (see loadCMVN comments).
 	_ = m.cmvnIstd
 
-	// 4. Encode + fused CTC argmax (skip full logits materialization)
-	frameIDs, ok := m.encodeArgmaxGPU(lfrFeats, lfrFrames)
+	// 4. Encode + fused CTC argmax (skip full logits materialization).
+	// NPU is one whole-graph launch. Metal, then the Go kernels, follow.
+	frameIDs, ok := m.encodeArgmaxNPU(lfrFeats, lfrFrames)
+	if !ok {
+		frameIDs, ok = m.encodeArgmaxGPU(lfrFeats, lfrFrames)
+	}
 	if !ok {
 		frameIDs = m.encodeArgmax(lfrFeats, lfrFrames)
 	}
@@ -275,6 +287,36 @@ func (m *SenseVoiceModel) Transcribe(pcm []float32) (string, error) {
 
 	// 6. Detokenize
 	return m.svDetokenize(tokens), nil
+}
+
+// useSenseVoiceQ8P selects the int8 activation GEMM (SDOT / SMMLA).
+// Default on for Android, where the voice library runs. MACLAW_SV_Q8P=1
+// forces it on any machine that has the kernel; =0 keeps the float path.
+// Desktop builds stay on the float path so existing transcripts do not move.
+func useSenseVoiceQ8P() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MACLAW_SV_Q8P"))) {
+	case "0", "false", "off", "no":
+		return false
+	case "1", "true", "on", "yes":
+		return tensor.Q8PAvailable()
+	default:
+		return runtime.GOOS == "android" && tensor.Q8PAvailable()
+	}
+}
+
+// packSenseVoiceQ8 repacks a Q8_0 matrix for the int8 GEMM. Rows above 4096
+// are the CTC head; that path argmaxes without a packed GEMM, so the extra
+// copy would only cost RAM. Shapes that are not multiples of 32 (the 560-wide
+// entry projection) stay on the float-activation kernel.
+func packSenseVoiceQ8(w linearWeight) linearWeight {
+	if w.q8 == nil || !useSenseVoiceQ8P() {
+		return w
+	}
+	if w.q8.Rows > 4096 || w.q8.Cols > 4096 || !tensor.Q8PSupported(w.q8.Rows, w.q8.Cols) {
+		return w
+	}
+	w.q8p = tensor.PackQ8P(w.q8)
+	return w
 }
 
 func (m *SenseVoiceModel) loadWeights(mf *gguf.MmapFile) error {
@@ -303,7 +345,7 @@ func (m *SenseVoiceModel) loadWeights(mf *gguf.MmapFile) error {
 				}
 				q := tensor.QuantizeToQ8(d, rows, cols)
 				tensor.PrewarmQ8Stripped(q) // first frame skips the VNNI sidecar copy
-				return linearWeight{q8: q, rows: rows}
+				return packSenseVoiceQ8(linearWeight{q8: q, rows: rows})
 			}
 			return linearWeight{}
 		}
@@ -316,7 +358,7 @@ func (m *SenseVoiceModel) loadWeights(mf *gguf.MmapFile) error {
 			q := &tensor.Q8Tensor{Data: raw, Rows: rows, Cols: cols}
 			q.PrepareScales() // f16→f32 once at load; hot dequant skips conversion
 			tensor.PrewarmQ8Stripped(q)
-			return linearWeight{q8: q, rows: rows}
+			return packSenseVoiceQ8(linearWeight{q8: q, rows: rows})
 		}
 		d, _ := getF32(name)
 		if d != nil {
@@ -329,7 +371,7 @@ func (m *SenseVoiceModel) loadWeights(mf *gguf.MmapFile) error {
 			}
 			q := tensor.QuantizeToQ8(d, rows, cols)
 			tensor.PrewarmQ8Stripped(q)
-			return linearWeight{q8: q, rows: rows}
+			return packSenseVoiceQ8(linearWeight{q8: q, rows: rows})
 		}
 		return linearWeight{}
 	}

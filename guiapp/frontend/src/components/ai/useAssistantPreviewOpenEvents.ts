@@ -49,6 +49,14 @@ export type AssistantPreviewOpenEventsOptions = {
     sessionKey?: string;
     lang: string;
     openWorkspaceFile: (file: CodeFile) => boolean | void;
+    /**
+     * Task-result clicks only. LaTeX keeps openWorkspaceFile, so a cloud
+     * cover can show a deliverable in the instance pane without taking a
+     * paper that belongs to the covered tab.
+     */
+    openTaskResultFile?: (file: CodeFile) => boolean | void;
+    /** Pane flag for a task-result click. LaTeX keeps openPreviewPane. */
+    openTaskResultPane?: (open: boolean) => void;
     /** Bumped by the panel when the pane opens so the tree/file focus follows. */
     focusOpenedFile: () => void;
     /**
@@ -104,6 +112,8 @@ export function useAssistantPreviewOpenEvents({
     sessionKey,
     lang,
     openWorkspaceFile,
+    openTaskResultFile,
+    openTaskResultPane,
     focusOpenedFile,
     generationRef,
     openPreviewPane,
@@ -112,6 +122,10 @@ export function useAssistantPreviewOpenEvents({
     // re-subscribe both window listeners on every render.
     const focusRef = useRef(focusOpenedFile);
     focusRef.current = focusOpenedFile;
+    const openTaskResultFileRef = useRef(openTaskResultFile);
+    openTaskResultFileRef.current = openTaskResultFile;
+    const openTaskResultPaneRef = useRef(openTaskResultPane);
+    openTaskResultPaneRef.current = openTaskResultPane;
     // Updated during render so a listener installed for the previous session
     // still attributes an open to the tab that is current when the event fires.
     const sessionKeyRef = useRef(sessionKey);
@@ -229,11 +243,14 @@ export function useAssistantPreviewOpenEvents({
             const generation = ++generationRef.current;
             const show = (file: CodeFile) => {
                 if (generation !== generationRef.current) return;
-                if (!openFile(file)) {
-                    openPreviewPane(false);
+                const openResult = openTaskResultFileRef.current ?? openWorkspaceFile;
+                const showPane = openTaskResultPaneRef.current ?? openPreviewPane;
+                if (openResult(file) === false) {
+                    showPane(false);
                     return;
                 }
-                openPreviewPane(true);
+                focusRef.current();
+                showPane(true);
             };
             const immediateKind = taskResultPreviewKindFromPath(path);
             if (immediateKind) {

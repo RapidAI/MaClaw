@@ -3,18 +3,14 @@ import {
     DeleteCloudSrvNode,
     DeployDesktopNode,
     GetCloudSrvChoice,
-    GetMaclawLLMProviders,
-    ListCloudAgents,
+    GetMaclawLLMProfilePanelState,
     ListCloudSrvNodes,
-    PatchConfigFields,
     ProbeCloudSrvSSH,
-    ResetCloudAgentLLM,
-    SetCloudAgentLLM,
     SetCloudSrvChoice,
     UpgradeCloudSrvNode,
 } from '../../../wailsjs/go/main/App';
-import { corelib } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
+import { openSettingsTab } from '../../utils/settingsNavigation';
 import { useDialog } from '../CustomDialog';
 
 type CloudSrvNode = {
@@ -29,40 +25,18 @@ type CloudSrvState = {
     nodes: CloudSrvNode[];
 };
 
-type CloudAgentRow = {
-    id: string;
-    name: string;
-    kind: string;
-    status: string;
-    llm_mode: string;
-    llm_label: string;
-    llm_model: string;
+// The 云端 Agent default-model line of the LLM assignment panel state. The
+// card is read-only: adjustments live in 大模型配置 → 云端 Agent.
+type CloudLLMSummary = {
+    provider_id?: string;
+    provider_name?: string;
+    model?: string;
+    inherit_assistant?: boolean;
+    configured?: boolean;
 };
 
-type CloudAgentList = {
-    instances: CloudAgentRow[];
-    enabled: boolean;
-};
-
-type MaclawLLMProvider = {
-    id?: string;
-    name: string;
-    url: string;
-    key: string;
-    model: string;
-    models?: string[];
-    is_hub_service?: boolean;
-    protocol?: string;
-    wire_api?: string;
-    agent_type?: string;
-    context_length?: number;
-    timeout_sec?: number;
-    max_output_tokens?: number;
-};
-
-type MaclawLLMProviderList = {
-    providers: MaclawLLMProvider[];
-    current: string;
+type CloudLLMPanelState = {
+    cloud?: CloudLLMSummary;
 };
 
 type CloudSrvProbe = {
@@ -85,8 +59,6 @@ type CloudSrvNodeView = {
 type CloudAgentSettingsPanelProps = {
     lang: string;
     showToastMessage: (message: string) => void;
-    config: corelib.AppConfig | null;
-    setConfig: (config: corelib.AppConfig) => void;
 };
 
 const textForLang = localizeText;
@@ -118,7 +90,7 @@ const ServerIcon = () => (
     </svg>
 );
 
-export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setConfig }: CloudAgentSettingsPanelProps) => {
+export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSettingsPanelProps) => {
     const t = useCallback((en: string, zhHans: string, zhHant?: string) => textForLang(lang, en, zhHans, zhHant || zhHans), [lang]);
     const { showConfirm } = useDialog();
 
@@ -143,13 +115,9 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
     const [installNote, setInstallNote] = useState('');
     const [installOpen, setInstallOpen] = useState(false);
 
-    const [instances, setInstances] = useState<CloudAgentRow[]>([]);
-    const [providers, setProviders] = useState<MaclawLLMProvider[]>([]);
-    // 云端 Agent 全局默认模型：'' = MaClaw 官方，否则是服务商的稳定 ID（或名称）。
-    // 保存扇出到现有实例；新建实例由 CreateCloudAgent 在 Go 侧自动应用。
-    const [defaultProvider, setDefaultProvider] = useState('');
-    const [defaultModel, setDefaultModel] = useState('');
-    const [savingDefault, setSavingDefault] = useState(false);
+    // Resolved 云端 Agent default-model line from the LLM assignment read
+    // model; the card is informational and jumps to 大模型配置 for edits.
+    const [llmState, setLlmState] = useState<CloudLLMPanelState | null>(null);
 
     // Installed srv-only nodes (私有云端服务) with update/delete actions.
     const [srvNodes, setSrvNodes] = useState<CloudSrvNodeView[]>([]);
@@ -158,7 +126,6 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
     const [upgrading, setUpgrading] = useState(false);
 
     const choiceInitialized = useRef(false);
-    const defaultSeeded = useRef(false);
     // Deploy watch: the node ids that existed BEFORE the install started. A
     // refresh that surfaces an id outside this set means the new node has
     // registered and the install is done. Null = not watching.
@@ -171,12 +138,11 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
         refreshTimersRef.current = [];
     }, []);
     const refresh = useCallback(async () => {
-        // All four reads in flight at once — a refresh is issued on every
+        // All three reads in flight at once — a refresh is issued on every
         // mount, save, and install watch tick, so serial roundtrips add up.
-        const [choiceRes, listRes, llmRes, srvRes] = await Promise.allSettled([
+        const [choiceRes, llmRes, srvRes] = await Promise.allSettled([
             GetCloudSrvChoice(),
-            ListCloudAgents(),
-            GetMaclawLLMProviders(),
+            GetMaclawLLMProfilePanelState(),
             ListCloudSrvNodes(),
         ]);
         if (choiceRes.status === 'fulfilled') {
@@ -213,13 +179,11 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
             setLoadError(errorText(choiceRes.reason));
         }
         setLoading(false);
-        if (listRes.status === 'fulfilled') {
-            const list = listRes.value as CloudAgentList;
-            setInstances(Array.isArray(list?.instances) ? list.instances : []);
-        }
         if (llmRes.status === 'fulfilled') {
-            const llm = llmRes.value as MaclawLLMProviderList;
-            setProviders(Array.isArray(llm?.providers) ? llm.providers : []);
+            const panel = llmRes.value as CloudLLMPanelState;
+            setLlmState({ cloud: panel?.cloud || undefined });
+        } else {
+            setLlmState(null);
         }
         if (srvRes.status === 'fulfilled') {
             const nodes = srvRes.value as CloudSrvNodeView[];
@@ -228,15 +192,6 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
     }, [t]);
 
     useEffect(() => { void refresh(); }, [refresh]);
-
-    // Seed the default-model pick once from the saved desktop config; later
-    // config syncs must not clobber an in-progress edit.
-    useEffect(() => {
-        if (defaultSeeded.current || !config) return;
-        defaultSeeded.current = true;
-        setDefaultProvider(String(config.cloud_agent_llm_provider || ''));
-        setDefaultModel(String(config.cloud_agent_llm_model || ''));
-    }, [config]);
 
     // Install dialog: Esc closes, like the other settings dialogs. Opening
     // moves focus into the first field; closing restores it to the control
@@ -261,30 +216,6 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
         [state.nodes, nodeID],
     );
 
-    // Only providers with real endpoint credentials can serve a cloud
-    // instance: hub-service rows point back at this Hub's official API and
-    // the server would reject them anyway.
-    const usableProviders = useMemo(
-        () => providers.filter((p) => !p.is_hub_service && String(p.url || '').trim() !== '' && String(p.key || '').trim() !== ''),
-        [providers],
-    );
-
-    // Stable select key: the provider ID when present, else the display name.
-    // The Go default resolver matches by ID first, then by name.
-    const providerKey = useCallback((p: MaclawLLMProvider) => {
-        const id = String(p.id ?? '').trim();
-        return id !== '' ? id : p.name;
-    }, []);
-
-    const modelOptionsFor = useCallback((key: string): string[] => {
-        const provider = usableProviders.find((p) => providerKey(p) === key);
-        if (!provider) return [];
-        const list = Array.isArray(provider.models) && provider.models.length > 0
-            ? provider.models
-            : (provider.model ? [provider.model] : []);
-        return list;
-    }, [usableProviders, providerKey]);
-
     const save = async () => {
         const target = choice === 'private' ? nodeID : '';
         if (choice === 'private' && !target) {
@@ -304,70 +235,6 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
             showToastMessage(errorText(err) || t('Save failed.', '保存失败。'));
         } finally {
             setSaving(false);
-        }
-    };
-
-    // Save the global default and fan it out to every existing instance right
-    // away; new instances inherit it through CreateCloudAgent on the Go side.
-    const saveDefault = async () => {
-        const provider = defaultProvider === ''
-            ? null
-            : usableProviders.find((p) => providerKey(p) === defaultProvider);
-        if (defaultProvider !== '' && !provider) {
-            // The stored pick names a provider that no longer exists; the
-            // select keeps it visible as 已删除的服务商 until re-picked.
-            showToastMessage(t('The picked provider is gone; pick another one.', '所选服务商已不存在，请重新选择。'));
-            return;
-        }
-        const model = defaultProvider === '' ? '' : (defaultModel || '').trim() || provider!.model || '';
-        setSavingDefault(true);
-        try {
-            const next = await PatchConfigFields({
-                cloud_agent_llm_provider: defaultProvider,
-                cloud_agent_llm_model: model,
-            }) as corelib.AppConfig;
-            setConfig(next);
-            let failed = 0;
-            for (const row of instances) {
-                try {
-                    if (defaultProvider === '') {
-                        if (row.llm_mode !== 'official') await ResetCloudAgentLLM(row.id);
-                    } else if (provider) {
-                        const updated = await SetCloudAgentLLM(row.id, {
-                            url: provider.url,
-                            key: provider.key,
-                            model,
-                            label: provider.name,
-                            protocol: provider.protocol || '',
-                            wire_api: provider.wire_api || '',
-                            agent_type: provider.agent_type || '',
-                            context_length: provider.context_length || 0,
-                            timeout_sec: provider.timeout_sec || 0,
-                            max_output_tokens: provider.max_output_tokens || 0,
-                        }) as CloudAgentRow;
-                        setInstances((prev) => prev.map((r) => (r.id === row.id ? updated : r)));
-                    }
-                } catch (err) {
-                    failed++;
-                    void err;
-                }
-            }
-            if (failed === 0) {
-                showToastMessage(t(
-                    'Default model saved' + (instances.length > 0 ? ' and applied to all instances.' : '. New instances will use it.'),
-                    '默认模型已保存' + (instances.length > 0 ? '，并已应用到全部实例。' : '，新实例将直接使用该设置。'),
-                ));
-            } else {
-                showToastMessage(t(
-                    'Default saved; ' + failed + ' instance(s) could not be updated right now.',
-                    '默认模型已保存；有 ' + failed + ' 个实例暂时未能更新。',
-                ));
-            }
-            await refresh();
-        } catch (err) {
-            showToastMessage(errorText(err) || t('Save failed.', '保存失败。'));
-        } finally {
-            setSavingDefault(false);
         }
     };
 
@@ -487,37 +354,21 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
         setInstallNote('');
     };
 
-    const currentModelText = (row: CloudAgentRow) => (
-        row.llm_mode === 'custom'
-            ? [row.llm_label, row.llm_model].filter(Boolean).join(' · ') || t('Custom', '自定义')
-            : t('MaClaw official (default)', 'MaClaw 官方（默认）')
-    );
-
-    // Hub instance statuses (hub/internal/cloudagent/model.go): unknown or
-    // deleted rows render no status chip at all.
-    const instanceStatusChip = (status: string): { label: string; tone: string } | null => {
-        switch (status) {
-            case 'running':
-                return { label: t('Running', '运行中'), tone: 'success' };
-            case 'idle':
-                return { label: t('Idle', '空闲'), tone: '' };
-            case 'provisioning':
-                return { label: t('Provisioning', '部署中'), tone: 'info' };
-            case 'stopped':
-                return { label: t('Stopped', '已停止'), tone: '' };
-            case 'provision_failed':
-                return { label: t('Provision failed', '部署失败'), tone: 'danger' };
-            default:
-                return null;
-        }
-    };
-
-    const defaultModelOptions = useMemo(
-        () => (defaultModel && !modelOptionsFor(defaultProvider).includes(defaultModel)
-            ? [defaultModel, ...modelOptionsFor(defaultProvider)]
-            : modelOptionsFor(defaultProvider)),
-        [defaultProvider, defaultModel, modelOptionsFor],
-    );
+    // The resolved cloud default from the LLM panel state: follow shows the
+    // assistant's live pick, a custom row names its provider, and an unusable
+    // row degrades to the official display — the Go resolver
+    // (maclawLLMCloudProfileSummary) applies the same rule the runtime does.
+    const cloudSummary = llmState?.cloud;
+    const cloudModeLabel = cloudSummary
+        ? (cloudSummary.inherit_assistant
+            ? t('Follow AI assistant', '跟随普通 AI 助手')
+            : cloudSummary.provider_name
+                ? t('Custom', '自定义')
+                : t('MaClaw official', 'MaClaw 官方'))
+        : null;
+    const cloudDetailLabel = cloudSummary?.provider_name
+        ? [cloudSummary.provider_name, cloudSummary.model].filter(Boolean).join(' · ')
+        : '';
 
     return (
         <div className="cloud-agent-settings">
@@ -616,86 +467,29 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
                         <h3 className="cloud-agent-section-title">{t('Default model', '默认模型')}</h3>
                         <p className="cloud-agent-section-sub">
                             {t(
-                                'One model for every cloud instance. Saving applies it to all existing instances right away, and new instances pick it up automatically. The provider key is stored only on the maclawsrv that runs the instance.',
-                                '所有云端实例共用一个模型。保存后立即应用到全部现有实例，新建实例也会直接使用该设置。密钥只保存在跑实例的 maclawsrv 上。',
+                                'The default model for cloud tasks. Adjust it in 大模型配置 → 云端 Agent; saving applies it to every existing instance, and new instances pick it up automatically.',
+                                '云端任务的默认模型。在「大模型配置 → 云端 Agent」中调整；保存后应用到全部实例，新建实例自动使用。',
                             )}
                         </p>
                     </div>
                 </div>
 
-                <div className="cloud-agent-default-row">
-                    <select
-                        className="form-input cloud-agent-select"
-                        value={defaultProvider}
-                        disabled={savingDefault}
-                        onChange={(event) => {
-                            const key = event.target.value;
-                            setDefaultProvider(key);
-                            const provider = usableProviders.find((p) => providerKey(p) === key);
-                            setDefaultModel(provider ? (modelOptionsFor(key)[0] || provider.model || '') : '');
-                        }}
-                    >
-                        <option value="">{t('MaClaw official (default)', 'MaClaw 官方（默认）')}</option>
-                        {usableProviders.map((p) => (
-                            <option key={providerKey(p)} value={providerKey(p)}>{p.name}</option>
-                        ))}
-                        {defaultProvider !== '' && !usableProviders.some((p) => providerKey(p) === defaultProvider) && (
-                            <option value={defaultProvider}>{t('Removed provider', '已删除的服务商')}</option>
-                        )}
-                    </select>
-                    {defaultProvider !== '' && usableProviders.some((p) => providerKey(p) === defaultProvider) && (
-                        <select
-                            className="form-input cloud-agent-select"
-                            value={defaultModel}
-                            disabled={savingDefault}
-                            onChange={(event) => setDefaultModel(event.target.value)}
+                {cloudSummary ? (
+                    <div className="cloud-agent-actions cloud-agent-actions--start">
+                        <span className="cloud-agent-chip">{cloudModeLabel}</span>
+                        {cloudDetailLabel && <span className="cloud-agent-chip cloud-agent-chip--current">{cloudDetailLabel}</span>}
+                        <button
+                            type="button"
+                            className="im-settings-button im-settings-button--accent"
+                            onClick={() => { openSettingsTab('llm'); }}
                         >
-                            {defaultModelOptions.length === 0 && <option value="">{t('Model (provider default)', '模型（服务商默认）')}</option>}
-                            {defaultModelOptions.map((m) => (
-                                <option key={m} value={m}>{m}</option>
-                            ))}
-                        </select>
-                    )}
-                    <button
-                        type="button"
-                        className="im-settings-button im-settings-button--accent"
-                        disabled={savingDefault}
-                        onClick={() => void saveDefault()}
-                    >
-                        {savingDefault ? t('Applying…', '应用中…') : t('Save & apply', '保存并应用')}
-                    </button>
-                </div>
-
-                {instances.length > 0 ? (
-                    <div className="cloud-agent-instance-list">
-                        {instances.map((row) => {
-                            const statusChip = instanceStatusChip(row.status);
-                            return (
-                                <div key={row.id} className="cloud-agent-instance">
-                                    <div className="cloud-agent-instance__meta">
-                                        <span className="cloud-agent-instance__name">{row.name || row.id}</span>
-                                        <span className="cloud-agent-instance__tags">
-                                            {statusChip && (
-                                                <span className={'cloud-agent-chip' + (statusChip.tone ? ' cloud-agent-chip--' + statusChip.tone : '')}>
-                                                    {statusChip.label}
-                                                </span>
-                                            )}
-                                            <span className="cloud-agent-chip">
-                                                {row.kind === 'coding' ? t('coding', '编程') : t('session', '会话')}
-                                            </span>
-                                            <span className="cloud-agent-chip cloud-agent-chip--current">
-                                                {currentModelText(row)}
-                                            </span>
-                                        </span>
-                                    </div>
-                                </div>
-                            );
-                        })}
+                            {t('Settings', '设置')}
+                        </button>
                     </div>
                 ) : (
                     !loading && (
                         <p className="cloud-agent-banner cloud-agent-banner--info">
-                            {t('No cloud instances yet. New instances will use this model from creation.', '还没有云端实例，新建实例将直接使用该模型。')}
+                            {t('Could not read the current model setting.', '暂时无法读取当前模型设置。')}
                         </p>
                     )
                 )}

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
@@ -250,17 +251,33 @@ func PostEdgeRotateCodeAdminHandler(reg *edgenode.Registry) http.HandlerFunc {
 	}
 }
 
+// edgeDesktopRefreshMu serializes the read-check-write cycle below. Two
+// reconnects otherwise both see the missing row and each create one.
+var edgeDesktopRefreshMu sync.Mutex
+
 // refreshRotatedDesktop writes the new desktopd key onto the server this node
 // already has. A missing server is created. A second server is not.
 func refreshRotatedDesktop(ctx context.Context, pool *desktoppool.Pool, tenantID, nodeID, name, ownerUserID, key string, ramBytes uint64, logicalCPUs int) error {
 	if pool == nil {
 		return errors.New("desktop service store is unavailable")
 	}
+	edgeDesktopRefreshMu.Lock()
+	defer edgeDesktopRefreshMu.Unlock()
 	view, err := pool.View(ctx, tenantID)
 	if err != nil {
 		return err
 	}
 	key = strings.TrimSpace(key)
+	ownerUserID = strings.TrimSpace(ownerUserID)
+	if ramBytes > 0 {
+		// Validate before touching the stored key: a refused rotation must not
+		// leave the pool pointing at a desktopd key the rolled-back node no
+		// longer has.
+		if _, err := desktop.FitHostResources(ramBytes, logicalCPUs); err != nil {
+			return err
+		}
+	}
+	updated := false
 	for _, server := range view.Servers {
 		if server.NodeID != nodeID {
 			continue
@@ -271,24 +288,34 @@ func refreshRotatedDesktop(ctx context.Context, pool *desktoppool.Pool, tenantID
 			NodeID: server.NodeID, OwnerUserID: server.OwnerID, Intranet: server.Intranet,
 			ResourcesAuto: server.ResourcesAuto, ResourcesPinned: server.ResourcesPinned,
 		}, true)
+		if err != nil {
+			return err
+		}
+		updated = true
+		break
+	}
+	if !updated {
+		if strings.TrimSpace(name) == "" {
+			name = nodeID
+		}
+		server, fitErr := desktoppool.PrepareOwnedResources(desktoppool.Server{
+			Name: name, BaseURL: desktoppool.NodeBaseURL(nodeID), AccessToken: key, NodeID: nodeID,
+		}, ramBytes, logicalCPUs)
+		if fitErr != nil {
+			return fitErr
+		}
+		if ownerUserID != "" {
+			if _, err := pool.AttachOwnedServer(ctx, tenantID, ownerUserID, server); err != nil {
+				return err
+			}
+		} else if _, err := pool.CreateServer(ctx, tenantID, server); err != nil {
+			return err
+		}
+	}
+	if err := pool.FitNodeResources(ctx, tenantID, nodeID, ramBytes, logicalCPUs); err != nil {
 		return err
 	}
-	if strings.TrimSpace(name) == "" {
-		name = nodeID
-	}
-	ownerUserID = strings.TrimSpace(ownerUserID)
-	server, err := desktoppool.PrepareOwnedResources(desktoppool.Server{
-		Name: name, BaseURL: desktoppool.NodeBaseURL(nodeID), AccessToken: key, NodeID: nodeID,
-	}, ramBytes, logicalCPUs)
-	if err != nil {
-		return err
-	}
-	if ownerUserID != "" {
-		_, err = pool.AttachOwnedServer(ctx, tenantID, ownerUserID, server)
-		return err
-	}
-	_, err = pool.CreateServer(ctx, tenantID, server)
-	return err
+	return pool.SetNodeServersOwner(ctx, tenantID, nodeID, ownerUserID)
 }
 
 // ensureEdgeDesktopRecorded repairs the pool row of a node whose enrollment
@@ -308,6 +335,30 @@ func ensureEdgeDesktopRecorded(ctx context.Context, pool *desktoppool.Pool, node
 	return nil
 }
 
+// removeEdgeDesktopRecords undoes the pool rows an aborted enrollment just
+// created. Owned rows must be detached, not deleted: DeleteServer refuses a
+// row still referenced by the user assignment that AttachOwnedServer added.
+func removeEdgeDesktopRecords(ctx context.Context, pool *desktoppool.Pool, tenantID, nodeID string) {
+	if pool == nil {
+		return
+	}
+	view, err := pool.View(ctx, tenantID)
+	if err != nil {
+		return
+	}
+	for _, server := range view.Servers {
+		if server.NodeID != nodeID {
+			continue
+		}
+		if owner := strings.TrimSpace(server.OwnerID); owner != "" {
+			if _, err := pool.DetachOwnedServer(ctx, tenantID, owner, server.ID); err == nil {
+				continue
+			}
+		}
+		_ = pool.DeleteServer(ctx, tenantID, server.ID)
+	}
+}
+
 // abortEdgeEnroll undoes a registration whose srv connection was not stored.
 // The code is already spent. A new node is removed with the desktop service
 // it just created. A rotation is put back, including the previous desktop key.
@@ -316,6 +367,10 @@ func abortEdgeEnroll(ctx context.Context, reg *edgenode.Registry, pool *desktopp
 		_ = reg.Restore(ctx, out.Previous)
 		if hadDesktop && strings.TrimSpace(out.Previous.DesktopdKey) != "" {
 			_ = refreshRotatedDesktop(ctx, pool, out.TenantID, out.NodeID, out.Previous.Name, out.Previous.OwnerUserID, out.Previous.DesktopdKey, 0, 0)
+		} else if hadDesktop {
+			// A failed srv-only→desktop upgrade rolls back to a node without
+			// desktopd. No pool row for that node may survive the rollback.
+			removeEdgeDesktopRecords(ctx, pool, out.TenantID, out.NodeID)
 		}
 		return
 	}
@@ -323,14 +378,7 @@ func abortEdgeEnroll(ctx context.Context, reg *edgenode.Registry, pool *desktopp
 		_ = bots.ForgetNodeSrv(ctx, out.TenantID, out.NodeID)
 	}
 	if hadDesktop && pool != nil {
-		view, err := pool.View(ctx, out.TenantID)
-		if err == nil {
-			for _, server := range view.Servers {
-				if server.NodeID == out.NodeID {
-					_ = pool.DeleteServer(ctx, out.TenantID, server.ID)
-				}
-			}
-		}
+		removeEdgeDesktopRecords(ctx, pool, out.TenantID, out.NodeID)
 	}
 	_ = reg.Remove(ctx, out.NodeID)
 }

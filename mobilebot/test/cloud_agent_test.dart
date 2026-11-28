@@ -570,4 +570,117 @@ void main() {
     final prefs = await SharedPreferences.getInstance();
     expect(prefs.getString('mobilebot.cloud.lastTask'), isNull);
   });
+
+  testWidgets('a request split across pages shows its events once', (
+    tester,
+  ) async {
+    // 首载窗口只含 r2 的用户行，过程行挂在那里；更早页把 r1 的助手行带回
+    // 来后，r2 的旧挂载必须按新页剥掉。
+    final api = _FakeCloudApi()
+      ..detail = CloudTaskDetail.fromJson({
+        'task_id': 'task-1',
+        'messages': ['user\n问题二'],
+        'request_ids': ['r2'],
+        'events': [
+          [
+            {'seq': 1, 'kind': 'progress', 'text': '过程二'},
+          ],
+        ],
+        'message_total': 3,
+        'turn_status': 'finished',
+      })
+      ..earlierDetail = CloudTaskDetail.fromJson({
+        'task_id': 'task-1',
+        'messages': ['user\n问题一', 'assistant\n答复一', 'user\n问题二'],
+        'request_ids': ['r1', 'r1', 'r2'],
+        'events': [
+          [],
+          [
+            {'seq': 1, 'kind': 'progress', 'text': '过程一'},
+          ],
+          [],
+        ],
+        'message_total': 3,
+        'turn_status': 'finished',
+      });
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [cloudApiProvider.overrideWithValue(api)],
+        child: l10nApp(
+          child: const CloudTaskScreen(
+            instance: CloudInstance(id: 'cag-1', name: '账号云端'),
+            task: CloudTask(id: 'task-1', title: '写文档'),
+          ),
+        ),
+      ),
+    );
+    await pumpFew(tester);
+    expect(find.text('过程二'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('cloud-load-earlier')));
+    await pumpFew(tester);
+    expect(find.text('答复一'), findsOneWidget);
+    expect(find.text('过程一'), findsOneWidget);
+    // r2 的过程行以新页（空）为准，不重复显示旧窗里那份。
+    expect(find.text('过程二'), findsNothing);
+    await teardownTree(tester);
+  });
+
+  testWidgets('drawer switches to another task through the screen callback', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final api = _FakeCloudApi()
+      ..tasks = const [
+        CloudTask(id: 'task-1', title: '写文档', status: cloudTurnFinished),
+        CloudTask(id: 'task-2', title: '旧任务'),
+      ];
+    // 抽屉切换走 context.push，需要真实路由栈；首屏记录由测试变量兜底。
+    var current = (
+      instance: const CloudInstance(id: 'cag-1', name: '账号云端'),
+      task: const CloudTask(id: 'task-1', title: '写文档'),
+    );
+    final router = GoRouter(
+      initialLocation: '/cloud/task',
+      routes: [
+        GoRoute(path: '/cloud', builder: (_, _) => const CloudScreen()),
+        GoRoute(
+          path: '/cloud/task',
+          builder: (context, state) {
+            final extra = state.extra ?? current;
+            if (extra
+                is ({CloudInstance instance, CloudTask task})) {
+              return CloudTaskScreen(
+                instance: extra.instance,
+                task: extra.task,
+              );
+            }
+            return const Scaffold(body: SizedBox());
+          },
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [cloudApiProvider.overrideWithValue(api)],
+        child: MaterialApp.router(
+          locale: const Locale('zh'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          routerConfig: router,
+        ),
+      ),
+    );
+    await pumpFew(tester);
+    await tester.tap(find.byTooltip('会话列表'));
+    await pumpFew(tester);
+    await tester.tap(find.text('旧任务'));
+    await pumpFew(tester);
+    // 新会话推入栈顶：现在有两层聊天屏（两个 composer），抽屉已收回。
+    expect(find.text('发消息…'), findsNWidgets(2));
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString('mobilebot.cloud.lastTask');
+    expect(saved, contains('task-2'));
+    await teardownTree(tester);
+  });
 }

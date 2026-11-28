@@ -42,6 +42,9 @@ type CodingWorkbenchFilePreview struct {
 	Content   string `json:"content"`
 	Language  string `json:"language"`
 	Truncated bool   `json:"truncated"`
+	// Original is the first pre-write text, only for a cloud-agent file the
+	// instance still remembers. Local and remote-SSH previews leave it empty.
+	Original string `json:"original,omitempty"`
 }
 
 // CodingWorkbenchEntryProperties contains inexpensive metadata for a selected
@@ -56,8 +59,11 @@ type CodingWorkbenchEntryProperties struct {
 	Size       int64  `json:"size"`
 	SizeKnown  bool   `json:"size_known"`
 	ModifiedAt int64  `json:"modified_at"`
-	Mode       string `json:"mode"`
-	Extension  string `json:"extension"`
+	// Nanoseconds, local files only. The viewer reloads when this changes;
+	// whole seconds hide a rewrite that lands in the same second.
+	ModifiedUnixNano int64  `json:"modified_unix_nano,omitempty"`
+	Mode             string `json:"mode"`
+	Extension        string `json:"extension"`
 }
 
 type codingWorkbenchRemoteDirectoryRecord struct {
@@ -664,7 +670,68 @@ func (a *App) GetCodingWorkbenchEntryProperties(projectPath, relativePath string
 		}
 		return CodingWorkbenchEntryProperties{}, err
 	}
-	return codingWorkbenchEntryProperties(relativePath, absPath, info.Name(), info.IsDir(), info.Size(), info.ModTime().Unix(), fmt.Sprintf("%04o", info.Mode().Perm())), nil
+	props := codingWorkbenchEntryProperties(relativePath, absPath, info.Name(), info.IsDir(), info.Size(), info.ModTime().Unix(), fmt.Sprintf("%04o", info.Mode().Perm()))
+	props.ModifiedUnixNano = info.ModTime().UnixNano()
+	return props, nil
+}
+
+// cloudWorkspacePreviewMaterialize downloads a listed object before the
+// preview stamp is read. Tests replace it to prove the stamp follows that write.
+var cloudWorkspacePreviewMaterialize = func(a *App, root, rel string) error {
+	return a.materializeCloudWorkspaceListedFile(root, rel)
+}
+
+// PrepareCloudWorkspacePreviewFile downloads one listed cloud-workspace object
+// when the cache copy is missing or stale, then returns that file and its stamp.
+// A restored read-only cache or a nested working directory can resolve to a
+// different root than the path the click started with. Listing metadata has no
+// mtime and must not open a file that is still absent.
+func (a *App) PrepareCloudWorkspacePreviewFile(projectPath, relativePath string) (CodingWorkbenchEntryProperties, error) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" {
+		return CodingWorkbenchEntryProperties{}, fmt.Errorf("project path is required")
+	}
+	relativePath, err := cleanCodingWorkbenchBrowserPath(relativePath)
+	if err != nil || relativePath == "" {
+		if err == nil {
+			err = fmt.Errorf("file path is required")
+		}
+		return CodingWorkbenchEntryProperties{}, err
+	}
+	if cloudAgentBrowseInstanceID(projectPath) != "" || a.codingWorkbenchRejectsLocalOpen(projectPath) {
+		return CodingWorkbenchEntryProperties{}, fmt.Errorf("cloud workspace preview is not available for this path")
+	}
+	root, err := codingWorkbenchBrowserLocalRoot(a, projectPath)
+	if err != nil {
+		return CodingWorkbenchEntryProperties{}, err
+	}
+	return cloudWorkspacePreviewProperties(a, root, relativePath)
+}
+
+func cloudWorkspacePreviewProperties(a *App, root, relativePath string) (CodingWorkbenchEntryProperties, error) {
+	if err := cloudWorkspacePreviewMaterialize(a, root, relativePath); err != nil {
+		return CodingWorkbenchEntryProperties{}, err
+	}
+	absPath, err := codingWorkbenchBrowserLocalPath(root, relativePath)
+	if err != nil {
+		return CodingWorkbenchEntryProperties{}, err
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return CodingWorkbenchEntryProperties{}, fmt.Errorf("cloud workspace file is not in the local cache")
+		}
+		return CodingWorkbenchEntryProperties{}, err
+	}
+	if info.IsDir() {
+		return CodingWorkbenchEntryProperties{}, fmt.Errorf("path is a directory")
+	}
+	props := codingWorkbenchEntryProperties(relativePath, absPath, info.Name(), info.IsDir(), info.Size(), info.ModTime().Unix(), fmt.Sprintf("%04o", info.Mode().Perm()))
+	props.ModifiedUnixNano = info.ModTime().UnixNano()
+	// Directory listings omit cache paths. The viewer has to open the file
+	// materialize wrote, which may no longer sit under the click's project path.
+	props.AbsPath = absPath
+	return props, nil
 }
 
 // IsCodingWorkbenchVSCodeAvailable reports whether this desktop can launch VS

@@ -85,6 +85,17 @@ func desktopRunFactOf(runID string) desktopRunFact {
 	return out
 }
 
+// desktopClearRunFinishFacts drops the terminal-run classifier state once the
+// finish record is durable. Without this the long-lived srv accumulates one
+// entry for every desktop run.
+func desktopClearRunFinishFacts(runID string) {
+	runID = strings.TrimSpace(runID)
+	desktopRunFactMu.Lock()
+	delete(desktopRunFacts, runID)
+	desktopRunFactMu.Unlock()
+	desktopContinueTried.Delete(runID)
+}
+
 // desktopBlockerKind maps a recorded failure class to a blocker the person
 // can understand, and whether the bot can remove it without them.
 func desktopBlockerKind(class string) (kind string, self bool) {
@@ -273,7 +284,11 @@ func desktopRunFinishSentence(f desktopRunFinish) string {
 			}
 			s += "。"
 		case "ask_user":
-			s += "\n这一步要你定"
+			if f.Remediated {
+				s += "\n我没能自己接着改进"
+			} else {
+				s += "\n这一步要你定"
+			}
 			if f.Plan != "" {
 				s += "：" + f.Plan
 			}
@@ -385,24 +400,25 @@ func desktopImprovementReady(blocker string, self, alreadyTried bool) bool {
 	return true
 }
 
-func desktopStoreRunFinish(runID, modelText, why string, fin desktopRunFinish) {
+func desktopStoreRunFinish(runID, modelText, why string, fin desktopRunFinish) bool {
 	dir := filepath.Join(corelib.MaclawDataDir(), "run-outcomes")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
+		return false
 	}
 	rec := map[string]any{
 		"run_id": runID, "status": fin.Status, "results": fin.Results,
 		"blocker": fin.Blocker, "unblock_conditions": fin.Unblock,
-		"next_action": fin.Next, "self_remediated": fin.Remediated,
+		"next_action": fin.Next, "plan": fin.Plan, "self_remediated": fin.Remediated,
 		"model_text": modelText, "evidence": why,
 	}
 	raw, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
-		return
+		return false
 	}
 	if err := os.WriteFile(filepath.Join(dir, runID+".json"), raw, 0o644); err != nil {
-		return
+		return false
 	}
+	return true
 }
 
 func desktopRunFinishRecordPath(runID string) string {
@@ -427,6 +443,7 @@ func desktopLoadStoredRunFinish(runID string) (desktopRunFinish, bool) {
 		Blocker    string   `json:"blocker"`
 		Unblock    []string `json:"unblock_conditions"`
 		Next       string   `json:"next_action"`
+		Plan       string   `json:"plan"`
 		Remediated bool     `json:"self_remediated"`
 	}
 	if err := json.Unmarshal(raw, &rec); err != nil || strings.TrimSpace(rec.Status) == "" {
@@ -434,7 +451,7 @@ func desktopLoadStoredRunFinish(runID string) (desktopRunFinish, bool) {
 	}
 	return desktopRunFinish{
 		Status: rec.Status, Results: rec.Results, Blocker: rec.Blocker,
-		Unblock: rec.Unblock, Next: rec.Next, Remediated: rec.Remediated,
+		Unblock: rec.Unblock, Next: rec.Next, Plan: rec.Plan, Remediated: rec.Remediated,
 	}, true
 }
 
@@ -455,11 +472,22 @@ func desktopStoredFinishSentence(runID string) (string, bool) {
 // in place.
 var desktopRunContinueSend = desktopRunContinueSendDefault
 
-func desktopRunContinueSendDefault(ctx context.Context, svc *agentservice.Service, p agentservice.Principal, instanceID, sessionID, runID, blocker, unblock string) error {
+func desktopRunContinuePrompt(status, blocker, plan string) string {
+	if status == "success" {
+		plan = strings.TrimSpace(plan)
+		if plan == "" {
+			plan = "在现有结果上继续改进"
+		}
+		return "这不是新任务。上一步已经做成。继续做下一步改进：" + plan + "。不要把日志或 JSON 贴给这个人。处理完用一条话说结果；仍然需要这个人时再问。"
+	}
+	return "这不是新任务。上一步没有做成，卡在" + desktopBlockerWords(blocker) + "。你可以自己处理：" + plan + "。不要把日志或 JSON 贴给这个人。处理完用一条话说结果；仍然需要这个人时再问。"
+}
+
+func desktopRunContinueSendDefault(ctx context.Context, svc *agentservice.Service, p agentservice.Principal, instanceID, sessionID, runID, status, blocker, plan string) error {
 	if svc == nil || strings.TrimSpace(instanceID) == "" || strings.TrimSpace(sessionID) == "" {
 		return fmt.Errorf("cannot continue this run")
 	}
-	prompt := "这不是新任务。上一步没有做成，卡在" + desktopBlockerWords(blocker) + "。你可以自己处理：" + unblock + "。不要把日志或 JSON 贴给这个人。处理完用一条话说结果；仍然需要这个人时再问。"
+	prompt := desktopRunContinuePrompt(status, blocker, plan)
 	_, run, err := svc.SendMessageAsync(ctx, p, instanceID, agentservice.SendMessageInput{
 		Content:   prompt,
 		SessionID: sessionID,

@@ -118,4 +118,8 @@ const (
 	// (or other survey mutations that should refresh the Utilities results UI).
 	// Payload: map with survey_id (string) and optional event (string).
 	EventSurveyUpdated = "survey-updated"
+
+	// EventDesktopStageClosed means the user closed the native desktop-stage
+	// window itself. Programmatic CloseDesktopStageWindow calls do not emit it.
+	EventDesktopStageClosed = "desktop-stage:closed"
 )

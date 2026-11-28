@@ -196,12 +196,18 @@ func (rt *Runtime) browseReadFile(inst *instance, rel string, maxBytes int64) (j
 	if err != nil {
 		return nil, errors.New("这个文件暂时读取失败")
 	}
-	return json.Marshal(map[string]any{
+	body := map[string]any{
 		"name":        info.Name(),
 		"size":        info.Size(),
 		"truncated":   info.Size() > limit,
 		"data_base64": base64.StdEncoding.EncodeToString(raw),
-	})
+	}
+	// The desktop coding preview diffs against this first pre-write snapshot.
+	// A truncated read omits it so the pane shows the file without a false diff.
+	if original := previewOriginalForRead(inst, root, path, info.Size() > limit); original != "" {
+		body["original"] = original
+	}
+	return json.Marshal(body)
 }
 
 func (rt *Runtime) browseStat(inst *instance, rel string) (json.RawMessage, error) {

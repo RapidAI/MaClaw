@@ -709,15 +709,14 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"content_len", strconv.Itoa(len(content)),
 		"srv", botlogHost(rec.BaseURL),
 	)
-	// A bot with no computer runs on the cloud srv. A node pin it kept from
-	// when it did have one must not route its turns (or its model config)
-	// at that node: the node may be offline, and the Bot-management model
-	// pin is written to the srv that actually runs the agent.
+	// A no-computer bot still lives on the srv that created its instance;
+	// desktop mode does not migrate that instance. Even when the node has no
+	// desktop, its srv remains the only srv that can serve this bot. Never
+	// repost the instance to the cloud merely because the node link is stale:
+	// the cloud does not have that instance, and the write would fail later or
+	// hit the wrong state.
 	noDesktop := botNone(rec.Bots[index])
 	botNode := strings.TrimSpace(rec.Bots[index].NodeID)
-	if noDesktop {
-		botNode = ""
-	}
 	// A bot created before the node capability check may still point at a
 	// srv-only node. That turn can never open its computer, so stop before
 	// token exchange/model work and say which configuration is broken.

@@ -76,6 +76,19 @@ describe("PdfPreviewPanel", () => {
         expect(getByTestId("pdf-preview-panel").getAttribute("src")).toBe("/maclaw-preview/v1/file?t=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     });
 
+    it("reloads a rewritten file on the same path", async () => {
+        preview.mockResolvedValueOnce({
+            path: "D:/docs/report.pdf",
+            kind: "pdf",
+            preview_url: "/maclaw-preview/v1/file?t=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        } as never);
+        const { getByTestId } = render(
+            <PdfPreviewPanel absPath="D:/docs/report.pdf" revision="99:4" theme={theme} lang="en" />,
+        );
+        await waitFor(() => expect(getByTestId("pdf-preview-panel")).toBeTruthy());
+        expect(getByTestId("pdf-preview-panel").getAttribute("src")).toBe("/maclaw-preview/v1/file?t=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&v=99%3A4");
+    });
+
     it("ignores an off-origin preview URL", async () => {
         preview.mockResolvedValueOnce({
             path: "D:/docs/report.pdf",

@@ -15,6 +15,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/docgen"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
@@ -256,6 +257,121 @@ func (h *agentHost) nextLookupTool() string {
 	return "web_fetch"
 }
 
+// cloudRoutedToolNudgeCap is how many times one owed tool is named after a
+// tool-less stop. web_search, web_fetch, and generate_pdf each have their own
+// count. A model that never calls still ends once the current tool is spent.
+const cloudRoutedToolNudgeCap = 2
+
+// RoutedWorkStopNudge implements agent.RoutedWorkStopGuard. A narration of
+// the next lookup or of generate_pdf is not a finished cloud turn. The
+// named tool is one that has not been called yet. A call that already
+// reached the engine, including one that failed, is not asked for again
+// as if it never happened.
+func (h *agentHost) RoutedWorkStopNudge() string {
+	if h == nil || !h.routed.active {
+		return ""
+	}
+	if tool := h.owedRetrievalTool(); tool != "" {
+		return h.routedStopNudge(tool, "[系统] 当前事实还没有检索到。请直接调用 "+tool+"，不要只说明将要查询。")
+	}
+	if h.owesGeneratedPDF() {
+		prompt := "[系统] 请直接调用 generate_pdf，传入完整 Markdown。不要只说明将要生成 PDF。"
+		if h.routed.search || h.routed.fetch {
+			prompt = "[系统] 请直接调用 generate_pdf，把检索到的事实写成完整 Markdown 传给 content。不要只说明将要生成 PDF。"
+		}
+		return h.routedStopNudge("generate_pdf", prompt)
+	}
+	return ""
+}
+
+// UnresolvedRoutedWork implements agent.RoutedWorkStopOutcome. Reminders
+// that were ignored do not turn the announcement into a finished answer.
+// The sentence is only for a tool that was never called. A call that ran
+// and failed keeps the model's report of that result.
+func (h *agentHost) UnresolvedRoutedWork() string {
+	if h == nil || !h.routed.active {
+		return ""
+	}
+	if tool := h.owedRetrievalTool(); tool != "" {
+		if !h.routedStopNudgeSpent(tool) || h.routedToolAttempted(tool) {
+			return ""
+		}
+		msg := "这一步没有完成检索，还没有调用 " + tool + "。"
+		if h.routed.generate {
+			msg += "PDF 也还没有生成。"
+		}
+		return msg
+	}
+	if h.owesGeneratedPDF() && h.routedStopNudgeSpent("generate_pdf") && !h.pdfAttempted {
+		return "这一步没有调用 generate_pdf，文件还没有生成。"
+	}
+	return ""
+}
+
+// routedToolAttempted reports a call that reached the engine. The stop
+// sentence uses it so a failed call is not described as a call that never
+// happened.
+func (h *agentHost) routedToolAttempted(tool string) bool {
+	if h == nil {
+		return false
+	}
+	switch tool {
+	case "web_search":
+		return h.searchAttempted
+	case "web_fetch":
+		return h.fetchAttempted
+	case "generate_pdf":
+		return h.pdfAttempted
+	default:
+		return false
+	}
+}
+
+func (h *agentHost) routedStopNudge(tool, prompt string) string {
+	if h.routedStopNudgeSpent(tool) {
+		return ""
+	}
+	if h.stopNudges == nil {
+		h.stopNudges = map[string]int{}
+	}
+	h.stopNudges[tool]++
+	return prompt
+}
+
+func (h *agentHost) routedStopNudgeSpent(tool string) bool {
+	if h == nil || h.stopNudges == nil {
+		return false
+	}
+	return h.stopNudges[tool] >= cloudRoutedToolNudgeCap
+}
+
+// owedRetrievalTool is the lookup that can still unlock this turn and has
+// not been called. An already successful search or fetch clears the debt
+// even when the other lookup was never called. A lookup that already ran
+// and failed is not named again: the next unattempted lookup is, and when
+// every listed lookup has run there is nothing left to demand.
+func (h *agentHost) owedRetrievalTool() string {
+	if h == nil || (!h.routed.search && !h.routed.fetch) {
+		return ""
+	}
+	if (h.routed.search && h.searchDone) || (h.routed.fetch && h.fetchDone) {
+		return ""
+	}
+	if h.routed.search && !h.searchAttempted {
+		return "web_search"
+	}
+	if h.routed.fetch && !h.fetchAttempted {
+		return "web_fetch"
+	}
+	return ""
+}
+
+// owesGeneratedPDF reports a listed generate_pdf that has not been called.
+// A call that ran and failed is not still uncalled. pdfDone is the write.
+func (h *agentHost) owesGeneratedPDF() bool {
+	return h != nil && h.routed.generate && h.pdfListed() && !h.pdfDone && !h.pdfAttempted
+}
+
 func (h *agentHost) routedToolListed(name string) bool {
 	if h == nil {
 		return false
@@ -406,6 +522,9 @@ func defaultCloudRenderPDF(title, content string) ([]byte, error) {
 	if g == nil || !g.HasFont() {
 		return nil, errors.New("这台云端主机没有可用的中文字体，不能生成 PDF")
 	}
+	// Bare hosts render with the embedded subset face; kick off the
+	// background font download so later renders use a full font.
+	maybeProvisionCJKFont()
 	return g.GenerateSpecDoc("", title, content)
 }
 
@@ -475,6 +594,9 @@ func (h *agentHost) execGeneratePDF(argsJSON string) (string, bool) {
 	if strings.TrimSpace(content) == "" {
 		return "缺少 content 参数", true
 	}
+	// The call carried content, so a later prose stop must not say
+	// generate_pdf was never invoked. pdfDone stays false until the write.
+	h.pdfAttempted = true
 	title := strings.TrimSpace(cloudJSONString(argsJSON, "title"))
 	if title == "" {
 		title = "文档"
@@ -509,9 +631,59 @@ func (h *agentHost) execGeneratePDF(argsJSON string) (string, bool) {
 	if err := os.WriteFile(path, pdf, 0o600); err != nil {
 		return err.Error(), true
 	}
+	h.pdfDone = true
 	h.noteFile(path, created)
 	rel := canonicalArtifactRel(h.root, path)
-	return "已生成 PDF：" + rel + "。文件会随本轮结果交给对话。", false
+	msg := "已生成 PDF：" + rel + "。文件会随本轮结果交给对话。"
+	if note := cloudPDFMissingGlyphNote(title + "\n" + content); note != "" {
+		msg += "\n" + note
+	}
+	return msg, false
+}
+
+// cloudPDFMissingGlyphNote warns the model when the render relied on the
+// embedded subset face and the document uses characters it cannot print —
+// they would come out as empty boxes, and silently delivering a flawed PDF
+// is worse than telling the model to reword or inform the user. While a
+// full font serves (system or downloaded), there is nothing to report.
+// cloudPDFFontInFallback is indirect so tests can drive the note without
+// manipulating docgen's process-wide detection state.
+var cloudPDFFontInFallback = docgen.UsingEmbeddedFallback
+
+// PDFMissingGlyphNote exposes the fallback missing-glyph warning to the
+// other PDF render paths in this binary (hub bots render through
+// bot_pdf.go) — a bot-delivered PDF with silent blank boxes is the same
+// defect whether the turn was a cloud task or a bot request.
+func PDFMissingGlyphNote(text string) string {
+	return cloudPDFMissingGlyphNote(text)
+}
+
+func cloudPDFMissingGlyphNote(text string) string {
+	if !cloudPDFFontInFallback() {
+		return ""
+	}
+	seen := map[rune]bool{}
+	var missing []rune
+	for _, r := range text {
+		if r == ' ' || r == '\n' || r == '\t' || r == '\r' || seen[r] {
+			continue
+		}
+		seen[r] = true
+		if !docgen.EmbeddedFallbackCovers(r) {
+			missing = append(missing, r)
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	shown := missing
+	extra := ""
+	if len(shown) > 20 {
+		shown = shown[:20]
+		extra = fmt.Sprintf(" 等 %d 个", len(missing))
+	}
+	return fmt.Sprintf("注意：当前主机使用中文字体兜底子集渲染，%s%s 缺少字形，在 PDF 里会显示为空白；请改用常见字重新生成，或向用户说明这一情况",
+		string(shown), extra)
 }
 
 func cloudJSONString(argsJSON, key string) string {

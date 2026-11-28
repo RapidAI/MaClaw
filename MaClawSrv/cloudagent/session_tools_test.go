@@ -280,6 +280,192 @@ func TestCloudSemanticRouteWithholdsPDFUntilSearch(t *testing.T) {
 	}
 }
 
+func TestCloudRoutedWorkStopNudgeNamesSearchThenPDF(t *testing.T) {
+	weather := agentservice.DynamicCapabilityNeedResolution{
+		Managed: true,
+		Needs: []coretool.CapabilityNeed{
+			{Capability: agentservice.CapabilityInformationSearchWeb},
+			{Capability: agentservice.CapabilityWebFetch},
+		},
+		Classification: intent.ClassificationResult{
+			Primary:    intent.LabelLiveData,
+			Secondary:  []intent.IntentLabel{intent.LabelDocumentGenerate},
+			Confidence: 0.95,
+		},
+	}
+	h := cloudSemanticHost(t, false, &staticSessionNeeds{res: weather})
+	h.BuildTools("北京天气，生成pdf")
+	first := h.RoutedWorkStopNudge()
+	second := h.RoutedWorkStopNudge()
+	for i, got := range []string{first, second} {
+		if !strings.Contains(got, "web_search") || strings.Contains(got, "generate_pdf") {
+			t.Fatalf("retrieval nudge %d = %q", i, got)
+		}
+	}
+	if got := h.RoutedWorkStopNudge(); got != "" {
+		t.Fatalf("third retrieval nudge = %q", got)
+	}
+	if got := h.UnresolvedRoutedWork(); !strings.Contains(got, "web_search") || !strings.Contains(got, "PDF") {
+		t.Fatalf("unresolved search = %q", got)
+	}
+	h.searchDone = true
+	if got := h.UnresolvedRoutedWork(); got != "" {
+		t.Fatalf("pdf reminders still open: %q", got)
+	}
+	pdf := h.RoutedWorkStopNudge()
+	if !strings.Contains(pdf, "generate_pdf") || !strings.Contains(pdf, "检索到的事实") || strings.Contains(pdf, "web_search") {
+		t.Fatalf("pdf nudge = %q", pdf)
+	}
+	if got := h.RoutedWorkStopNudge(); !strings.Contains(got, "generate_pdf") {
+		t.Fatalf("second pdf nudge = %q", got)
+	}
+	if got := h.RoutedWorkStopNudge(); got != "" {
+		t.Fatalf("third pdf nudge = %q", got)
+	}
+	if got := h.UnresolvedRoutedWork(); !strings.Contains(got, "generate_pdf") {
+		t.Fatalf("unresolved pdf = %q", got)
+	}
+
+	spent := cloudSemanticHost(t, false, &staticSessionNeeds{res: weather})
+	spent.BuildTools("北京天气，生成pdf")
+	spent.RoutedWorkStopNudge()
+	spent.RoutedWorkStopNudge()
+	spent.searchAttempted = true
+	if got := spent.RoutedWorkStopNudge(); !strings.Contains(got, "web_fetch") || strings.Contains(got, "web_search") {
+		t.Fatalf("fetch after spent search nudges = %q", got)
+	}
+
+	tried := cloudSemanticHost(t, false, &staticSessionNeeds{res: weather})
+	tried.BuildTools("北京天气，生成pdf")
+	tried.searchAttempted = true
+	if got := tried.RoutedWorkStopNudge(); !strings.Contains(got, "web_fetch") || strings.Contains(got, "web_search") {
+		t.Fatalf("after a failed search = %q", got)
+	}
+	tried.fetchAttempted = true
+	if got := tried.RoutedWorkStopNudge(); got != "" {
+		t.Fatalf("both lookups already ran: %q", got)
+	}
+	if got := tried.UnresolvedRoutedWork(); got != "" {
+		t.Fatalf("failed lookups are not a missing call: %q", got)
+	}
+
+	spentCall := cloudSemanticHost(t, false, &staticSessionNeeds{res: weather})
+	spentCall.BuildTools("北京天气，生成pdf")
+	spentCall.RoutedWorkStopNudge()
+	spentCall.RoutedWorkStopNudge()
+	spentCall.searchAttempted = true
+	spentCall.fetchAttempted = true
+	if got := spentCall.UnresolvedRoutedWork(); got != "" {
+		t.Fatalf("spent reminders after a real lookup: %q", got)
+	}
+
+	done := cloudSemanticHost(t, false, &staticSessionNeeds{res: weather})
+	done.BuildTools("北京天气，生成pdf")
+	done.searchDone = true
+	done.pdfDone = true
+	if got := done.RoutedWorkStopNudge(); got != "" {
+		t.Fatalf("finished pdf nudge = %q", got)
+	}
+
+	searchOnly := cloudSemanticHost(t, false, &staticSessionNeeds{res: agentservice.DynamicCapabilityNeedResolution{
+		Managed: true,
+		Needs:   []coretool.CapabilityNeed{{Capability: agentservice.CapabilityInformationSearchWeb}},
+		Classification: intent.ClassificationResult{
+			Primary:    intent.LabelLiveData,
+			Confidence: 0.95,
+		},
+	}})
+	searchOnly.BuildTools("北京天气")
+	searchOnly.searchDone = true
+	if got := searchOnly.RoutedWorkStopNudge(); got != "" {
+		t.Fatalf("search-only after a hit = %q", got)
+	}
+
+	// LabelSearch does not add web_fetch. A search that already ran and
+	// failed must not be described as a call that never happened, even
+	// after its reminders are spent.
+	failedSearch := cloudSemanticHost(t, false, &staticSessionNeeds{res: agentservice.DynamicCapabilityNeedResolution{
+		Managed: true,
+		Needs:   []coretool.CapabilityNeed{{Capability: agentservice.CapabilityInformationSearchWeb}},
+		Classification: intent.ClassificationResult{
+			Primary:    intent.LabelSearch,
+			Confidence: 0.95,
+		},
+	}})
+	failedSearch.BuildTools("北京天气")
+	failedSearch.RoutedWorkStopNudge()
+	failedSearch.RoutedWorkStopNudge()
+	failedSearch.searchAttempted = true
+	if got := failedSearch.RoutedWorkStopNudge(); got != "" || failedSearch.UnresolvedRoutedWork() != "" {
+		t.Fatalf("failed search nudge=%q unresolved=%q", got, failedSearch.UnresolvedRoutedWork())
+	}
+
+	document := cloudSemanticHost(t, false, &staticSessionNeeds{res: agentservice.DynamicCapabilityNeedResolution{
+		Managed:        true,
+		Needs:          []coretool.CapabilityNeed{{Capability: agentservice.CapabilityDocumentGenerate}},
+		Classification: intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.95},
+	}})
+	document.BuildTools("生成pdf")
+	if got := document.RoutedWorkStopNudge(); !strings.Contains(got, "generate_pdf") || strings.Contains(got, "检索到的事实") {
+		t.Fatalf("document nudge = %q", got)
+	}
+	prevRender := cloudRenderPDF
+	cloudRenderPDF = func(string, string) ([]byte, error) { return nil, errors.New("render down") }
+	t.Cleanup(func() { cloudRenderPDF = prevRender })
+	if out, failed := document.runTool("generate_pdf", `{"title":"天气","content":"# 天气"}`); !failed || document.pdfDone || !document.pdfAttempted || !strings.Contains(out, "render down") {
+		t.Fatalf("failed render = %q failed=%v done=%v attempted=%v", out, failed, document.pdfDone, document.pdfAttempted)
+	}
+	if got := document.RoutedWorkStopNudge(); got != "" || document.UnresolvedRoutedWork() != "" {
+		t.Fatalf("failed render stays the model's report nudge=%q unresolved=%q", got, document.UnresolvedRoutedWork())
+	}
+	cloudRenderPDF = func(string, string) ([]byte, error) { return []byte("%PDF-1.4 ok"), nil }
+	if out, failed := document.runTool("generate_pdf", `{"title":"天气","content":"# 天气"}`); failed || !document.pdfDone || !strings.Contains(out, "已生成 PDF") {
+		t.Fatalf("written render = %q failed=%v done=%v", out, failed, document.pdfDone)
+	}
+	if got := document.RoutedWorkStopNudge(); got != "" || document.UnresolvedRoutedWork() != "" {
+		t.Fatalf("after a written pdf nudge=%q unresolved=%q", got, document.UnresolvedRoutedWork())
+	}
+
+	missedPDF := cloudSemanticHost(t, false, &staticSessionNeeds{res: weather})
+	missedPDF.BuildTools("北京天气，生成pdf")
+	missedPDF.searchDone = true
+	missedPDF.RoutedWorkStopNudge()
+	missedPDF.RoutedWorkStopNudge()
+	if got := missedPDF.UnresolvedRoutedWork(); !strings.Contains(got, "没有调用 generate_pdf") {
+		t.Fatalf("pdf never called = %q", got)
+	}
+	if out, failed := missedPDF.runTool("generate_pdf", `{"content":""}`); !failed || missedPDF.pdfAttempted || !strings.Contains(out, "缺少 content") {
+		t.Fatalf("empty pdf = %q failed=%v attempted=%v", out, failed, missedPDF.pdfAttempted)
+	}
+	if got := missedPDF.UnresolvedRoutedWork(); !strings.Contains(got, "没有调用 generate_pdf") {
+		t.Fatalf("empty content is not a render attempt = %q", got)
+	}
+	cloudRenderPDF = func(string, string) ([]byte, error) { return nil, errors.New("render down") }
+	if out, failed := missedPDF.runTool("generate_pdf", `{"title":"天气","content":"# 天气"}`); !failed || missedPDF.pdfDone || !missedPDF.pdfAttempted || !strings.Contains(out, "render down") {
+		t.Fatalf("spent-nudge failed render = %q failed=%v done=%v attempted=%v", out, failed, missedPDF.pdfDone, missedPDF.pdfAttempted)
+	}
+	if got := missedPDF.RoutedWorkStopNudge(); got != "" || missedPDF.UnresolvedRoutedWork() != "" {
+		t.Fatalf("called pdf is not a missing call nudge=%q unresolved=%q", got, missedPDF.UnresolvedRoutedWork())
+	}
+
+	idle := cloudSemanticHost(t, false, &staticSessionNeeds{})
+	idle.BuildTools("你好")
+	if got := idle.RoutedWorkStopNudge(); got != "" {
+		t.Fatalf("workspace nudge = %q", got)
+	}
+}
+
+func TestDefaultCloudRenderPDFRendersChinese(t *testing.T) {
+	t.Setenv("MACLAW_FONT_DOWNLOAD", "off")
+	pdf, err := defaultCloudRenderPDF("北京天气", "# 北京天气\n\n晴，3°C。")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pdf) < 5 || !bytes.HasPrefix(pdf, []byte("%PDF")) {
+		t.Fatalf("not a pdf (%d bytes)", len(pdf))
+	}
+}
+
 func TestCloudSemanticRouteWithholdsPDFUntilFetch(t *testing.T) {
 	h := cloudSemanticHost(t, false, &staticSessionNeeds{res: agentservice.DynamicCapabilityNeedResolution{
 		Managed: true,

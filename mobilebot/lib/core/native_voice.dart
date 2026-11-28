@@ -32,9 +32,10 @@ typedef _FreeD = void Function(Pointer<Void>);
 typedef _VoidD = void Function();
 
 /// Lazily opened handle to the voice library. Every call is synchronous —
-/// synthesize/transcribe are heavyweight and must run off the UI isolate
-/// (`Isolate.run`). The Go side serializes on its own mutex, so concurrent
-/// isolates are safe.
+/// synthesize/transcribe are heavyweight and must run on the resident voice
+/// worker, not the UI isolate. The Go side serializes on its own mutex.
+/// Each isolate looks the symbols up for itself; the worker keeps that
+/// lookup, the UI isolate only probes.
 class NativeVoice {
   NativeVoice._();
 

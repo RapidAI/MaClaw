@@ -66,7 +66,11 @@ const (
 	maclawLLMProfileAssistant = "assistant"
 	maclawLLMProfileCoding    = "coding"
 	maclawLLMProfileCaption   = "caption"
-	maclawLLMProfilesVersion  = 1
+	// maclawLLMProfileCloud names the 云端 Agent default-model row. Unlike the
+	// three execution profiles above it never materializes a request config —
+	// it only feeds the assignment surface and the cloud default resolver.
+	maclawLLMProfileCloud    = "cloud"
+	maclawLLMProfilesVersion = 1
 )
 
 // MaclawLLMProfileProviderSummary is the non-sensitive provider directory
@@ -121,11 +125,15 @@ type MaclawLLMProfilePanelState struct {
 	Assistant     MaclawLLMProfileEffectiveSummary  `json:"assistant"`
 	Coding        MaclawLLMProfileEffectiveSummary  `json:"coding"`
 	Caption       MaclawLLMProfileEffectiveSummary  `json:"caption"`
-	Foreground    MaclawLLMRoleSummary              `json:"foreground"`
-	Background    MaclawLLMRoleSummary              `json:"background"`
-	ComputerUse   MaclawLLMRoleSummary              `json:"computer_use"`
-	Grounder      MaclawLLMRoleSummary              `json:"grounder"`
-	Revision      string                            `json:"revision"`
+	// Cloud is the resolved 云端 Agent default (follow-assistant shows the
+	// assistant's live selection; an unusable row degrades to the official
+	// display). Read-only informational line for the 云端 Agent settings card.
+	Cloud       MaclawLLMProfileEffectiveSummary `json:"cloud"`
+	Foreground  MaclawLLMRoleSummary             `json:"foreground"`
+	Background  MaclawLLMRoleSummary             `json:"background"`
+	ComputerUse MaclawLLMRoleSummary             `json:"computer_use"`
+	Grounder    MaclawLLMRoleSummary             `json:"grounder"`
+	Revision    string                           `json:"revision"`
 }
 
 // MaclawLLMProfileProbeResult is the non-sensitive result of testing a
@@ -556,6 +564,10 @@ func maclawLLMProviderReferencedByProfiles(profiles corelib.MaclawLLMProfiles, p
 		return true
 	}
 	if maclawLLMProfileAssigned(profiles.Caption) && match(profiles.Caption.ProviderID) {
+		return true
+	}
+	if profiles.Cloud != nil && !profiles.Cloud.InheritAssistant &&
+		maclawLLMProfileAssigned(*profiles.Cloud) && match(profiles.Cloud.ProviderID) {
 		return true
 	}
 	for _, role := range []corelib.MaclawLLMRoleAssignment{
@@ -1744,6 +1756,7 @@ func effectiveMaclawLLMProfiles(cfg corelib.AppConfig, providers []corelib.Macla
 		// A later explicit choice, such as grok-4.6 after the stored default
 		// has moved to grok-4.7, stays.
 		remapLegacyXAIProfileModels(&profiles, cfg.MaclawLLMProviders)
+		seedCloudAgentLegacyDefault(&profiles, cfg, providers)
 		return &profiles, nil
 	}
 	// Legacy configs retain name-based selection only until a controlled write.
@@ -1751,17 +1764,69 @@ func effectiveMaclawLLMProfiles(cfg corelib.AppConfig, providers []corelib.Macla
 	current = strings.TrimSpace(current)
 	for _, provider := range providers {
 		if corelib.MaclawLLMProviderNameEqual(provider.Name, current) {
-			return &corelib.MaclawLLMProfiles{
+			profiles := &corelib.MaclawLLMProfiles{
 				Version: maclawLLMProfilesVersion,
 				Assistant: corelib.MaclawLLMProfile{
 					ProviderID: maclawLLMProviderIDForRead(provider),
 					Model:      strings.TrimSpace(provider.Model),
 				},
 				Coding: corelib.MaclawLLMProfile{InheritAssistant: true},
-			}, nil
+			}
+			seedCloudAgentLegacyDefault(profiles, cfg, providers)
+			return profiles, nil
 		}
 	}
 	return nil, fmt.Errorf("legacy current provider %q not found", current)
+}
+
+// seedCloudAgentLegacyDefault materializes the legacy cloud_agent_llm_provider
+// pair as an explicit cloud profile on read, so an upgrade keeps the pick that
+// was configured in the 云端 Agent settings panel instead of silently flipping
+// to the follow-assistant default. Read-time only: the next assignment save
+// persists the seeded row.
+//
+// The seed is deliberately strict: the row is materialized only when it still
+// satisfies the assignment contract this panel enforces at save time — the
+// provider resolves by stable ID first then display name, is not a Hub
+// service, carries a real endpoint and key, and has passed a connection test
+// (or is the current provider, the same exemption
+// maclawLLMProviderEligibleForAssignment grants the assistant). An empty
+// legacy model is filled from the provider's stored default. Anything stale —
+// a deleted provider, a raw-name pick that no longer matches, a hub-service
+// row, missing credentials, never tested — stays nil: the follow-assistant
+// default applies and an invisible row can never block an unrelated save.
+func seedCloudAgentLegacyDefault(profiles *corelib.MaclawLLMProfiles, cfg corelib.AppConfig, providers []corelib.MaclawLLMProvider) {
+	if profiles == nil || profiles.Cloud != nil {
+		return
+	}
+	pick := strings.TrimSpace(cfg.CloudAgentLLMProvider)
+	if pick == "" {
+		return
+	}
+	provider, ok := resolveMaclawLLMProviderByID(providers, pick)
+	if !ok {
+		// The legacy settings panel stored the display name when the row had
+		// no durable ID yet.
+		for _, candidate := range providers {
+			if corelib.MaclawLLMProviderNameEqual(candidate.Name, pick) {
+				provider, ok = candidate, true
+				break
+			}
+		}
+	}
+	if !ok || provider.IsHubService || isHubServiceProviderName(strings.TrimSpace(provider.Name)) ||
+		strings.TrimSpace(provider.URL) == "" || strings.TrimSpace(provider.Key) == "" ||
+		(!provider.ConnectionTestPassed && !corelib.MaclawLLMProviderNameEqual(provider.Name, strings.TrimSpace(cfg.MaclawLLMCurrentProvider))) {
+		return
+	}
+	model := strings.TrimSpace(cfg.CloudAgentLLMModel)
+	if model == "" {
+		model = strings.TrimSpace(provider.Model)
+	}
+	profiles.Cloud = &corelib.MaclawLLMProfile{
+		ProviderID: maclawLLMProviderIDForRead(provider),
+		Model:      model,
+	}
 }
 
 // remapLegacyXAIProfileModels moves a built-in xAI assignment off a former
@@ -1796,6 +1861,9 @@ func remapLegacyXAIProfileModels(profiles *corelib.MaclawLLMProfiles, raw []core
 	if maclawLLMProfileAssigned(profiles.Caption) {
 		remap(&profiles.Caption)
 	}
+	if profiles.Cloud != nil && !profiles.Cloud.InheritAssistant && maclawLLMProfileAssigned(*profiles.Cloud) {
+		remap(profiles.Cloud)
+	}
 }
 
 func remapLegacyZhipuCodingProfileModels(profiles *corelib.MaclawLLMProfiles, providers []corelib.MaclawLLMProvider) {
@@ -1818,6 +1886,9 @@ func remapLegacyZhipuCodingProfileModels(profiles *corelib.MaclawLLMProfiles, pr
 	if maclawLLMProfileAssigned(profiles.Caption) {
 		remap(&profiles.Caption)
 	}
+	if profiles.Cloud != nil && maclawLLMProfileAssigned(*profiles.Cloud) {
+		remap(profiles.Cloud)
+	}
 }
 
 func remapOpenCodeProfileModels(profiles *corelib.MaclawLLMProfiles, providers []corelib.MaclawLLMProvider) {
@@ -1838,6 +1909,9 @@ func remapOpenCodeProfileModels(profiles *corelib.MaclawLLMProfiles, providers [
 	remap(&profiles.Coding)
 	if maclawLLMProfileAssigned(profiles.Caption) {
 		remap(&profiles.Caption)
+	}
+	if profiles.Cloud != nil && maclawLLMProfileAssigned(*profiles.Cloud) {
+		remap(profiles.Cloud)
 	}
 }
 
@@ -2093,6 +2167,17 @@ func validateMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, providers []c
 			return fmt.Errorf("caption references an unavailable provider")
 		}
 	}
+	// Cloud tri-state: nil follows the assistant by default, InheritAssistant
+	// follows explicitly, an assigned row needs a resolvable provider + model,
+	// and an unassigned non-inherit row is the explicit MaClaw official pin.
+	if profiles.Cloud != nil && !profiles.Cloud.InheritAssistant && maclawLLMProfileAssigned(*profiles.Cloud) {
+		if strings.TrimSpace(profiles.Cloud.ProviderID) == "" || strings.TrimSpace(profiles.Cloud.Model) == "" {
+			return fmt.Errorf("cloud provider and model are required when a cloud model is selected")
+		}
+		if _, ok := resolveMaclawLLMProviderByID(providers, profiles.Cloud.ProviderID); !ok {
+			return fmt.Errorf("cloud references an unavailable provider")
+		}
+	}
 	for _, role := range []struct {
 		name       string
 		assignment corelib.MaclawLLMRoleAssignment
@@ -2171,6 +2256,22 @@ func validateMaclawLLMProfileAssignments(profiles, previous corelib.MaclawLLMPro
 			return err
 		}
 	}
+	// A cloud custom push hands the provider's endpoint and key to the user's
+	// own maclawsrv, so a hub-service row (this Hub's own API, no real key of
+	// its own) can never serve it.
+	if profiles.Cloud != nil && !profiles.Cloud.InheritAssistant && maclawLLMProfileAssigned(*profiles.Cloud) {
+		previousCloudProviderID := ""
+		if previous.Cloud != nil {
+			previousCloudProviderID = previous.Cloud.ProviderID
+		}
+		if err := requireTested("cloud", profiles.Cloud.ProviderID, previousCloudProviderID); err != nil {
+			return err
+		}
+		if provider, ok := resolveMaclawLLMProviderByID(providers, profiles.Cloud.ProviderID); ok &&
+			(provider.IsHubService || isHubServiceProviderName(strings.TrimSpace(provider.Name))) {
+			return fmt.Errorf("cloud provider cannot be a Hub service; pick a desktop provider with its own endpoint")
+		}
+	}
 	for _, role := range []struct {
 		name       string
 		assignment corelib.MaclawLLMRoleAssignment
@@ -2219,6 +2320,11 @@ func remapLegacyProfileProviderIDs(profiles *corelib.MaclawLLMProfiles, before, 
 	}
 	if mapped := durableByLegacyID[strings.TrimSpace(profiles.Caption.ProviderID)]; mapped != "" {
 		profiles.Caption.ProviderID = mapped
+	}
+	if profiles.Cloud != nil {
+		if mapped := durableByLegacyID[strings.TrimSpace(profiles.Cloud.ProviderID)]; mapped != "" {
+			profiles.Cloud.ProviderID = mapped
+		}
 	}
 	for _, role := range []*corelib.MaclawLLMRoleAssignment{
 		&profiles.Foreground, &profiles.Background, &profiles.ComputerUse, &profiles.Grounder,
@@ -2396,6 +2502,34 @@ func profileSummaryFromResolved(app *App, profile string, inherit bool, resolved
 	return summary
 }
 
+// maclawLLMCloudProfileSummary is the read-model line for the 云端 Agent
+// default card (settings → 云端 Agent). It resolves through the same
+// selection the runtime applies (cloudAgentLLMDefaultSelection), so
+// follow-assistant shows the assistant's live provider·model and an unusable
+// row degrades to the official display instead of promising a broken
+// endpoint. A stored custom pick keeps its ProviderID/Model visible even when
+// it cannot resolve right now: the card shows what is configured, the
+// runtime decides what actually serves the turn.
+func maclawLLMCloudProfileSummary(cfg corelib.AppConfig, profiles corelib.MaclawLLMProfiles, providers []corelib.MaclawLLMProvider, current string) MaclawLLMProfileEffectiveSummary {
+	summary := MaclawLLMProfileEffectiveSummary{Profile: maclawLLMProfileCloud}
+	cloud := profiles.Cloud
+	if cloud == nil {
+		cloud = &corelib.MaclawLLMProfile{InheritAssistant: true}
+	}
+	summary.InheritAssistant = cloud.InheritAssistant
+	if !cloud.InheritAssistant && maclawLLMProfileAssigned(*cloud) {
+		summary.ProviderID = strings.TrimSpace(cloud.ProviderID)
+		summary.Model = strings.TrimSpace(cloud.Model)
+	}
+	if provider, model, ok := cloudAgentLLMDefaultSelection(cfg, providers, current); ok {
+		summary.ProviderID = maclawLLMProviderIDForRead(provider)
+		summary.ProviderName = strings.TrimSpace(provider.Name)
+		summary.Model = strings.TrimSpace(model)
+		summary.Configured = true
+	}
+	return summary
+}
+
 func profileSupportsVisionForModel(providers []corelib.MaclawLLMProvider, providerID, model string) bool {
 	provider, ok := resolveMaclawLLMProviderByID(providers, providerID)
 	return ok && corelib.ProviderSupportsVisionForModel(provider, model)
@@ -2518,6 +2652,7 @@ func (a *App) GetMaclawLLMProfilePanelState() (MaclawLLMProfilePanelState, error
 			state.Caption.ProviderID = profiles.Caption.ProviderID
 		}
 	}
+	state.Cloud = maclawLLMCloudProfileSummary(cfg, *profiles, providers, cfg.MaclawLLMCurrentProvider)
 	state.Foreground = a.maclawLLMRoleSummary(maclawLLMRoleForeground, profiles.Foreground, cfg, loaded.Providers, loaded.Current)
 	state.Background = a.maclawLLMRoleSummary(maclawLLMRoleBackground, profiles.Background, cfg, loaded.Providers, loaded.Current)
 	state.ComputerUse = a.maclawLLMRoleSummary(maclawLLMRoleComputerUse, profiles.ComputerUse, cfg, loaded.Providers, loaded.Current)
@@ -2793,6 +2928,9 @@ func uniqueAssignedProfileModels(profiles corelib.MaclawLLMProfiles) []assignedP
 	if maclawLLMProfileAssigned(profiles.Caption) {
 		add(maclawLLMProfileCaption, profiles.Caption.ProviderID, profiles.Caption.Model)
 	}
+	if profiles.Cloud != nil && !profiles.Cloud.InheritAssistant && maclawLLMProfileAssigned(*profiles.Cloud) {
+		add("cloud", profiles.Cloud.ProviderID, profiles.Cloud.Model)
+	}
 	return out
 }
 
@@ -2871,6 +3009,12 @@ func (a *App) SaveMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, revision
 	profiles.Caption.ProviderID = strings.TrimSpace(profiles.Caption.ProviderID)
 	profiles.Caption.Model = strings.TrimSpace(profiles.Caption.Model)
 	profiles.Caption.InheritAssistant = false
+	// Cloud keeps its InheritAssistant as authored: unlike caption it has a
+	// real follow state, and nil stays nil (the follow-assistant default).
+	if profiles.Cloud != nil {
+		profiles.Cloud.ProviderID = strings.TrimSpace(profiles.Cloud.ProviderID)
+		profiles.Cloud.Model = strings.TrimSpace(profiles.Cloud.Model)
+	}
 	normalizeMaclawLLMRoleAssignment(&profiles.Foreground)
 	normalizeMaclawLLMRoleAssignment(&profiles.Background)
 	normalizeMaclawLLMRoleAssignment(&profiles.ComputerUse)
@@ -2900,6 +3044,7 @@ func (a *App) SaveMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, revision
 	assistantChanged := false
 	var validationErr error
 	var stale bool
+	var previousCloudFingerprint, nextCloudFingerprint cloudAgentLLMDefaultFingerprint
 	changed, err := a.PatchConfigIfChanged(func(cfg *corelib.AppConfig) bool {
 		if revision != maclawLLMProfileRevision(*cfg) {
 			stale = true
@@ -2927,6 +3072,16 @@ func (a *App) SaveMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, revision
 			validationErr = err
 			return false
 		}
+		// The 云端 Agent default is live under follow-assistant, so the
+		// fingerprint resolves through the assistant selection on both sides;
+		// a changed fingerprint is what re-applies the default to existing
+		// instances after the commit. The next view swaps the incoming
+		// profiles into the real config so the legacy cloud keys still seed a
+		// nil Cloud row exactly like the saved state would.
+		previousCloudFingerprint = computeCloudAgentLLMDefaultFingerprint(*cfg, providers, cfg.MaclawLLMCurrentProvider)
+		nextCfg := *cfg
+		nextCfg.MaclawLLMProfiles = &profiles
+		nextCloudFingerprint = computeCloudAgentLLMDefaultFingerprint(nextCfg, providers, cfg.MaclawLLMCurrentProvider)
 		applyAssignedModelVisionProbes(providers, visionOutcomes)
 		assistantChanged = previous == nil || !sameMaclawLLMProfileProviderID(previous.Assistant.ProviderID, profiles.Assistant.ProviderID, providers) || previous.Assistant.Model != profiles.Assistant.Model
 		cfg.MaclawLLMProviders = append([]corelib.MaclawLLMProvider(nil), providers...)
@@ -2954,6 +3109,9 @@ func (a *App) SaveMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, revision
 		return nil
 	}
 	a.invalidateMaclawLLMProfileHealth()
+	if previousCloudFingerprint != nextCloudFingerprint {
+		go applyCloudAgentLLMDefaultAfterProfilesChangeFn(a)
+	}
 	if assistantChanged {
 		a.clearMoAStickyForAllUsers()
 		if a.ctx != nil {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { localizeText } from '../../i18n';
-import { refreshCloudGit } from './cloudAgentAssistant';
+import { noteCloudGitConnected, refreshCloudGit } from './cloudAgentAssistant';
 import { GitRepoCreatePanel, GitPlatformCredentialView, GitRepoCreated } from './GitRepoCreatePanel';
 import { noRepoScopeNote } from '../../utils/githubScopes';
 import { openSettingsTab } from '../../utils/settingsNavigation';
@@ -425,12 +425,20 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
                 token: git.token,
                 source: retry ? 'credential' : (git.source || undefined),
                 credential_id: retry?.credentialId || undefined,
-            }) as { repo?: string; token?: string };
+            }) as { repo?: string; service?: string; origin?: string; token?: string };
             if (view && view.token) {
                 setError(text('The token came back', '令牌被返回了', '權杖被返回了'));
                 return;
             }
             onConnected?.(String(view?.repo || git.repo.trim()).trim());
+            // Flip the open task's repo banner immediately — the connect
+            // response already names the accepted binding — then let the
+            // re-read reconcile service/origin and reload the history.
+            noteCloudGitConnected(instanceId, {
+                repo: String(view?.repo || git.repo.trim()).trim(),
+                service: String(view?.service || git.service || '').trim(),
+                origin: String(view?.origin || (retry?.origin || git.origin) || '').trim(),
+            });
             // refreshCloudGit is internally try/catch'd and generation-guarded;
             // don't hold the dialog open on a slow Hub round-trip.
             void refreshCloudGit(instanceId);
@@ -464,12 +472,17 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
                 token: git.token,
                 source: created.credentialId ? 'credential' : (git.source || undefined),
                 credential_id: created.credentialId || undefined,
-            }) as { repo?: string; token?: string };
+            }) as { repo?: string; service?: string; origin?: string; token?: string };
             if (view && view.token) {
                 setError(text('The token came back', '令牌被返回了', '權杖被返回了'));
                 return;
             }
             onConnected?.(String(view?.repo || created.fullName).trim());
+            noteCloudGitConnected(instanceId, {
+                repo: String(view?.repo || created.fullName).trim(),
+                service: String(view?.service || created.service || '').trim(),
+                origin: String(view?.origin || created.origin || '').trim(),
+            });
             void refreshCloudGit(instanceId);
             onClose();
         } catch (err) {

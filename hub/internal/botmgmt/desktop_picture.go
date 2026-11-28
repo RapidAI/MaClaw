@@ -105,7 +105,14 @@ func (s *Service) DesktopPicture(ctx context.Context, tenantID, userID, botID st
 		return url, control, DesktopStateRunning, nil
 	}
 	if reported == DesktopStateRunning && strings.TrimSpace(live) != "" {
-		url = strings.TrimSpace(live)
+		// live is the raw address desktopd published — a node.invalid or
+		// loopback origin the person's browser cannot dial. The browser
+		// needs the gated Hub path; rememberDesktopView also retargets
+		// issued tokens when a restart rotated the gate bearer.
+		s.rememberDesktopView(tenantID, desktopUser, live)
+		if gated := s.desktopViewURL(tenantID, desktopUser); gated != "" {
+			url = gated
+		}
 	} else if reported != DesktopStateRunning {
 		url = ""
 	}

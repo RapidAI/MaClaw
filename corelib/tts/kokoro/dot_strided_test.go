@@ -150,6 +150,42 @@ func TestConvTranspose1DStridedFMA(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireSliceClose(t, got, want)
+
+	saved := kokoroConvTransposePair
+	kokoroConvTransposePair = true
+	t.Cleanup(func() { kokoroConvTransposePair = saved })
+	for _, tc := range []struct {
+		inC, inT, outC, kernel, stride, padding int
+	}{
+		{16, 9, 4, 6, 4, 1},
+		{32, 5, 8, 20, 10, 5},
+		{16, 7, 6, 3, 2, 1},
+	} {
+		outT := (tc.inT-1)*tc.stride - 2*tc.padding + tc.kernel
+		x := make([]float32, tc.inC*tc.inT)
+		w := make([]float32, tc.inC*tc.outC*tc.kernel)
+		for i := range x {
+			x[i] = float32((i%23)-11) * 0.009
+		}
+		for i := range w {
+			w[i] = float32((i%7)-3) * 0.021
+		}
+		b := make([]float32, tc.outC)
+		for i := range b {
+			b[i] = float32(i+1) * 0.01
+		}
+		wT := make([]float32, tc.kernel*tc.outC*tc.inC)
+		transposeConvTranspose1DWeight(wT, w, tc.inC, tc.outC, tc.kernel)
+		got := make([]float32, tc.outC*outT)
+		if err := convTranspose1DSIMDTransposedWeight(got, x, wT, b, tc.inC, tc.inT, tc.outC, tc.kernel, tc.stride, tc.padding, outT); err != nil {
+			t.Fatal(err)
+		}
+		want := make([]float32, tc.outC*outT)
+		if err := ConvTranspose1D(want, x, w, b, tc.inC, tc.inT, tc.outC, tc.kernel, tc.stride, tc.padding, 0, 1); err != nil {
+			t.Fatal(err)
+		}
+		requireSliceClose(t, got, want)
+	}
 }
 
 func TestAxpyInplace(t *testing.T) {
@@ -247,7 +283,7 @@ func TestConv4x2GTransposeLike(t *testing.T) {
 	out := make([]float32, outC*outT)
 	ktab := make([]int, stride)
 	for k0 := 0; k0 < stride; k0++ {
-		ktab[k0] = (kernel - 1 - k0) / stride + 1
+		ktab[k0] = (kernel-1-k0)/stride + 1
 	}
 	pairStride := 2 * stride
 	for ot := 0; ot+stride < outT; ot += pairStride {

@@ -1158,7 +1158,11 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       appBar: AppBar(
         leading: IconButton(
           tooltip: context.S.cloudSessionList,
-          onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+          onPressed: () {
+            // 抽屉挂载后不会因重开而重拉，先刷一次任务列表。
+            ref.invalidate(remoteTasksProvider(widget.grant.id));
+            _scaffoldKey.currentState?.openEndDrawer();
+          },
           icon: const Icon(Icons.segment),
         ),
         title: Column(
@@ -2359,31 +2363,6 @@ MarkdownStyleSheet _taskMarkdownStyle(ThemeData theme) {
   return null;
 }
 
-/// 状态徽标 chip 的统一渲染：列表卡片、详情标题、抽屉行都用同一份。
-/// badge 为 null 时返回 null（不占位）。
-Widget? badgeChip(
-  BuildContext context,
-  ({String label, Color color})? badge,
-) {
-  if (badge == null) return null;
-  final theme = Theme.of(context);
-  return Container(
-    margin: const EdgeInsets.only(right: AppSpacing.xs),
-    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-    decoration: BoxDecoration(
-      color: badge.color.withValues(alpha: 0.14),
-      borderRadius: BorderRadius.circular(AppRadius.sm),
-    ),
-    child: Text(
-      badge.label,
-      style: theme.textTheme.labelSmall?.copyWith(
-        color: badge.color,
-        fontWeight: FontWeight.w600,
-      ),
-    ),
-  );
-}
-
 class _KindChip extends StatelessWidget {
   final String label;
   final Color color;
@@ -3084,12 +3063,23 @@ class _RemoteTaskDrawer extends ConsumerWidget {
               error: (error, _) => Center(
                 child: Padding(
                   padding: const EdgeInsets.all(AppSpacing.lg),
-                  child: Text(
-                    failureMessage(error),
-                    textAlign: TextAlign.center,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.error,
-                    ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        failureMessage(error),
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.error,
+                        ),
+                      ),
+                      const SizedBox(height: AppSpacing.md),
+                      FilledButton.tonal(
+                        onPressed: () =>
+                            ref.invalidate(remoteTasksProvider(grant.id)),
+                        child: Text(context.S.retry),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -3125,13 +3115,20 @@ class _RemoteTaskDrawer extends ConsumerWidget {
                                   color: theme.colorScheme.onSurfaceVariant,
                                 ),
                               ),
-                        trailing: badgeChip(context, taskStateBadge(
-                          context,
-                          task,
-                        )),
+                        trailing: switch (taskStateBadge(context, task)) {
+                          null => null,
+                          (:final label, :final color) => AppBadge(
+                            label: label,
+                            color: color,
+                          ),
+                        },
                         onTap: () {
+                          // 先抓路由再关抽屉：pop 之后这个 element 就没用了。
+                          final router = GoRouter.of(context);
                           Navigator.pop(context);
-                          context.push(
+                          // 当前任务只收抽屉，不向栈上叠克隆屏。
+                          if (task.path == currentTaskPath) return;
+                          router.push(
                             '/remote/task',
                             extra: (
                               grant: grant,

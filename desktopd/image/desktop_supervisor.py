@@ -5184,7 +5184,7 @@ const HAS_MSE=typeof MediaSource!=="undefined"&&MediaSource.isTypeSupported('vid
 // dots). The <video> element composites in hardware and looks correct.
 const USE_MSE=HAS_MSE&&(MSE||!HAS_WC);
 const badge=document.getElementById("b");
-let surface=document.getElementById("s"),overlay=document.getElementById("m"),ctx=null,ws=null,decoder=null,needKey=true,lastKeyReq=0,fails=0,gotFrame=false,lastRender=0,connectAt=0,streamStopped=false;
+let surface=document.getElementById("s"),overlay=document.getElementById("m"),ctx=null,ws=null,decoder=null,needKey=true,lastKeyReq=0,fails=0,gotFrame=false,lastRender=0,connectAt=0,streamStopped=false,renegotiating=false;
 let seq=Math.floor(Math.random()*1e6),pending=[],flushQueued=false,inputOn=false,lease="",held=new Map(),pasteHold=null,wheelAcc=[0,0];
 function status(text){overlay.textContent=text;overlay.style.display=text?"flex":"none"}
 function markRender(){gotFrame=true;fails=0;lastRender=performance.now();status("")}
@@ -5217,7 +5217,9 @@ function connect(){connectAt=performance.now();gotFrame=false;streamStopped=fals
  ws=new WebSocket(url);ws.binaryType="arraybuffer";show();
  ws.onopen=()=>noteStream("connect");
  ws.onmessage=e=>{if(typeof e.data==="string"){control(JSON.parse(e.data));return}if(!USE_MSE)onVideo(e.data);else{if(mq.length>=8){mq=[];ws.close();return}mq.push(e.data);pump()}};
- ws.onclose=()=>{mq=[];noteStream("disconnect");ws=null;resetDecoder();releaseLocal();show();if(streamStopped){status("桌面画面未运行（可能正在休眠）\n桌面任务本身可能仍在继续");setTimeout(connect,5000);return}fails++;if(!gotFrame&&fails>=3){if(streamFailed())return}else{status(gotFrame?"视频连接中断，正在重连…":"正在等待桌面画面…")}setTimeout(connect,Math.min(5000,500*fails))}}
+ ws.onclose=()=>{mq=[];noteStream("disconnect");ws=null;resetDecoder();releaseLocal();show();if(streamStopped){status("桌面画面未运行（可能正在休眠）\n桌面任务本身可能仍在继续");setTimeout(connect,5000);return}const quick=renegotiating;renegotiating=false;if(quick){setTimeout(connect,80);return}fails++;if(!gotFrame&&fails>=3){if(streamFailed())return}else{status(gotFrame?"视频连接中断，正在重连…":"正在等待桌面画面…")}setTimeout(connect,Math.min(5000,500*fails))}}
+function renegotiateStream(w){const width=Math.round(w||0);if(width<320||width>3840||streamStopped)return;const next=String(width-width%2);if(Q.get("w")===next)return;Q.set("w",next);if(!ws){connect();return}renegotiating=true;try{if(ws.readyState<2)ws.close()}catch(_){}}
+window.addEventListener("message",event=>{const data=event.data;if(event.source!==window.parent||!data||data.source!=="maclaw-desktop")return;if(data.type==="stream-ping"){noteStream("pong");return}if(data.type==="stream-resize")renegotiateStream(data.w)});
 function control(m){if(m.type==="hello"){inputOn=WANT_INPUT&&!!m.input;if(m.display_state&&m.display_state!=="running"){streamStopped=true;status("桌面画面未运行（可能正在休眠）\n桌面任务本身可能仍在继续");try{ws.close()}catch(_){}}show()}else if(m.type==="display_state"){if(m.state&&m.state!=="running"){streamStopped=true;status("桌面画面未运行（可能正在休眠）\n桌面任务本身可能仍在继续");try{ws.close()}catch(_){}}}else if(m.type==="lease"){const was=lease;lease=m.holder||"";inputOn=WANT_INPUT&&!!m.input;if(was==="you"&&lease!=="you")releaseLocal();show()}
  else if(m.type==="clipboard"&&typeof m.text==="string"){if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(m.text).catch(()=>{})}
  else if(m.type==="input_error"){if(m.code==="sequence_gap"&&typeof m.expected==="number")seq=m.expected}}

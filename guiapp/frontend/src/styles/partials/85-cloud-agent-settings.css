@@ -328,24 +328,6 @@
     color: var(--theme-danger);
 }
 
-/* --- Global default model picker --- */
-
-.cloud-agent-default-row {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
-}
-
-.cloud-agent-default-row .cloud-agent-select {
-    flex: 0 1 auto;
-}
-
-.cloud-agent-select {
-    width: auto;
-    min-width: 180px;
-}
-
 /* --- Private deployment entry row --- */
 
 .cloud-agent-deploy-row {
@@ -462,14 +444,5 @@
 @media (max-width: 560px) {
     .cloud-agent-install-form {
         grid-template-columns: 1fr;
-    }
-
-    .cloud-agent-default-row {
-        align-items: stretch;
-    }
-
-    .cloud-agent-default-row .cloud-agent-select {
-        min-width: 0;
-        flex: 1 1 100%;
     }
 }

@@ -174,13 +174,21 @@ describe('RemoteAssistantActivity', () => {
                     text: 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","title":"读取文件","detail":"read_file","files":["main.go"]}',
                 }],
             },
-            activity: { workflow: { status: 'active', phase: 'execute' } },
+            activity: {
+                workflow: { status: 'active', phase: 'execute' },
+                lastActivityAt: new Date().toISOString(),
+                busySince: Date.now() - 5000,
+            },
         }));
-        // Rendering the feed here too painted every call twice; the working
-        // trail is the only surface status left.
+        // Rendering the feed here too painted every call twice; while the
+        // mirrored round streams, the bubble timeline owns the live rows and
+        // this surface shrinks to the meta readout — no feed rows, no
+        // redundant "· Working" trail under the bubble's 正在思考 row.
         expect(screen.queryByTestId('coding-agent-progress')).toBeNull();
         expect(screen.queryByTestId('remote-progress')).toBeNull();
-        expect(screen.getByTestId('coding-agent-working-trail')).toBeTruthy();
+        expect(screen.queryByTestId('coding-agent-working-trail')).toBeNull();
+        expect(screen.getByTestId('remote-activity')).toBeTruthy();
+        expect(screen.getByTestId('remote-activity-meta').textContent).toContain('已用时');
     });
 
     it('keeps mirrored tool-status lines off this surface — the bubble toolCalls own them', () => {
@@ -197,14 +205,38 @@ describe('RemoteAssistantActivity', () => {
                     { kind: 'progress', seq: 2, text: '工具 · 执行命令 (bash)\napt-get --version' },
                 ],
             },
-            activity: { workflow: { status: 'active', phase: 'execute' } },
+            activity: {
+                workflow: { status: 'active', phase: 'execute' },
+                lastActivityAt: new Date().toISOString(),
+                busySince: Date.now() - 5000,
+            },
         }));
         expect(screen.queryByTestId('assistant-tool-flip')).toBeNull();
         expect(screen.queryByTestId('assistant-tool-call')).toBeNull();
-        expect(screen.getByTestId('coding-agent-working-trail')).toBeTruthy();
+        expect(screen.queryByTestId('coding-agent-working-trail')).toBeNull();
+        expect(screen.getByTestId('remote-activity')).toBeTruthy();
     });
 
-    it('keeps plain progress lines off this surface — the panel tray owns them', () => {
+    it('folds entirely while the mirrored round streams and the poll carries no meta', () => {
+        const { container } = renderActivity(session({
+            live: {
+                requestId: 'r1',
+                displayText: '',
+                streamDone: false,
+                responded: false,
+                baseline: 0,
+                lastEventAt: Date.now(),
+                parts: [{ kind: 'text', seq: 1, text: '正在写实现' }],
+            },
+            activity: { workflow: { status: 'active', phase: 'execute' } },
+        }));
+        // The bubble's 正在思考 row and streamed body own the live surface;
+        // with the trail suppressed and no heartbeat meta there is nothing
+        // left for this panel to say.
+        expect(container.firstChild).toBeNull();
+    });
+
+    it('keeps plain progress lines off this surface — the panel tray owns them, the trail stays', () => {
         renderActivity(session({
             live: {
                 requestId: 'r1',
@@ -217,6 +249,10 @@ describe('RemoteAssistantActivity', () => {
             },
             activity: { workflow: { status: 'active', phase: 'execute' } },
         }));
+        // Plain progress lines paint in the conversation tray, not on the
+        // bubble timeline — the trail keeps marking liveness under them,
+        // exactly like a local coding turn. remote-progress (the old
+        // in-panel renderer) stays off this surface either way.
         expect(screen.queryByTestId('remote-progress')).toBeNull();
         expect(screen.getByTestId('coding-agent-working-trail')).toBeTruthy();
     });
@@ -244,6 +280,39 @@ describe('RemoteAssistantActivity', () => {
         const stopped = render(<RemoteCodingPlanChecklist session={cancelled} lang="zh-Hans" theme={overlayTheme} />);
         expect(stopped.queryByTestId('coding-agent-plan-checklist')).toBeNull();
         expect(stopped.container.textContent || '').not.toContain('只剩需求理解');
+    });
+
+    it('keeps the file chip after the checklist retires', () => {
+        const value = session({
+            busy: false,
+            cloud: true,
+            messages: [{
+                role: 'assistant',
+                content: '写好了',
+                codingTimeline: [{
+                    id: 'p1',
+                    sequence: 1,
+                    kind: 'progress',
+                    timestamp: 1,
+                    content: `Coding Agent Event: ${JSON.stringify({
+                        version: 1,
+                        agent: 'coding',
+                        phase: 'running',
+                        event: 'tool_finished',
+                        detail: 'write_file',
+                        outcome: 'success',
+                        files: ['src/snake.cpp'],
+                        added: 3,
+                        removed: 1,
+                        file_changes: [{ path: 'src/snake.cpp', added: 3, removed: 1 }],
+                    })}`,
+                }],
+            }],
+            activity: { workflow: { status: 'completed', phase: 'execute' } },
+        });
+        const view = render(<RemoteCodingPlanChecklist session={value} lang="zh-Hans" theme={overlayTheme} />);
+        expect(view.getByTestId('coding-agent-plan-files')).toBeTruthy();
+        expect(view.getByTestId('coding-agent-plan-files-label').textContent).toContain('1 个文件');
     });
 
     it('keeps the step live while the transcript is still loading', () => {

@@ -1,8 +1,42 @@
 // libmaclaw_voice — the desktop's own voice engines compiled for mobile.
 //
 // Built with `-buildmode=c-shared` (GOOS=android). Kokoro TTS and SenseVoice
-// ASR are the exact same corelib packages MaClaw GUI uses; the Go arm64
-// kernels (conv_fused_arm64, simd_dot_arm64) carry the NEON acceleration.
+// ASR are the exact same corelib packages MaClaw GUI uses.
+//
+// Android arm64 acceleration:
+//   - NEON is always on. A c-shared library often cannot see the auxiliary
+//     vector, and treating that as "no SIMD" used to drop every kernel.
+//   - SenseVoice matmuls whose shapes are multiples of 32 run as int8×int8
+//     SDOT (Snapdragon 855+) or SMMLA (8 Gen 1, 8 Elite). Feature bits are
+//     read from /proc/cpuinfo when the auxv is empty. Bias and ReLU are
+//     applied in that kernel's 32-wide store, so the encoder does not read
+//     the projection back.
+//   - Kokoro sequence linears are one GEMM, and 1×1 convs use that GEMM too.
+//   - Vocoder k>1 convs use a NEON 4-channel dot. The old arm64 body was scalar Go.
+//   - Upsample conv-transpose pairs two output times that share a weight row.
+//   - Snake, iSTFT, LSTM gates, PL-BERT GELU, and attention softmax use a
+//     float32 sin/exp instead of libm. The iSTFT takes sin and cos from
+//     one reduction per bin. Source STFT and iSTFT reuse one frame buffer.
+//     The 20-point source transform and its magnitude/phase use float32.
+//     The source STFT reads its reflect pad in place. Both vocoder stages
+//     share that spectrum. The harmonic bank builds its upsample grid once
+//     and mixes straight into the source. After the noise source is added,
+//     that buffer is the scratch for the other two resblocks.
+//   - PL-BERT attention is two GEMMs per head. Vocoder resblock temps are
+//     reused across dilations. Each stage writes the first of its three
+//     resblocks into the accumulator and reuses one scratch for the other two.
+//     A resblock keeps two temps: the second snake reuses the first, and the
+//     first dilation adds the input directly.
+//   - LSTM input weights are one GEMM per phoneme sequence. Recurrent
+//     weights use the NEON 4-row dot, so each hidden vector is loaded once
+//     per four gate rows.
+//   - GOMAXPROCS follows the big-core count from cpu_capacity when the chip
+//     is heterogeneous. Threads are not pinned; fewer busy threads land on
+//     the big cores. A homogeneous chip is left alone.
+//
+// Hexagon HTP is not used for these layers. The weights are Q8_0 (a scale
+// every 32 K elements). NNAPI's fully connected wants one scale per row, and
+// a per-layer trip to the NPU is slower than SMMLA at encoder sizes.
 package main
 
 /*
@@ -13,13 +47,23 @@ import "C"
 import (
 	"bytes"
 	"encoding/binary"
+	"log"
 	"sync"
 	"unsafe"
 
 	"github.com/RapidAI/CodeClaw/corelib/asr"
+	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/tts/kokoro"
+	"github.com/RapidAI/CodeClaw/mobilebot/native/perfcpus"
 )
+
+func init() {
+	if procs, total, ok := perfcpus.Apply(); ok {
+		log.Printf("[voice] procs=%d/%d", procs, total)
+	}
+	log.Printf("[voice] tts %s asr-q8p=%s", kokoro.AccelNote(), tensor.Q8PISAName())
+}
 
 var (
 	mu        sync.Mutex
@@ -192,6 +236,6 @@ func VoiceASR(pcm *C.char, pcmLen C.int) *C.char {
 type simpleErr string
 
 func (e simpleErr) Error() string { return string(e) }
-func errString(s string) error  { return simpleErr(s) }
+func errString(s string) error    { return simpleErr(s) }
 
 func main() {}

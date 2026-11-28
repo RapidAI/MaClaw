@@ -6,6 +6,7 @@ import {
     isPdfInlineDataURL,
     isTaskResultPdfPreviewURL,
     localizeTaskResultPreviewError,
+    taskResultPreviewURLRevision,
     objectURLFromPdfDataURL,
     type TaskResultPreviewPayload,
 } from "./taskResultPreview";
@@ -19,6 +20,8 @@ export interface PdfPreviewPanelProps {
     dataUrl?: string;
     /** Short-lived preview token URL. Skips a second backend call. */
     previewUrl?: string;
+    /** Changes when the file is rewritten at the same path. */
+    revision?: string;
     theme: CodePreviewTheme;
     lang: string;
 }
@@ -28,7 +31,7 @@ export interface PdfPreviewPanelProps {
  * URL. Tests and fallbacks may still pass a data URL, which is converted to a
  * blob URL for the iframe.
  */
-export function PdfPreviewPanel({ absPath, dataUrl, previewUrl, theme, lang }: PdfPreviewPanelProps) {
+export function PdfPreviewPanel({ absPath, dataUrl, previewUrl, revision = "", theme, lang }: PdfPreviewPanelProps) {
     const langRef = useRef(lang);
     useEffect(() => {
         langRef.current = lang;
@@ -67,7 +70,7 @@ export function PdfPreviewPanel({ absPath, dataUrl, previewUrl, theme, lang }: P
 
         const tokenURL = String(previewUrl || "").trim();
         if (tokenURL && isTaskResultPdfPreviewURL(tokenURL)) {
-            showSrc(tokenURL);
+            showSrc(taskResultPreviewURLRevision(tokenURL, revision));
             return () => {
                 cancelled = true;
                 if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -91,7 +94,7 @@ export function PdfPreviewPanel({ absPath, dataUrl, previewUrl, theme, lang }: P
                 const result = await PreviewTaskResultFile(absPath) as TaskResultPreviewPayload;
                 if (cancelled) return;
                 const previewURL = String(result?.preview_url || "").trim();
-                if (isTaskResultPdfPreviewURL(previewURL) && showSrc(previewURL)) return;
+                if (isTaskResultPdfPreviewURL(previewURL) && showSrc(taskResultPreviewURLRevision(previewURL, revision))) return;
                 const url = String(result?.data_url || "");
                 if (isPdfInlineDataURL(url) && applyDataURL(url)) return;
                 const body = String(result?.content || "");
@@ -112,7 +115,7 @@ export function PdfPreviewPanel({ absPath, dataUrl, previewUrl, theme, lang }: P
             cancelled = true;
             if (objectUrl) URL.revokeObjectURL(objectUrl);
         };
-    }, [absPath, dataUrl, previewUrl]);
+    }, [absPath, dataUrl, previewUrl, revision]);
 
     const fill: React.CSSProperties = { display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: theme.bg };
     if (error) {

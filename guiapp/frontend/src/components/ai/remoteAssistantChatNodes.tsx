@@ -146,7 +146,8 @@ export function useRemoteAssistantChatNodes({ remoteChat, lang, theme: t }: {
                     remoteReasoningIncrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
                 }
             }
-            const codingTimeline = message.role === "assistant" ? message.codingTimeline : undefined;
+            // Events of a turn that never replied sit on the user line.
+            const codingTimeline = message.codingTimeline;
             if (codingTimeline?.length) {
                 // The mirrored coding round paints the same interleaved
                 // thought/tool transcript a local coding turn keeps on its

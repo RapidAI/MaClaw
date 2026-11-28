@@ -439,3 +439,415 @@ ds2_reduce:
 	FADDS F13, F2, F2
 	FMOVS F2, r1+84(FP)
 	RET
+
+// func dotStridedFMA4x2NEON(x []float32, xStride int, w []float32, wStride int, wOcStride int, taps, n int) (r0, r1, r2, r3, r4, r5, r6, r7 float32)
+//
+// Four output channels, two adjacent positions. Position 1 starts n elements
+// after position 0. Strides are in float32 elements and may be negative.
+// Layout matches dotStridedFMA4x2Scalar. Android only; darwin stays scalar.
+TEXT ·dotStridedFMA4x2NEON(SB), NOSPLIT, $16-120
+	MOVD x_base+0(FP), R0
+	MOVD xStride+24(FP), R4
+	MOVD w_base+32(FP), R2
+	MOVD wStride+56(FP), R5
+	MOVD wOcStride+64(FP), R6
+	MOVD taps+72(FP), R7
+	MOVD n+80(FP), R8
+	LSL  $2, R4, R4
+	LSL  $2, R5, R5
+	LSL  $2, R6, R6
+	MOVD R8, R9
+	LSL  $2, R9, R9
+
+	VEOR V0.B16, V0.B16, V0.B16
+	VEOR V1.B16, V1.B16, V1.B16
+	VEOR V2.B16, V2.B16, V2.B16
+	VEOR V3.B16, V3.B16, V3.B16
+	VEOR V4.B16, V4.B16, V4.B16
+	VEOR V5.B16, V5.B16, V5.B16
+	VEOR V6.B16, V6.B16, V6.B16
+	VEOR V7.B16, V7.B16, V7.B16
+	FMOVS $0, F24
+	FMOVS $0, F25
+	FMOVS $0, F26
+	FMOVS $0, F27
+	FMOVS $0, F28
+	FMOVS $0, F29
+	FMOVS $0, F30
+	FMOVS $0, F31
+
+	CBZ R7, f42_reduce
+	CBZ R8, f42_reduce
+
+f42_tap:
+	MOVD R0, R12
+	ADD  R9, R0, R1
+	MOVD R2, R15
+	ADD  R6, R2, R3
+	ADD  R6, R3, R13
+	ADD  R6, R13, R14
+	MOVD R8, R10
+	LSR  $2, R10, R10
+	CBZ  R10, f42_scalar
+
+f42_vec:
+	VLD1.P 16(R12), [V16.S4]
+	VLD1.P 16(R1), [V17.S4]
+	VLD1.P 16(R15), [V18.S4]
+	VLD1.P 16(R3), [V19.S4]
+	VLD1.P 16(R13), [V20.S4]
+	VLD1.P 16(R14), [V21.S4]
+	VFMLA  V18.S4, V16.S4, V0.S4
+	VFMLA  V18.S4, V17.S4, V1.S4
+	VFMLA  V19.S4, V16.S4, V2.S4
+	VFMLA  V19.S4, V17.S4, V3.S4
+	VFMLA  V20.S4, V16.S4, V4.S4
+	VFMLA  V20.S4, V17.S4, V5.S4
+	VFMLA  V21.S4, V16.S4, V6.S4
+	VFMLA  V21.S4, V17.S4, V7.S4
+	SUB    $1, R10, R10
+	CBNZ   R10, f42_vec
+
+f42_scalar:
+	AND  $3, R8, R11
+	CBZ  R11, f42_next
+
+f42_sloop:
+	FMOVS (R15), F8
+	FMOVS (R12), F9
+	FMOVS (R1), F10
+	FMULS F8, F9, F11
+	FADDS F11, F24, F24
+	FMULS F8, F10, F11
+	FADDS F11, F25, F25
+	FMOVS (R3), F8
+	FMULS F8, F9, F11
+	FADDS F11, F26, F26
+	FMULS F8, F10, F11
+	FADDS F11, F27, F27
+	FMOVS (R13), F8
+	FMULS F8, F9, F11
+	FADDS F11, F28, F28
+	FMULS F8, F10, F11
+	FADDS F11, F29, F29
+	FMOVS (R14), F8
+	FMULS F8, F9, F11
+	FADDS F11, F30, F30
+	FMULS F8, F10, F11
+	FADDS F11, F31, F31
+	ADD   $4, R12, R12
+	ADD   $4, R1, R1
+	ADD   $4, R15, R15
+	ADD   $4, R3, R3
+	ADD   $4, R13, R13
+	ADD   $4, R14, R14
+	SUB   $1, R11, R11
+	CBNZ  R11, f42_sloop
+
+f42_next:
+	ADD  R4, R0, R0
+	ADD  R5, R2, R2
+	SUB  $1, R7, R7
+	CBNZ R7, f42_tap
+
+f42_reduce:
+	VMOV  V0.S[0], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F8
+	VMOV  V0.S[1], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V0.S[2], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V0.S[3], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	FADDS F24, F8, F8
+	FMOVS F8, r0+88(FP)
+
+	VMOV  V1.S[0], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F8
+	VMOV  V1.S[1], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V1.S[2], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V1.S[3], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	FADDS F25, F8, F8
+	FMOVS F8, r1+92(FP)
+
+	VMOV  V2.S[0], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F8
+	VMOV  V2.S[1], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V2.S[2], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V2.S[3], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	FADDS F26, F8, F8
+	FMOVS F8, r2+96(FP)
+
+	VMOV  V3.S[0], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F8
+	VMOV  V3.S[1], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V3.S[2], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V3.S[3], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	FADDS F27, F8, F8
+	FMOVS F8, r3+100(FP)
+
+	VMOV  V4.S[0], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F8
+	VMOV  V4.S[1], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V4.S[2], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V4.S[3], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	FADDS F28, F8, F8
+	FMOVS F8, r4+104(FP)
+
+	VMOV  V5.S[0], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F8
+	VMOV  V5.S[1], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V5.S[2], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V5.S[3], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	FADDS F29, F8, F8
+	FMOVS F8, r5+108(FP)
+
+	VMOV  V6.S[0], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F8
+	VMOV  V6.S[1], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V6.S[2], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V6.S[3], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	FADDS F30, F8, F8
+	FMOVS F8, r6+112(FP)
+
+	VMOV  V7.S[0], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F8
+	VMOV  V7.S[1], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V7.S[2], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V7.S[3], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	FADDS F31, F8, F8
+	FMOVS F8, r7+116(FP)
+	RET
+
+// func dotStridedFMA4NEON(x []float32, xStride int, w []float32, wStride int, wOcStride int, taps, n int) (r0, r1, r2, r3 float32)
+//
+// One output position, four channels. Same stride rules as dotStridedFMA4x2NEON.
+TEXT ·dotStridedFMA4NEON(SB), NOSPLIT, $16-104
+	MOVD x_base+0(FP), R0
+	MOVD xStride+24(FP), R4
+	MOVD w_base+32(FP), R2
+	MOVD wStride+56(FP), R5
+	MOVD wOcStride+64(FP), R6
+	MOVD taps+72(FP), R7
+	MOVD n+80(FP), R8
+	LSL  $2, R4, R4
+	LSL  $2, R5, R5
+	LSL  $2, R6, R6
+
+	VEOR V0.B16, V0.B16, V0.B16
+	VEOR V1.B16, V1.B16, V1.B16
+	VEOR V2.B16, V2.B16, V2.B16
+	VEOR V3.B16, V3.B16, V3.B16
+	FMOVS $0, F24
+	FMOVS $0, F25
+	FMOVS $0, F26
+	FMOVS $0, F27
+
+	CBZ R7, f4_reduce
+	CBZ R8, f4_reduce
+
+f4_tap:
+	MOVD R0, R12
+	MOVD R2, R15
+	ADD  R6, R2, R3
+	ADD  R6, R3, R13
+	ADD  R6, R13, R14
+	MOVD R8, R10
+	LSR  $2, R10, R10
+	CBZ  R10, f4_scalar
+
+f4_vec:
+	VLD1.P 16(R12), [V16.S4]
+	VLD1.P 16(R15), [V17.S4]
+	VLD1.P 16(R3), [V18.S4]
+	VLD1.P 16(R13), [V19.S4]
+	VLD1.P 16(R14), [V20.S4]
+	VFMLA  V17.S4, V16.S4, V0.S4
+	VFMLA  V18.S4, V16.S4, V1.S4
+	VFMLA  V19.S4, V16.S4, V2.S4
+	VFMLA  V20.S4, V16.S4, V3.S4
+	SUB    $1, R10, R10
+	CBNZ   R10, f4_vec
+
+f4_scalar:
+	AND  $3, R8, R11
+	CBZ  R11, f4_next
+
+f4_sloop:
+	FMOVS (R12), F9
+	FMOVS (R15), F8
+	FMULS F8, F9, F11
+	FADDS F11, F24, F24
+	FMOVS (R3), F8
+	FMULS F8, F9, F11
+	FADDS F11, F25, F25
+	FMOVS (R13), F8
+	FMULS F8, F9, F11
+	FADDS F11, F26, F26
+	FMOVS (R14), F8
+	FMULS F8, F9, F11
+	FADDS F11, F27, F27
+	ADD   $4, R12, R12
+	ADD   $4, R15, R15
+	ADD   $4, R3, R3
+	ADD   $4, R13, R13
+	ADD   $4, R14, R14
+	SUB   $1, R11, R11
+	CBNZ  R11, f4_sloop
+
+f4_next:
+	ADD  R4, R0, R0
+	ADD  R5, R2, R2
+	SUB  $1, R7, R7
+	CBNZ R7, f4_tap
+
+f4_reduce:
+	VMOV  V0.S[0], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F8
+	VMOV  V0.S[1], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V0.S[2], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V0.S[3], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	FADDS F24, F8, F8
+	FMOVS F8, r0+88(FP)
+
+	VMOV  V1.S[0], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F8
+	VMOV  V1.S[1], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V1.S[2], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V1.S[3], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	FADDS F25, F8, F8
+	FMOVS F8, r1+92(FP)
+
+	VMOV  V2.S[0], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F8
+	VMOV  V2.S[1], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V2.S[2], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V2.S[3], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	FADDS F26, F8, F8
+	FMOVS F8, r2+96(FP)
+
+	VMOV  V3.S[0], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F8
+	VMOV  V3.S[1], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V3.S[2], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	VMOV  V3.S[3], R5
+	MOVW  R5, tmp-4(SP)
+	FMOVS tmp-4(SP), F9
+	FADDS F9, F8, F8
+	FADDS F27, F8, F8
+	FMOVS F8, r3+100(FP)
+	RET

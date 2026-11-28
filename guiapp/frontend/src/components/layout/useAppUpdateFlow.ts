@@ -427,7 +427,19 @@ export function useAppUpdateFlow({
                 return false;
             }
             setShowUpdateModal(false);
-            setAppUpdateAvailable(null);
+            // Only retire the notice for the version just decided. The notice
+            // may already point at a newer background result (e.g. v8.3 shown
+            // while the user deferred v8.2): clearing it wholesale would drop
+            // an offer whose one-shot emit was already consumed, and a
+            // non-silent setup would never re-offer that release this session.
+            setAppUpdateAvailable(prev => {
+                const noticeVersion = String(
+                    (prev as any)?.latest_version || (prev as any)?.LatestVersion || "",
+                ).trim();
+                const sameVersion = (a: string, b: string) =>
+                    a.replace(/^v/i, "").toLowerCase() === b.replace(/^v/i, "").toLowerCase();
+                return noticeVersion && sameVersion(noticeVersion, version) ? null : prev;
+            });
             showToastMessageRef.current(successMessage(), 5000);
             return true;
         } catch (err) {
@@ -527,7 +539,17 @@ export function useAppUpdateFlow({
             // dialog. The notice can reopen the newer target once the rollback
             // decision is done.
             setAppUpdateAvailable({ ...payload, has_update: true, latest_version: latestVersion });
-            if (updateResultRef.current?.is_rollback) {
+            const sameVersion = (a: string, b: string) =>
+                a.replace(/^v/i, "").toLowerCase() === b.replace(/^v/i, "").toLowerCase();
+            const currentVersion = String(updateResultRef.current?.latest_version || "").trim();
+            // A completed background download only owns the dialog when it is
+            // the very version the dialog is deciding on. A stale completion
+            // (older release downloaded while the user already picked a newer
+            // or beta target, or a rollback pick) would otherwise reset the
+            // whole decision state to the wrong version. The notice set above
+            // still points at the ready installer once that decision is done.
+            if (updateResultRef.current?.is_rollback ||
+                (currentVersion && !sameVersion(currentVersion, latestVersion))) {
                 return;
             }
             handleUpdateResultChange({ ...payload, has_update: true, latest_version: latestVersion });

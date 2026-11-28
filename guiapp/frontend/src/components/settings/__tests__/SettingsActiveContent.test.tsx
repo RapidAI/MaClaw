@@ -21,7 +21,9 @@ vi.mock('../GeneralAdvancedSettingsPanel', () => ({
 vi.mock('../../../appLazyComponents', () => ({
     WebSearchConfigPanel: () => <div>WebSearch</div>,
     SecurityPolicyPanel: () => <div>Security</div>,
-    LLMConfigPanel: () => <div data-testid="llm-settings">LLM</div>,
+    LLMConfigPanel: (props: { cloudAgentAvailable?: boolean }) => (
+        <div data-testid="llm-settings" data-cloud-agent-available={String(props?.cloudAgentAvailable === true)}>LLM</div>
+    ),
     HubServiceRedeemPanel: () => <div>Redeem</div>,
     EmbeddingConfigPanel: () => <div>Embedding</div>,
     ASRConfigPanel: () => <div>ASR</div>,
@@ -207,6 +209,22 @@ describe('SettingsActiveContent', () => {
             />,
         );
         expect(await screen.findByTestId('cloud-agent-settings')).toBeTruthy();
+    });
+
+    it('threads cloudAgentAvailable into the llm panel (cloud row gating)', async () => {
+        const { rerender } = render(
+            <SettingsActiveContent
+                {...baseProps}
+                settingsTab="llm"
+                cloudAgentAvailable={false}
+            />,
+        );
+        expect(await screen.findByTestId('llm-settings')).toBeTruthy();
+        expect(screen.getByTestId('llm-settings').getAttribute('data-cloud-agent-available')).toBe('false');
+
+        rerender(<SettingsActiveContent {...baseProps} settingsTab="llm" cloudAgentAvailable={true} />);
+        expect(await screen.findByTestId('llm-settings')).toBeTruthy();
+        expect(screen.getByTestId('llm-settings').getAttribute('data-cloud-agent-available')).toBe('true');
     });
 
     it('merges per-tab DTO into setConfig without stomping local edits', async () => {

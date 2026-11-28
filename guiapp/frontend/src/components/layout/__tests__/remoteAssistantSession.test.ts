@@ -11,8 +11,9 @@ import {
     publishRemoteAssistantSession,
     remoteAssistantSend,
     remoteAssistantSessionSnapshot,
+    remoteLiveRoundPaintsRows,
 } from '../remoteAssistantSession';
-import type { RemoteAssistantSession } from '../remoteAssistantSession';
+import type { RemoteAssistantSession, RemoteLiveRound } from '../remoteAssistantSession';
 
 function session(overrides: Partial<RemoteAssistantSession> = {}): RemoteAssistantSession {
     return {
@@ -864,5 +865,75 @@ describe('remoteAssistantSession mirrored coding trail', () => {
         const row = liveRow();
         expect(row?.codingTimeline?.map(item => item.kind)).toEqual(['thinking', 'progress']);
         expect(row?.codingTimeline?.[0].content).toBe('先看目录。');
+    });
+});
+
+describe('remoteLiveRoundPaintsRows', () => {
+    /** A bare live round with just the parts under test. */
+    function bareRound(parts: Array<{ kind: 'text' | 'thinking' | 'progress'; text?: string; done?: boolean }>): RemoteLiveRound {
+        return {
+            requestId: 'r1',
+            displayText: '',
+            streamDone: false,
+            responded: false,
+            baseline: 0,
+            lastEventAt: Date.now(),
+            parts: parts.map((part, index) => ({ kind: part.kind, seq: index + 1, text: part.text || '', done: part.done })),
+        };
+    }
+
+    it('is false without a round or once the round responded', () => {
+        expect(remoteLiveRoundPaintsRows(null)).toBe(false);
+        expect(remoteLiveRoundPaintsRows(undefined)).toBe(false);
+        expect(remoteLiveRoundPaintsRows({ ...bareRound([{ kind: 'text', text: '答案' }]), responded: true })).toBe(false);
+    });
+
+    it('counts streamed text and open or filled thinking as bubble rows', () => {
+        expect(remoteLiveRoundPaintsRows(bareRound([{ kind: 'text', text: '答案' }]))).toBe(true);
+        // An empty text part contributes nothing to the joined content.
+        expect(remoteLiveRoundPaintsRows(bareRound([{ kind: 'text' }]))).toBe(false);
+        // An open empty thinking part still paints the live 正在思考 box
+        // (liveThinking parity); a closed empty one paints nothing.
+        expect(remoteLiveRoundPaintsRows(bareRound([{ kind: 'thinking' }]))).toBe(true);
+        expect(remoteLiveRoundPaintsRows(bareRound([{ kind: 'thinking', text: '想法', done: true }]))).toBe(true);
+        expect(remoteLiveRoundPaintsRows(bareRound([{ kind: 'thinking', done: true }]))).toBe(false);
+    });
+
+    it('counts styled tool lines and visible coding events, not tray-only or hidden rows', () => {
+        expect(remoteLiveRoundPaintsRows(bareRound([{ kind: 'progress', text: '工具 · 执行命令 (bash)\npip install reportlab' }]))).toBe(true);
+        expect(remoteLiveRoundPaintsRows(bareRound([{ kind: 'progress', text: 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","title":"读取文件","detail":"read_file"}' }]))).toBe(true);
+        // Plain progress stays in the tray; a progress-only action and a
+        // chat-hidden audit banner paint no bubble row either. None of them
+        // may silence the Working trail.
+        expect(remoteLiveRoundPaintsRows(bareRound([{ kind: 'progress', text: '正在安装依赖' }]))).toBe(false);
+        expect(remoteLiveRoundPaintsRows(bareRound([{ kind: 'progress', text: '工具 · 命令进度 (bash)\n60%' }]))).toBe(false);
+        expect(remoteLiveRoundPaintsRows(bareRound([{ kind: 'progress', text: 'Coding Agent Event: {"version":1,"agent":"coding","event":"quality_summary","phase":"done","title":"质量"}' }]))).toBe(false);
+    });
+});
+
+describe('remoteAssistantSession cloud git binding', () => {
+    beforeEach(() => {
+        bindRemoteAssistantActions(null);
+        bindRemoteStreamRecovery(null);
+        publishRemoteAssistantSession(null);
+    });
+
+    it('repaints when the connect dialog flips only the git binding', () => {
+        publishRemoteAssistantSession(session({ cloud: true, cloudGit: { connected: false } }));
+        expect(remoteAssistantSessionSnapshot()?.cloudGit?.connected).toBe(false);
+        // noteCloudGitConnected republishes with ONLY cloudGit changed. The
+        // store key must move with it, or emit() swallows the publish and the
+        // 未连接代码库 hint survives a successful connect until an unrelated
+        // publish happens to re-render the panel.
+        publishRemoteAssistantSession(session({
+            cloud: true,
+            cloudGit: { connected: true, repo: 'znsoft2/test-snake', service: 'gitlab', origin: 'https://gitlab.com' },
+        }));
+        expect(remoteAssistantSessionSnapshot()?.cloudGit).toEqual({
+            connected: true,
+            repo: 'znsoft2/test-snake',
+            service: 'gitlab',
+            origin: 'https://gitlab.com',
+        });
     });
 });

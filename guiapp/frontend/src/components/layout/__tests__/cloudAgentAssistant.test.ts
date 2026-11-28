@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { applyCloudAgentStream, applyCloudAgentWatch, cloudAgentRound, cloudAgentSessionKey, cloudAgentStoreKey, resetCloudAgentRounds, cloudAgentWorkflow as workflowForKey } from '../cloudAgentSession';
-import { cloudAgentCatalog, openCloudAgent, refreshCloudGit, resetCloudAssistantForTests, startCloudAgentFromNewTask, submitCloudWorkflowForm } from '../cloudAgentAssistant';
+import { cloudAgentCatalog, historyMessages, noteCloudGitConnected, openCloudAgent, refreshCloudGit, resetCloudAssistantForTests, startCloudAgentFromNewTask, submitCloudWorkflowForm } from '../cloudAgentAssistant';
 import { remoteAssistantSend, remoteAssistantSessionSnapshot, remoteAssistantStop } from '../remoteAssistantSession';
 import { cloudTurnRunning, noteCloudTurn, resetCloudTurnNotes, type CloudAgentListItem } from '../taskPlace';
 
@@ -1565,6 +1565,61 @@ describe('cloud agent assistant', () => {
             expect(remoteAssistantSessionSnapshot()?.messages.find(message => message.localFilePaths)?.localFilePaths).toEqual(['new.pdf']);
         });
     });
+
+    it('flips the repo banner the moment the connect call resolves, before the re-read', async () => {
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+            GetCloudAgentGit: vi.fn(async () => ({ connected: false })),
+        });
+        await openCloudAgent({ ...item, kind: 'coding' }, 'zh');
+        // Let the open-time refresh settle first (undefined → {connected:false}),
+        // so it cannot clobber the optimistic flip below.
+        await vi.waitFor(() => {
+            expect(remoteAssistantSessionSnapshot()?.cloudGit).toEqual({ connected: false });
+        });
+        // The dialog calls this synchronously with the ConnectCloudAgentGit
+        // response; the 未连接代码库 hint must disappear without waiting for
+        // the slower GetCloudAgentGit round-trip.
+        noteCloudGitConnected('cag_1', { repo: 'znsoft2/test-snake', service: 'gitlab', origin: 'https://gitlab.com' });
+        expect(remoteAssistantSessionSnapshot()?.cloudGit).toEqual({
+            connected: true,
+            repo: 'znsoft2/test-snake',
+            service: 'gitlab',
+            origin: 'https://gitlab.com',
+        });
+        // Another instance's connect must not flip the open task.
+        noteCloudGitConnected('cag_other', { repo: 'else/where' });
+        expect(remoteAssistantSessionSnapshot()?.cloudGit?.repo).toBe('znsoft2/test-snake');
+    });
+
+    it('keeps service and origin from the git re-read so the header chip can link out', async () => {
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+            GetCloudAgentGit: vi.fn(async () => ({ connected: true, repo: 'ada/fresh', service: 'gitlab', origin: 'https://gitlab.example.com' })),
+        });
+        await openCloudAgent({ ...item, kind: 'coding' }, 'zh');
+        // The open-time refresh fires un-awaited inside openCloudAgent.
+        await vi.waitFor(() => {
+            expect(remoteAssistantSessionSnapshot()?.cloudGit).toEqual({
+                connected: true,
+                repo: 'ada/fresh',
+                service: 'gitlab',
+                origin: 'https://gitlab.example.com',
+            });
+        });
+    });
 });
 
 describe('cloud stream resync', () => {
@@ -1852,5 +1907,39 @@ describe('cloud workflow state', () => {
         expect(payload.task_id).toBe('task-1');
         expect(payload.values).toEqual({ project_name: 'demo', _agent_view_variant: 'local' });
         expect(payload.client_message_id).toMatch(/^cm_/);
+    });
+});
+
+describe('cloud history timelines', () => {
+    it('keeps events that were stored on a blank assistant row', () => {
+        const progress = `Coding Agent Event: ${JSON.stringify({
+            version: 1, agent: 'coding', event: 'tool_finished', detail: 'write_file', outcome: 'success',
+            files: ['src/snake.cpp'], file_changes: [{ path: 'src/snake.cpp', added: 1, removed: 0 }],
+        })}`;
+        const messages = historyMessages(
+            ['user\n改蛇', 'assistant\n'],
+            [[], []],
+            [[], [{ kind: 'progress', text: progress, seq: 1 }]],
+            ['r1', 'r1'],
+            {},
+            '',
+            new Set(),
+        );
+        expect(messages.map(message => message.role)).toEqual(['user', 'assistant']);
+        expect(messages[0].codingTimeline).toBeUndefined();
+        expect(messages[1].codingTimeline?.some(item => item.kind === 'progress')).toBe(true);
+    });
+
+    it('still hides a blank assistant row that has no event text', () => {
+        const messages = historyMessages(
+            ['user\n改蛇', 'assistant\n'],
+            [[], []],
+            [[], [{ kind: 'progress', text: '   ' }]],
+            ['r1', 'r1'],
+            {},
+            '',
+            new Set(),
+        );
+        expect(messages.map(message => message.role)).toEqual(['user']);
     });
 });

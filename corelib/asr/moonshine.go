@@ -55,6 +55,11 @@ type encoderLayer struct {
 
 type linearWeight struct {
 	q8 *tensor.Q8Tensor
+	// q8p is the SDOT/SMMLA repack of q8. Nil keeps the float-activation GEMM.
+	// Packed on Android at load for shapes whose both dimensions are multiples
+	// of 32. The CTC head stays unpacked: its argmax kernel never materializes
+	// the vocab axis, and that axis is not a multiple of 32.
+	q8p *tensor.Q8Packed
 	// q4 is an optional load-time Q8→Q4 companion used only by the
 	// SenseVoice FFN-down VNNI experiment. The existing Q8 path remains the
 	// default until the panel store kernel passes recognition regression.

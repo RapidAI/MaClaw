@@ -75,7 +75,7 @@ func TestStyledDocumentUsesStrongColors(t *testing.T) {
 	if !strings.Contains(html, `<th style="color:`+cssHex(style.Colors.Navy)) {
 		t.Fatalf("table header lost the styled th: %s", html)
 	}
-	if !strings.Contains(html, cssHex(style.Colors.Ink)) || !strings.Contains(html, styleRuleGlyph) {
+	if !strings.Contains(html, cssHex(style.Colors.Ink)) || !strings.Contains(html, ruleGlyph()) {
 		t.Fatalf("body ink or rule glyph missing: %s", html)
 	}
 	title := buildTitleHTML(Spec{Title: "崇州天气预报", Subtitle: "四川省成都市崇州市"})
@@ -262,10 +262,10 @@ func TestEmbeddedFacesContainStyleGlyphs(t *testing.T) {
 	if !gen.HasFont() {
 		t.Skip("no embeddable font")
 	}
-	switch styleRuleGlyph {
+	switch ruleGlyph() {
 	case "━", "—", "－":
 	default:
-		t.Fatalf("rule glyph %q", styleRuleGlyph)
+		t.Fatalf("rule glyph %q", ruleGlyph())
 	}
 	for name, data := range map[string][]byte{
 		"regular": gen.fontRegularData,
@@ -276,7 +276,7 @@ func TestEmbeddedFacesContainStyleGlyphs(t *testing.T) {
 			t.Fatal(err)
 		}
 		chars := parser.Chars()
-		for _, r := range []rune(styleMarkGlyph + styleRuleGlyph) {
+		for _, r := range []rune(styleMarkGlyph + ruleGlyph()) {
 			if _, ok := chars[int(r)]; !ok {
 				t.Fatalf("%s missing U+%04X", name, r)
 			}

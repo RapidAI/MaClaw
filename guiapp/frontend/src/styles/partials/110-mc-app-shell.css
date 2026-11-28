@@ -431,6 +431,12 @@
 .mc-task-execution-subline .mc-task-execution-cloud-git { flex: 0 1 auto; max-width: 45%; display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: var(--theme-text-muted); font-size: 12px; line-height: 1.3; white-space: nowrap; }
 .mc-task-execution-subline .mc-task-execution-cloud-git svg { flex: 0 0 auto; display: block; }
 .mc-task-execution-subline .mc-task-execution-cloud-git span { overflow: hidden; text-overflow: ellipsis; }
+/* Link variant: the same chip rendered as a <button> that opens the
+   provider's repository page. Strips the user-agent button chrome and
+   signals the affordance without repainting the muted label. */
+.mc-task-execution-subline button.mc-task-execution-cloud-git { border: 0; background: none; padding: 0; margin: 0; font: inherit; cursor: pointer; }
+.mc-task-execution-subline button.mc-task-execution-cloud-git:hover { color: var(--theme-primary); }
+.mc-task-execution-subline button.mc-task-execution-cloud-git:hover span { text-decoration: underline; }
 .ai-panel-root[data-ai-view='execution'] > .mc-ai-titlebar,
 [data-testid='ai-panel-root'][data-ai-view='execution'] > .mc-ai-titlebar { display: none !important; }
 [data-testid='ai-panel-root'][data-ai-view='execution'] [data-testid='ai-tab-bar'] { display: none !important; }

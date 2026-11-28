@@ -1948,6 +1948,7 @@ func (w *windowsWebviewWindow) WndProc(msg uint32, wparam, lparam uintptr) uintp
 	case w32.WM_KEYUP:
 		w.parent.emit(events.Windows.WindowKeyUp)
 	case w32.WM_SIZE:
+		reassertVisualHostAfterSize := false
 		switch wparam {
 		case w32.SIZE_MAXIMIZED:
 			if w.isMinimizing {
@@ -1973,6 +1974,8 @@ func (w *windowsWebviewWindow) WndProc(msg uint32, wparam, lparam uintptr) uintp
 			}
 		case w32.SIZE_RESTORED:
 			restoredFromMaximised := w.lastSizeWParam == w32.SIZE_MAXIMIZED
+			reassertVisualHostAfterSize = restoredFromMaximised &&
+				w.parent.options.Windows.WebView2CompositionHosting
 			if restoredFromMaximised {
 				// Native caption drag from a maximised frameless window bypasses UnMaximise(),
 				// so we need to restore the saved constraints here before the next resize.
@@ -2046,6 +2049,14 @@ func (w *windowsWebviewWindow) WndProc(msg uint32, wparam, lparam uintptr) uintp
 			InvokeSync(func() {
 				time.Sleep(1 * time.Nanosecond)
 				w.chromium.ResizeWithBounds(bounds)
+				if reassertVisualHostAfterSize && (w.windowShown || w.showRequested) &&
+					w.chromium != nil && w.chromium.CompositionControllerReady() {
+					// Restoring a visual-hosted window from maximised can leave its
+					// DirectComposition surface attached but unpainted. Re-asserting
+					// visibility after PutBounds rebuilds that presentation path.
+					_ = w.chromium.Hide()
+					_ = w.chromium.Show()
+				}
 				w.parent.emit(events.Windows.WindowDidResize)
 			})
 		}
