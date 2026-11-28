@@ -122,7 +122,7 @@ type CloudAgentTimelineProgress = { kind?: string; content?: string };
  * round is appended because a later write of the same path replaces the fold.
  */
 export function cloudAgentPreviewPartsFromSession(session: {
-    messages?: Array<{ codingTimeline?: CloudAgentTimelineProgress[] }>;
+    messages?: Array<{ content?: string; codingTimeline?: CloudAgentTimelineProgress[] }>;
     live?: { parts?: CloudAgentPreviewPart[] } | null;
 } | null | undefined): CloudAgentPreviewPart[] {
     const parts: CloudAgentPreviewPart[] = [];
@@ -143,7 +143,7 @@ export function cloudAgentPreviewPartsFromSession(session: {
  * live round is the chip.
  */
 export function cloudAgentTurnFileChanges(session: {
-    messages?: Array<{ codingTimeline?: CloudAgentTimelineProgress[] }>;
+    messages?: Array<{ content?: string; codingTimeline?: CloudAgentTimelineProgress[] }>;
     live?: { parts?: CloudAgentPreviewPart[] } | null;
 } | null | undefined): CodingAgentFileChange[] {
     const fromTimeline: { content: string }[] = [];
