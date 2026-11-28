@@ -343,6 +343,7 @@ func (s *Service) drainDesktopQueue(tenantID, userID, botID string) {
 		if item == nil {
 			return
 		}
+		s.foldItemIntoContinuation(tenantID, userID, botID, item)
 		if err := s.dispatchQueuedItem(tenantID, userID, botID, item); err != nil {
 			if err == ErrDesktopMemory {
 				s.markItemMemoryWait(item)
@@ -839,6 +840,58 @@ func (s *Service) finishQueued(tenantID, userID, botID string, item *desktopQueu
 	// Keep a short record so a poll after the pop still sees running or done.
 	s.desktopQueues[key] = append(s.desktopQueues[key], item)
 	s.persistDesktopState(tenantID)
+}
+
+// foldItemIntoContinuation rewrites a parked new-task message into a
+// supplement of the continuation run already answering this bot's handoff.
+// The press that freed the keyboard starts exactly one execution; whatever
+// the person typed while they still had the keyboard is input to that same
+// piece of work, not independent tasks of its own. Two runs of one bot share
+// the browser, the cart and the login, so two parallel executions of one
+// intent double the shopping and the payment prompts (the 11-28 incident).
+// Continuations and control kinds keep their own dispatch, and with no live
+// continuation the item starts on its own exactly as before.
+func (s *Service) foldItemIntoContinuation(tenantID, userID, botID string, item *desktopQueueItem) {
+	if s == nil || item == nil {
+		return
+	}
+	if kind := strings.TrimSpace(item.Kind); kind != "" && kind != "new" {
+		return
+	}
+	if item.Continuation {
+		return
+	}
+	runID := s.liveContinuationRunID(tenantID, userID, botID, item.ClientMessageID)
+	if runID == "" {
+		return
+	}
+	item.Kind = "supplement"
+	item.RunID = runID
+}
+
+// liveContinuationRunID is the run of this bot's in-flight handoff
+// continuation, or empty when there is none. The continuation's own queued
+// replay is excluded so it never supplements itself.
+func (s *Service) liveContinuationRunID(tenantID, userID, botID, excludeClientMessageID string) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mark, ok := s.desktopContinues[desktopContinueBotKey(tenantID, userID, botID)]
+	if !ok || mark.key == "" || mark.key == strings.TrimSpace(excludeClientMessageID) {
+		return ""
+	}
+	state, found := s.desktopContinueStateLocked(tenantID, userID, botID, mark.key)
+	if !found || state == nil {
+		return ""
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.done {
+		return ""
+	}
+	return strings.TrimSpace(state.runID)
 }
 
 func (s *Service) runStillLive(tenantID, userID, botID, runID string) bool {

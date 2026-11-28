@@ -244,8 +244,19 @@ func TestHubHoldsWhileThePersonHasTheKeyboard(t *testing.T) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	joined := strings.Join(fake.posts, "\n")
-	if !strings.Contains(joined, "下一件") || !strings.Contains(joined, "交还后继续") {
-		t.Fatalf("交还 did not release the held message: %v", fake.posts)
+	if !strings.Contains(joined, "交还后继续") {
+		t.Fatalf("交还 did not start the continuation: %v", fake.posts)
+	}
+	// The held message does not become a second execution beside the
+	// continuation. It folds into the continuation's run as a supplement:
+	// one handoff, one piece of work, everything the person typed while they
+	// waited is input to it.
+	if strings.Contains(joined, "下一件") {
+		t.Fatalf("held message started a parallel execution: %v", fake.posts)
+	}
+	supps := strings.Join(fake.supps, "\n")
+	if !strings.Contains(supps, "下一件") {
+		t.Fatalf("held message did not fold into the continuation: supps=%v", fake.supps)
 	}
 }
 
@@ -266,9 +277,12 @@ func TestHubHoldKeepsTheDecidedOrder(t *testing.T) {
 	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	joined := strings.Join(fake.posts, "\n")
-	if !strings.Contains(joined, "完成标准：老王收到文件") {
-		t.Fatalf("held run lost the decided order: %v", fake.posts)
+	// The held message folds into the continuation's run as a supplement,
+	// and the fold must carry the decided instruction — not just the raw
+	// words — or the merge would lose what the intake had already decided.
+	supps := strings.Join(fake.supps, "\n")
+	if !strings.Contains(supps, "完成标准：老王收到文件") {
+		t.Fatalf("held fold lost the decided order: supps=%v posts=%v", fake.supps, fake.posts)
 	}
 }
 
@@ -343,6 +357,8 @@ func TestHubHeldMessageStartsAfterTheHoldAgesOut(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+
 
 func TestHubQueueDrainsWhenASlotFrees(t *testing.T) {
 	fake := &intakeSrv{}
