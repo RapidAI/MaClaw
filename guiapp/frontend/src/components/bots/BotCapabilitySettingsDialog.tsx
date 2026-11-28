@@ -12,6 +12,9 @@ export type DesktopBotMCPRow = {
     command?: string;
     disabled?: boolean;
     secret_set?: boolean;
+    args?: string[];
+    bots?: string[];
+    read_tools?: string[];
 };
 
 export type DesktopBotSkillRow = {
@@ -33,9 +36,9 @@ function words(lang: string) {
     return {
         title: L('MCP and skills', 'MCP 与技能', 'MCP 與技能'),
         hint: L(
-            'Saved on the server for every bot of this account. HTTP servers are called from the cloud. A command-based server runs in the account cloud desktop, with its command and env saved there, so this computer can be off. Skill text is uploaded too.',
-            '保存在服务器上，这个账号创建的每个 Bot 都用同一份。HTTP 由云端调用。本机命令和它的环境变量会存到服务器，在这个账号的云端桌面里运行，这台电脑关机也不影响。技能正文也会上传。',
-            '儲存在伺服器上，這個帳號建立的每個 Bot 都用同一份。HTTP 由雲端呼叫。本機命令和它的環境變數會存到伺服器，在這個帳號的雲端桌面裡執行，這台電腦關機也不影響。技能正文也會上傳。',
+            'Saved on the server. HTTP is called from the cloud. A command runs only through the account cloud desktop relay, not on the API server, so this computer can be off. Choose “Only this bot” to keep a server off the other bots. Skill text is uploaded too.',
+            '保存在服务器上。HTTP 由云端调用。命令只通过这个账号的云端桌面转发，API 服务器自己不执行，这台电脑关机也不影响。选“只给这个 Bot”后，别的 Bot 用不了。技能正文也会上传。',
+            '儲存在伺服器上。HTTP 由雲端呼叫。命令只透過這個帳號的雲端桌面轉發，API 伺服器自己不執行，這台電腦關機也不影響。選「只給這個 Bot」後，別的 Bot 用不了。技能正文也會上傳。',
         ),
         mcp: L('MCP', 'MCP', 'MCP'),
         copy: L('Copy from this MaClaw', '从本机 MaClaw 复制', '從本機 MaClaw 複製'),
@@ -47,7 +50,13 @@ function words(lang: string) {
         off: L('Off', '停用', '停用'),
         on: L('On', '启用', '啟用'),
         secret: L('key stored', '已保存密钥', '已儲存金鑰'),
-        stdio: L('cloud desktop', '云端桌面', '雲端桌面'),
+        stdio: L('cloud desktop relay', '云端桌面转发', '雲端桌面轉發'),
+        onlyBot: L('Only this bot', '只给这个 Bot', '只給這個 Bot'),
+        everyBot: L('Every bot', '这个账号的每个 Bot', '這個帳號的每個 Bot'),
+        limited: L('this bot only', '只限这个 Bot', '只限這個 Bot'),
+        reads: L('Safe read tools', '免确认的读取工具', '免確認的讀取工具'),
+        readsHint: L('Comma-separated tool names. Sending, publishing, paying, and deleting still wait for confirmation. A server read-only flag is ignored.', '用逗号分开工具名。发送、发布、付款和删除仍要确认。服务器自带的只读标记不算。', '用逗號分開工具名。傳送、發布、付款和刪除仍要確認。伺服器自帶的唯讀標記不算。'),
+        saveReads: L('Save reads', '保存读取', '儲存讀取'),
         emptyMCP: L('No MCP yet.', '还没有 MCP。', '還沒有 MCP。'),
         skills: L('Skills', '技能', '技能'),
         emptySkills: L('No skills yet.', '还没有技能。', '還沒有技能。'),
@@ -68,11 +77,13 @@ type Props = {
     heading: string;
     tabs?: ReactNode;
     lang: string;
+    botId?: string;
+    instanceId?: string;
     onClose: () => void;
 };
 
 /** MCP and skills for every desktop bot of this account. */
-export function BotCapabilitySettingsDialog({ heading, tabs, lang, onClose }: Props) {
+export function BotCapabilitySettingsDialog({ heading, tabs, lang, botId, instanceId, onClose }: Props) {
     const w = words(lang);
     const titleId = useId();
     const [page, setPage] = useState<DesktopBotCapabilityPage | null>(null);
@@ -84,6 +95,7 @@ export function BotCapabilitySettingsDialog({ heading, tabs, lang, onClose }: Pr
     const [skillName, setSkillName] = useState('');
     const [skillDesc, setSkillDesc] = useState('');
     const [skillBody, setSkillBody] = useState('');
+    const [reads, setReads] = useState<Record<string, string>>({});
     const dialogRef = useRef<HTMLDivElement | null>(null);
     const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose, { enabled: !busy });
     const { onKeyDown } = useModalFocusTrap(dialogRef, { onEscape: () => { if (!busy) onClose(); } });
@@ -94,6 +106,9 @@ export function BotCapabilitySettingsDialog({ heading, tabs, lang, onClose }: Pr
             if (!live) return;
             setPage(next || { mcp: [], skills: [] });
             if (next?.warning) setNotice(next.warning);
+            const drafted: Record<string, string> = {};
+            for (const row of next?.mcp || []) drafted[row.id] = (row.read_tools || []).join(', ');
+            setReads(drafted);
         }).catch((error: unknown) => {
             if (live) setNotice(error instanceof Error ? error.message : String(error));
         });
@@ -114,6 +129,9 @@ export function BotCapabilitySettingsDialog({ heading, tabs, lang, onClose }: Pr
             setSkillName('');
             setSkillDesc('');
             setSkillBody('');
+            const drafted: Record<string, string> = {};
+            for (const row of next?.mcp || []) drafted[row.id] = (row.read_tools || []).join(', ');
+            setReads(drafted);
         } catch (error) {
             setNotice(error instanceof Error ? error.message : String(error));
         } finally {
@@ -123,6 +141,19 @@ export function BotCapabilitySettingsDialog({ heading, tabs, lang, onClose }: Pr
 
     const mcp = page?.mcp || [];
     const skills = page?.skills || [];
+    const thisBot = [botId, instanceId].map(id => (id || '').trim()).filter((id, index, all) => id !== '' && all.indexOf(id) === index);
+    const readNames = (value: string) => value.split(/[,，]/).map(name => name.trim()).filter(Boolean);
+    const serverBody = (row: DesktopBotMCPRow, bots: string[], readTools: string[]) => ({
+        id: row.id,
+        name: row.name,
+        transport: row.transport,
+        url: row.url || '',
+        command: row.command || '',
+        args: row.args || [],
+        disabled: !!row.disabled,
+        bots,
+        read_tools: readTools,
+    });
 
     return (
         <div className="modal-backdrop custom-dialog-backdrop bot-llm-dialog-backdrop" {...backdropProps} onKeyDown={onKeyDown}>
@@ -159,12 +190,19 @@ export function BotCapabilitySettingsDialog({ heading, tabs, lang, onClose }: Pr
                                 <li key={row.id} data-testid={`bot-capability-mcp-${row.id}`}>
                                     <div>
                                         <strong>{row.name}</strong>
-                                        <span className="bot-cap__meta">{row.transport === 'stdio' ? w.stdio : (row.url || row.transport)}{row.secret_set ? ` · ${w.secret}` : ''}</span>
+                                        <span className="bot-cap__meta">{row.transport === 'stdio' ? w.stdio : (row.url || row.transport)}{row.secret_set ? ` · ${w.secret}` : ''}{(row.bots || []).length > 0 ? ` · ${w.limited}` : ''}</span>
                                     </div>
                                     <div className="bot-cap__actions">
                                         <button type="button" data-testid={`bot-capability-mcp-toggle-${row.id}`} disabled={busy} onClick={() => { void run(() => UpdateDesktopBotCapabilities({ set_disabled: { [row.id]: !row.disabled } })); }}>{row.disabled ? w.on : w.off}</button>
+                                        {thisBot.length > 0 ? <button type="button" data-testid={`bot-capability-mcp-only-${row.id}`} disabled={busy} onClick={() => { void run(() => UpdateDesktopBotCapabilities({ upsert_mcp: [serverBody(row, thisBot, readNames(reads[row.id] || ''))] })); }}>{w.onlyBot}</button> : null}
+                                        {(row.bots || []).length > 0 ? <button type="button" data-testid={`bot-capability-mcp-all-${row.id}`} disabled={busy} onClick={() => { void run(() => UpdateDesktopBotCapabilities({ upsert_mcp: [serverBody(row, [], readNames(reads[row.id] || ''))] })); }}>{w.everyBot}</button> : null}
                                         <button type="button" data-testid={`bot-capability-mcp-remove-${row.id}`} disabled={busy} onClick={() => { void run(() => UpdateDesktopBotCapabilities({ remove_mcp: [row.id] })); }}>{w.remove}</button>
                                     </div>
+                                    <label className="bot-cap__meta">{w.reads}
+                                        <input data-testid={`bot-capability-mcp-reads-${row.id}`} value={reads[row.id] || ''} onChange={e => setReads(current => ({ ...current, [row.id]: e.target.value }))} />
+                                    </label>
+                                    <p className="bot-llm-dialog__hint">{w.readsHint}</p>
+                                    <button type="button" data-testid={`bot-capability-mcp-reads-save-${row.id}`} disabled={busy} onClick={() => { void run(() => UpdateDesktopBotCapabilities({ upsert_mcp: [serverBody(row, row.bots || [], readNames(reads[row.id] || ''))] })); }}>{w.saveReads}</button>
                                 </li>
                             ))}
                         </ul>

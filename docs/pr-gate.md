@@ -34,7 +34,7 @@ A selected `go test` that prints `[no tests to run]` or `[no test files]`, or th
 
 `lifecycle` (`go test -race -count=1`, `MACLAW_TEST_MODELS=off`):
 
-- `./MaClawSrv`: `TestDesktopReceiptPersistsVisibleOutcome`, `TestDesktopDeliverableExtractionChain`, `TestPlanFileIsNotDelivery`, `TestTextItemsNeedExplicitIDs`, `TestHTTPReadDuringFinalize`, `TestDesktopReceiptStaysUnreadyPastTwoSeconds`, `TestDesktopAbandonedReceiptBecomesUnverified`, `TestDesktopReceiptPersistFailureIsNotReady`, `TestBotPDFWorksWithAndWithoutDesktopAndAttachesToTurn`, `TestNoDesktopAsyncFinishKeepsGeneratedPDF`
+- `./MaClawSrv`: `TestDesktopReceiptPersistsVisibleOutcome`, `TestDesktopDeliverableExtractionChain`, `TestPlanFileIsNotDelivery`, `TestTextItemsNeedExplicitIDs`, `TestHTTPReadDuringFinalize`, `TestDesktopReceiptStaysUnreadyPastTwoSeconds`, `TestDesktopAbandonedReceiptBecomesUnverified`, `TestDesktopReceiptPersistFailureIsNotReady`, `TestBotPDFWorksWithAndWithoutDesktopAndAttachesToTurn`, `TestNoDesktopAsyncFinishKeepsGeneratedPDF`, `TestBotMCPClientRuntime`
 - `./corelib/agentservice`: `TestDesktopDeliverablesOnlyForExecuteDesktopTurns`
 
 `hub-outcome` (no race, httptest, no credentials):
@@ -88,7 +88,7 @@ node scripts/pr-gate/run-vitest.mjs
 test -s guiapp/frontend/dist/index.html
 ```
 
-`node scripts/pr-gate/select.mjs --git <base-sha>` is what CI runs after `git fetch --depth=1` of the PR base. It diffs that commit against `HEAD` and exits non-zero when the plan is rejected. A missing base commit is a failure, not an empty plan.
+`node scripts/pr-gate/select.mjs --git <base-sha>` is what CI runs after `git fetch --depth=1` of the base. On a pull request the checkout is GitHub's merge commit, and the base is that commit's first parent (the tip the PR was merged into), not an older `pull_request.base.sha`. It diffs that commit against `HEAD` and exits non-zero when the plan is rejected. A missing base commit is a failure, not an empty plan.
 
 ## Stage-0 acceptance that this gate does not claim
 

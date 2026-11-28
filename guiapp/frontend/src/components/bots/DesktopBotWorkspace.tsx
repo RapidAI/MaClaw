@@ -4937,6 +4937,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 primary: item.primary === true,
                 desktopMode: item.desktop_mode,
                 nodeId: (item.node_id || '').trim(),
+                instanceId: (item.instance_id || '').trim(),
             }));
             applyHubLooks(items || [], lookRevAtList);
             const merged = mergeListed(list);
@@ -8969,6 +8970,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 <BotCapabilitySettingsDialog
                     heading={text.settingsTitle}
                     lang={lang}
+                    botId={selected?.id || ''}
+                    instanceId={selected?.instanceId || ''}
                     tabs={<BotSettingsTabs active="tools" labels={settingsTabLabels} onSelect={switchSettingsTab} />}
                     onClose={() => setToolsOpen(false)}
                 />

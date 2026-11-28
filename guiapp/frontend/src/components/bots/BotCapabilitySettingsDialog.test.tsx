@@ -43,6 +43,27 @@ describe('BotCapabilitySettingsDialog', () => {
         await waitFor(() => expect(update).toHaveBeenCalledWith({ remove_mcp: ['search'] }));
     });
 
+    it('limits a server to this bot and saves a safe read tool', async () => {
+        render(<BotCapabilitySettingsDialog heading="设置" lang="zh" botId="bot_a" instanceId="inst_a" onClose={() => {}} />);
+        await screen.findByTestId('bot-capability-mcp-search');
+        expect(screen.getByTestId('bot-capability-mcp-search').textContent).not.toContain('secret-token');
+        fireEvent.click(screen.getByTestId('bot-capability-mcp-only-search'));
+        await waitFor(() => expect(update).toHaveBeenCalledWith({
+            upsert_mcp: [{
+                id: 'search', name: 'Search', transport: 'http', url: 'https://mcp.example/mcp',
+                command: '', args: [], disabled: false, bots: ['bot_a', 'inst_a'], read_tools: [],
+            }],
+        }));
+        fireEvent.change(screen.getByTestId('bot-capability-mcp-reads-search'), { target: { value: 'lookup, send_note' } });
+        fireEvent.click(screen.getByTestId('bot-capability-mcp-reads-save-search'));
+        await waitFor(() => expect(update).toHaveBeenCalledWith({
+            upsert_mcp: [{
+                id: 'search', name: 'Search', transport: 'http', url: 'https://mcp.example/mcp',
+                command: '', args: [], disabled: false, bots: [], read_tools: ['lookup', 'send_note'],
+            }],
+        }));
+    });
+
     it('installs a new skill from text', async () => {
         render(<BotCapabilitySettingsDialog heading="设置" lang="zh" onClose={() => {}} />);
         await screen.findByTestId('bot-capability-mcp-search');

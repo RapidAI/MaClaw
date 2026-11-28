@@ -36,8 +36,26 @@ jobs:
           node-version: "22"
       - name: Fetch the pull request base
         env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -eu
+          # Checkout is GitHub's merge of this PR into the current base tip.
+          # pull_request.base.sha can still name the tip from when the PR
+          # opened, so a later main commit would be classified as this change.
+          # A merge commit's first parent is the base that was actually merged.
+          parents=$(git cat-file -p HEAD | awk '/^parent /{print $2}')
+          count=$(printf '%s\n' "$parents" | grep -c .)
+          if [ "$count" -ge 2 ]; then
+            base=$(printf '%s\n' "$parents" | head -n 1)
+          else
+            base="$EVENT_BASE_SHA"
+          fi
+          case "$base" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *) echo "refusing base $base" >&2; exit 1 ;;
+          esac
+          git fetch --no-tags --depth=1 origin "$base"
+          echo "PR_BASE_SHA=$base" >> "$GITHUB_ENV"
       - name: Path-selection tests
         run: |
           set -o pipefail
@@ -46,8 +64,6 @@ jobs:
           grep -E '^# fail 0$' "$RUNNER_TEMP/pr-gate-node-test.txt"
       - name: Select suites
         id: plan
-        env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node scripts/pr-gate/select.mjs --git "$PR_BASE_SHA"
 
   lifecycle:
