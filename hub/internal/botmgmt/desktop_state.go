@@ -14,6 +14,11 @@ type desktopPin struct {
 	HeldByBot  string `json:"held_by_bot,omitempty"`
 	Awaiting   bool   `json:"awaiting,omitempty"`
 	KeyboardBy string `json:"keyboard_by,omitempty"`
+	// AwaitingSince is when the keyboard was handed to the person, RFC3339.
+	// Pins written before this field existed have no timestamp; they are
+	// read as already-stale so a leftover login prompt cannot deadlock the
+	// next task forever.
+	AwaitingSince string `json:"awaiting_since,omitempty"`
 }
 
 // desktopViewPin keeps one gated noVNC picture servable across a restart. The
@@ -103,6 +108,12 @@ func (s *Service) ensureDesktopHydrated(tenantID string) {
 				s.desktopAwaiting = map[string]bool{}
 			}
 			s.desktopAwaiting[key] = true
+			if since, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(pin.AwaitingSince)); parseErr == nil {
+				if s.desktopAwaitingSince == nil {
+					s.desktopAwaitingSince = map[string]time.Time{}
+				}
+				s.desktopAwaitingSince[key] = since
+			}
 		}
 		if pin.KeyboardBy != "" {
 			if s.desktopKeyboardTaken == nil {
@@ -235,11 +246,17 @@ func (s *Service) persistDesktopState(tenantID string) {
 	prefix := desktopTenantPrefix(tenantID)
 	now := s.now()
 	st := &desktopStateRecord{Pins: map[string]*desktopPin{}, Views: map[string]*desktopViewPin{}}
+	awaitingSince := func(key string) string {
+		if since, ok := s.desktopAwaitingSince[key]; ok && !since.IsZero() {
+			return since.UTC().Format(time.RFC3339)
+		}
+		return ""
+	}
 	for key, holder := range s.desktopHeld {
 		if !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		pin := &desktopPin{HeldByBot: holder, Awaiting: s.desktopAwaiting[key]}
+		pin := &desktopPin{HeldByBot: holder, Awaiting: s.desktopAwaiting[key], AwaitingSince: awaitingSince(key)}
 		if s.desktopKeyboardTaken[key] != "" {
 			pin.KeyboardBy = s.desktopKeyboardTaken[key]
 		}
@@ -249,7 +266,7 @@ func (s *Service) persistDesktopState(tenantID string) {
 	// clears the keyboard pin while the holder stays). Catch those keys too.
 	for key := range s.desktopAwaiting {
 		if _, ok := st.Pins[key]; !ok && strings.HasPrefix(key, prefix) {
-			pin := &desktopPin{Awaiting: s.desktopAwaiting[key]}
+			pin := &desktopPin{Awaiting: s.desktopAwaiting[key], AwaitingSince: awaitingSince(key)}
 			if s.desktopKeyboardTaken[key] != "" {
 				pin.KeyboardBy = s.desktopKeyboardTaken[key]
 			}

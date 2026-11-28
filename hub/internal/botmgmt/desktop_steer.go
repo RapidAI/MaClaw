@@ -130,9 +130,12 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 		if phase == "" {
 			phase = in.Phase
 		}
-		heldAck := decision.Ack
-		if strings.TrimSpace(heldAck) == "" {
-			heldAck = desktopQueuedAck(desktopAckContent(content, continuation))
+		// A held message must say so. Answering with the task ack here reads
+		// as "I started" while nothing runs — the person cannot tell the
+		// desktop is still theirs to finish, or what unblocks this message.
+		heldAck := desktopHeldAck
+		if strings.TrimSpace(decision.Ack) != "" {
+			heldAck = desktopHeldAck + "\n" + strings.TrimSpace(decision.Ack)
 		}
 		pos, err := s.enqueueDesktopMessage(in.TenantID, in.UserID, in.BotID, desktopQueueItem{
 			ClientMessageID: in.ClientMessageID,

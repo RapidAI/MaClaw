@@ -857,6 +857,14 @@ func (s *Service) runStillLive(tenantID, userID, botID, runID string) bool {
 	return !state.done && strings.TrimSpace(state.runID) != ""
 }
 
+// desktopKeyboardHandoffMax is how long a login/verification/payment
+// handoff may hold the keyboard before it is read as abandoned. A handoff is
+// a quick human step; one left waiting longer than this blocks every later
+// independent task behind a prompt nobody is answering — the deadlock of a
+// paused run outliving the page it referred to. The value is a var so tests
+// can shrink it.
+var desktopKeyboardHandoffMax = 20 * time.Minute
+
 func (s *Service) personHasBotKeyboard(tenantID, userID, botID string) bool {
 	if s == nil {
 		return false
@@ -882,7 +890,26 @@ func (s *Service) personHasBotKeyboard(tenantID, userID, botID string) bool {
 	defer s.mu.Unlock()
 	s.ensureDesktopHydrated(tenantID)
 	key := desktopViewKey(tenantID, dUser)
-	return s.desktopAwaiting[key] && s.desktopHeld[key] == botID
+	if !(s.desktopAwaiting[key] && s.desktopHeld[key] == botID) {
+		return false
+	}
+	// A hold without a timestamp predates the abandonment clock; one with an
+	// expired timestamp is a handoff the person walked away from. Either way
+	// the next independent task is the person's real intent — the stale pin
+	// is voided here so a dead pause cannot hold new work hostage forever.
+	since, timed := s.desktopAwaitingSince[key]
+	stale := !timed || since.IsZero() || s.now().Sub(since) >= desktopKeyboardHandoffMax
+	if !stale {
+		return true
+	}
+	delete(s.desktopHeld, key)
+	delete(s.desktopAwaiting, key)
+	delete(s.desktopAwaitingSince, key)
+	delete(s.desktopKeyboardTaken, key)
+	delete(s.desktopHoldTurn, key)
+	delete(s.desktopKeyboardTurn, key)
+	s.persistDesktopState(tenantID)
+	return false
 }
 
 type desktopNoQueueKey struct{}

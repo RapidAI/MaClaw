@@ -594,6 +594,12 @@ func desktopAckContent(content string, continuation bool) string {
 	return content
 }
 
+// desktopHeldAck is the truthful first line of a message parked behind a
+// live desktop handoff: the keyboard is still the person's, so nothing can
+// start until they finish or hand it back. Naming that state beats an ack
+// that sounds like the task already started.
+const desktopHeldAck = "这条先排着：桌面还在等你完成上一步（登录、验证或支付确认）。你在桌面上做完并点「交还给 bot」后，我马上开始做；如果那一步已经不做了，等它过期后我也会自动开始。"
+
 // desktopQueuedAck returns the first sentence a queued message shows when the
 // intake LLM produced no ack of its own (timeout or fallback). It names the
 // person's own command — clipped to a short lead — so the reply reads like
@@ -1682,6 +1688,7 @@ func (s *Service) keepDesktopWithoutKeyboard(tenantID, userID, botID string, tur
 	}
 	s.desktopHeld[key] = botID
 	s.desktopAwaiting[key] = false
+	delete(s.desktopAwaitingSince, key)
 	s.setDesktopTurnLocked(&s.desktopHoldTurn, key, turn)
 	s.persistDesktopState(tenantID)
 }
@@ -1821,6 +1828,12 @@ func (s *Service) noteDesktopHeld(tenantID, userID, botID string, turn ...string
 		s.openDesktopHandoffLocked(tenantID, userID, botID)
 	}
 	s.desktopHeld[key] = botID
+	if !s.desktopAwaiting[key] {
+		if s.desktopAwaitingSince == nil {
+			s.desktopAwaitingSince = map[string]time.Time{}
+		}
+		s.desktopAwaitingSince[key] = s.now()
+	}
 	s.desktopAwaiting[key] = true
 	delete(s.desktopKeyboardTaken, key)
 	delete(s.desktopKeyboardTurn, key)
@@ -1849,6 +1862,7 @@ func (s *Service) releaseDesktopKeyboard(tenantID, userID, botID string, turn ..
 		return
 	}
 	s.desktopAwaiting[key] = false
+	delete(s.desktopAwaitingSince, key)
 	s.setDesktopTurnLocked(&s.desktopKeyboardTurn, key, turn)
 	if s.desktopKeyboardTaken == nil {
 		s.desktopKeyboardTaken = map[string]string{}
@@ -1892,6 +1906,12 @@ func (s *Service) restoreDesktopKeyboard(tenantID, userID, botID string, turn ..
 	if s.desktopAwaiting == nil {
 		s.desktopAwaiting = map[string]bool{}
 	}
+	if s.desktopAwaitingSince == nil {
+		s.desktopAwaitingSince = map[string]time.Time{}
+	}
+	// The continuation tried and handed the keyboard back: this is a fresh
+	// ask of the person, so the abandonment clock starts over here.
+	s.desktopAwaitingSince[key] = s.now()
 	s.desktopAwaiting[key] = true
 	s.persistDesktopState(tenantID)
 	s.mu.Unlock()
@@ -1917,6 +1937,7 @@ func (s *Service) dropDesktopHoldOwnedBy(tenantID, userID, botID string) {
 	}
 	delete(s.desktopHeld, key)
 	delete(s.desktopAwaiting, key)
+	delete(s.desktopAwaitingSince, key)
 	delete(s.desktopKeyboardTaken, key)
 	delete(s.desktopHoldTurn, key)
 	delete(s.desktopKeyboardTurn, key)
@@ -1940,6 +1961,7 @@ func (s *Service) clearDesktopHeld(tenantID, userID, botID string, turn ...strin
 	if !hadHolder || holder == strings.TrimSpace(botID) {
 		delete(s.desktopHeld, key)
 		delete(s.desktopAwaiting, key)
+		delete(s.desktopAwaitingSince, key)
 		delete(s.desktopKeyboardTaken, key)
 		delete(s.desktopHoldTurn, key)
 		delete(s.desktopKeyboardTurn, key)

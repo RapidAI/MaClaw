@@ -296,6 +296,11 @@ type Service struct {
 	// The continuation takes the keyboard back as soon as it starts, but the
 	// desktop stays up until that bot finishes.
 	desktopAwaiting map[string]bool
+	// desktopAwaitingSince is when the keyboard was last handed to the
+	// person. A handoff is a quick human step; one left waiting past
+	// desktopKeyboardHandoffMax is an abandoned task, not a live pause, and
+	// must not hold the next independent message hostage.
+	desktopAwaitingSince map[string]time.Time
 	// desktopKeyboardTaken is the bot whose continuation just took the
 	// keyboard. A failure gives it back only to that bot. A view-only
 	// timeout pin is not a login, so a later failure must not hand the
@@ -706,6 +711,7 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 	if holder, ok := s.desktopHeld[key]; ok && holder == bot.ID {
 		delete(s.desktopHeld, key)
 		delete(s.desktopAwaiting, key)
+		delete(s.desktopAwaitingSince, key)
 		delete(s.desktopKeyboardTaken, key)
 		delete(s.desktopView, key)
 		stopHeld = true

@@ -219,8 +219,11 @@ func TestHubHoldsWhileThePersonHasTheKeyboard(t *testing.T) {
 		t.Fatal(err)
 	}
 	held, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "下一件", "execute", "turn-h")
-	if err != nil || !held.Queued || !held.Held || held.Ack != "等你交还。" {
+	if err != nil || !held.Queued || !held.Held {
 		t.Fatalf("held=%+v %v", held, err)
+	}
+	if !strings.HasPrefix(held.Ack, desktopHeldAck) || !strings.Contains(held.Ack, "等你交还。") {
+		t.Fatalf("held ack must say the desktop is waiting for the person, got %q", held.Ack)
 	}
 	fake.mu.Lock()
 	if len(fake.posts) != 0 {
@@ -266,6 +269,78 @@ func TestHubHoldKeepsTheDecidedOrder(t *testing.T) {
 	joined := strings.Join(fake.posts, "\n")
 	if !strings.Contains(joined, "完成标准：老王收到文件") {
 		t.Fatalf("held run lost the decided order: %v", fake.posts)
+	}
+}
+
+// A handoff left unanswered past the abandonment ceiling is a dead pause,
+// not a live one: the next independent task is the person's real intent, so
+// it starts instead of queueing behind a prompt nobody is answering.
+func TestHubStaleKeyboardHoldDoesNotBlockANewTask(t *testing.T) {
+	fake := &intakeSrv{intake: `{"kind":"new","instruction":"下一件","ack":"这就去。","pace":"direct"}`}
+	srv := httptest.NewServer(http.HandlerFunc(fake.handle))
+	defer srv.Close()
+	svc := newTurnKeyService(t, srv)
+	now := time.Now()
+	svc.Now = func() time.Time { return now }
+	if err := svc.HoldDesktop(context.Background(), "tenant-a", "alice", "inst_alice"); err != nil {
+		t.Fatal(err)
+	}
+	// Twenty-one minutes later the person never handed the desktop back:
+	// the login/payment prompt belongs to a task they walked away from.
+	now = now.Add(desktopKeyboardHandoffMax + time.Minute)
+	admission, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "下一件", "execute", "turn-stale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admission.Held || admission.Queued {
+		t.Fatalf("stale handoff still held the message: %+v", admission)
+	}
+	if svc.personHasBotKeyboard("tenant-a", "alice", "bot_alice") {
+		t.Fatal("stale hold was not voided")
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.posts) == 0 {
+		t.Fatal("new task did not start once the stale hold was voided")
+	}
+}
+
+// The production deadlock: a message held behind a fresh handoff must start
+// on its own once that handoff ages out — the person never pressed 交还 and
+// the queue patrol is the only thing still looking at it.
+func TestHubHeldMessageStartsAfterTheHoldAgesOut(t *testing.T) {
+	fake := &intakeSrv{intake: `{"kind":"new","instruction":"下一件","ack":"这就去。","pace":"direct"}`}
+	srv := httptest.NewServer(http.HandlerFunc(fake.handle))
+	defer srv.Close()
+	svc := newTurnKeyService(t, srv)
+	now := time.Now()
+	svc.Now = func() time.Time { return now }
+	if err := svc.HoldDesktop(context.Background(), "tenant-a", "alice", "inst_alice"); err != nil {
+		t.Fatal(err)
+	}
+	held, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "下一件", "execute", "turn-aged")
+	if err != nil || !held.Held {
+		t.Fatalf("held=%+v %v", held, err)
+	}
+	fake.mu.Lock()
+	if len(fake.posts) != 0 {
+		t.Fatalf("posted while the handoff was fresh: %d", len(fake.posts))
+	}
+	fake.mu.Unlock()
+	now = now.Add(desktopKeyboardHandoffMax + time.Minute)
+	svc.drainDesktopQueue("tenant-a", "alice", "bot_alice")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		fake.mu.Lock()
+		posted := len(fake.posts)
+		fake.mu.Unlock()
+		if posted > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("held message never started after the hold aged out")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
