@@ -364,6 +364,39 @@ func ClearRunCart(runID string) {
 	runCart.mu.Unlock()
 }
 
+var runCommit = struct {
+	mu   sync.Mutex
+	runs map[string]bool
+}{runs: map[string]bool{}}
+
+// NoteRunCheckoutCommit marks that this run itself committed an order submit
+// or payment. Only then can an order-success page be this run's own evidence;
+// one it meets without a commit of its own belongs to an earlier task or to
+// the person's own shopping.
+func NoteRunCheckoutCommit(runID string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	runCommit.mu.Lock()
+	runCommit.runs[runID] = true
+	runCommit.mu.Unlock()
+}
+
+// RunHasCheckoutCommit reports whether this run committed a payment itself.
+func RunHasCheckoutCommit(runID string) bool {
+	runCommit.mu.Lock()
+	defer runCommit.mu.Unlock()
+	return runCommit.runs[strings.TrimSpace(runID)]
+}
+
+// ClearRunCheckoutCommit drops the mark of a finished run.
+func ClearRunCheckoutCommit(runID string) {
+	runCommit.mu.Lock()
+	delete(runCommit.runs, strings.TrimSpace(runID))
+	runCommit.mu.Unlock()
+}
+
 // PreselectedCartItems are selected cart rows this run did not add.
 func PreselectedCartItems(runID string, selected []string) []string {
 	runCart.mu.Lock()

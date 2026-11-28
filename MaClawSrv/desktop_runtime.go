@@ -95,7 +95,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"When the user asked for a file, action=deliver. A file already on this desktop, including a pdf, uses path, and the chat receives that file. name and content send the supplied text under that name. A name ending in .docx is a Word file built from that text. Say that it is attached to this message, or say what failed. Do not ask the user to choose a delivery method or to save the file themselves. Do not refuse a file because of its type. Any size is delivered as is (a large file reaches the person as a download from the server, up to 2 GB); never shrink or re-render a file to get it delivered. Check a generated document by its text and size (pdftotext, ls -l), not by opening it on screen or taking screenshots, unless the person asked about how it looks. " +
 			"Do not paste the document into the chat, and do not tell the user to copy it into Word. " +
 			desktopReplyCard(request) +
-			"Do the work in this turn. Do not stop to ask for another confirmation, except before submitting an order or paying: stop there, tell the user the items and the total, and wait for them to reply 确认支付 with the amount. A cookie notice is accepted in the script. A password, phone number, or verification code is typed into the input that appears in this chat, then filled in; do not ask the person to type it on the desktop. Hand the desktop back only for a QR-code login, a captcha, or a payment confirmation. After they hand it back, continue the same task on the page that is already open. Do not open another tab of that page. " +
+			"Do the work in this turn. Do not stop to ask for another confirmation, except before submitting an order or paying: stop there, tell the user the items and the total, and wait for them to reply 确认支付 with the amount. A cookie notice is accepted in the script. A password, phone number, or verification code is typed into the input that appears in this chat, then filled in; do not ask the person to type it on the desktop. Hand the desktop back only for a QR-code login, a captcha, or a payment confirmation. A page that already says payment/order success or waiting for shipment is a finished purchase state, not a login or verification wall: never hand it back for login again. Before finishing a purchase, call shop_readback on the payment-success or order page and report a compact Markdown table with order id, payment/fulfillment status, delivery address exactly as shown, item title/quantity/price rows, and total. If the page does not show a field, write 未显示 instead of inventing it. After they hand it back, continue the same task on the page that is already open. Do not open another tab of that page. " +
 			"Bots of this user are different instances of the same MaClawSrv user and share this desktop. Other users cannot see it. " +
 			"For web pages use the browser inside that desktop: action=probe once, then action=script. " +
 			"The script is statements that click, type, select, press, scroll, and waitFor every control that probe listed. Do not probe or click one control per turn. " +
@@ -1433,10 +1433,27 @@ func finishDesktopAction(scope agentruntime.Scope, text string, err error) (stri
 	return finishDesktopActionPhase(scope, text, err, "execute")
 }
 
+// desktopAnnotateOrderEvidence scopes the order_success page flag to the run
+// reading it. The flag is stateless — it only says what the page shows, not
+// whose work that page is. A shopping task that opens on the previous order's
+// success page (the browser simply stayed there) used to read it as its own
+// completion and stop before it ever searched (11-28: the fresh drink order
+// never started). Only a run that committed an order submit or payment itself
+// may treat the page as its own evidence; for every other run the note says
+// exactly whose page this is and what it may be used for.
+func desktopAnnotateOrderEvidence(scope agentruntime.Scope, text string) string {
+	if !strings.Contains(text, "order_success") || browser.RunHasCheckoutCommit(scope.RunID) {
+		return text
+	}
+	note := "ORDER_EVIDENCE: 这个订单成功/待发货页面不是本次任务产生的（本次任务还没有完成过任何提交订单或支付动作）。它只是之前任务或人工操作留下的页面：核对旧订单时可以引用其中的订单号、地址、金额；但如果本次任务是新的购买，它不能算完成证据——必须离开这个页面，重新搜索、加购、结算、支付。"
+	return strings.TrimSpace(text) + "\n" + note
+}
+
 // finishDesktopActionPhase hands the desktop to a person only during execution.
 // A plan probe that sees a login wall returns the observation and does not
 // record a handoff or the login question.
 func finishDesktopActionPhase(scope agentruntime.Scope, text string, err error, phase string) (string, error) {
+	text = desktopAnnotateOrderEvidence(scope, text)
 	reason := desktopAttentionReason(text)
 	if reason == "" {
 		return text, err
@@ -2448,6 +2465,9 @@ func appendDesktopPageFlags(text string, data map[string]interface{}) string {
 	if flags.PaymentConfirm {
 		names = append(names, "payment_confirm")
 	}
+	if flags.OrderSuccess {
+		names = append(names, "order_success")
+	}
 	if flags.ConsentDialog {
 		names = append(names, "consent_dialog")
 	}
@@ -2993,6 +3013,7 @@ func finishDesktopRound(tenantID, userID, runID string) {
 		}
 	}
 	browser.ClearRunCart(runID)
+	browser.ClearRunCheckoutCommit(runID)
 	dropDesktopToolResults(runID)
 	forgetDesktopOutage(runID)
 	desktopScreenLeaseEndRun(runID, "round_end")

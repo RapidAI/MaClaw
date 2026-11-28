@@ -72,6 +72,10 @@ func desktopHoldCheckout(ctx context.Context, scope agentruntime.Scope, session 
 					return browser.CheckoutConfirmQuestion(firstCheckoutLabel(target), pre), true
 				}
 			}
+			// The commit goes through in this run: an order-success page from
+			// here on can be this run's own evidence instead of history it
+			// merely walked into.
+			browser.NoteRunCheckoutCommit(scope.RunID)
 			return "", false
 		}
 		return browser.CheckoutConfirmQuestion(firstCheckoutLabel(target), pre), true
@@ -130,7 +134,7 @@ func desktopCheckoutTargets(ctx context.Context, scope agentruntime.Scope, sessi
 		if script == "" {
 			script = desktopArg(args, "name")
 		}
-		return []browser.CheckoutTarget{{Name: script, Text: script, Context: page.Context, URL: page.URL, Submits: true}}
+		return []browser.CheckoutTarget{{Name: "页面脚本", Text: script, Context: page.Context, URL: page.URL, Submits: true}}
 	case "task_run":
 		return desktopTaskCheckoutTargets(session, args["steps"], page)
 	case "app_run", "computer":

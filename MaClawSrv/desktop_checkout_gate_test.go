@@ -82,3 +82,50 @@ func TestCheckoutGateLeavesOrdinaryClicksAlone(t *testing.T) {
 		t.Fatal(ask)
 	}
 }
+
+func TestCheckoutCommitScopesTheOrderSuccessEvidence(t *testing.T) {
+	prevPage := desktopReadCheckoutPage
+	prevAt := desktopCheckoutElementAt
+	t.Cleanup(func() {
+		desktopReadCheckoutPage = prevPage
+		desktopCheckoutElementAt = prevAt
+		browser.ClearCheckoutConfirmation("tenant-a:alice")
+		browser.ClearRunCheckoutCommit("run-evidence")
+	})
+	desktopReadCheckoutPage = func(*browser.BrowserAgentSession) browser.CheckoutPage {
+		return browser.CheckoutPage{
+			URL: "https://shop.example/checkout", Context: "应付 ¥66.00\n收货地址",
+			Focused: "提交订单", Selected: []string{"饮料"},
+		}
+	}
+	desktopCheckoutElementAt = func(context.Context, agentruntime.Scope, *browser.BrowserAgentSession, string, float64, float64) (string, string) {
+		return "提交订单", "提交订单"
+	}
+	scope := agentruntime.Scope{TenantID: "tenant-a", UserID: "alice", RunID: "run-evidence", InstanceID: "inst-evidence"}
+
+	// Before this run commits anything, an order-success page is history it
+	// walked into — the note must say so, or a fresh purchase that opens on
+	// the previous order's page reads it as its own completion and stops.
+	stale := desktopAnnotateOrderEvidence(scope, "page; page flags: order_success")
+	if !strings.Contains(stale, "ORDER_EVIDENCE") || !strings.Contains(stale, "不能算完成证据") {
+		t.Fatalf("uncommitted run read the stale page as its own: %q", stale)
+	}
+	if plain := desktopAnnotateOrderEvidence(scope, "page; page flags: login_wall"); strings.Contains(plain, "ORDER_EVIDENCE") {
+		t.Fatalf("order note on a non-success page: %q", plain)
+	}
+
+	if _, ok := browser.RecordCheckoutConfirmation("tenant-a:alice", "确认支付 ¥66"); !ok {
+		t.Fatal("record")
+	}
+	if ask, hold := desktopHoldCheckout(context.Background(), scope, nil, ":1", "click", map[string]any{"text": "提交订单"}); hold || ask != "" {
+		t.Fatalf("confirmed click still held: %q", ask)
+	}
+	if !browser.RunHasCheckoutCommit("run-evidence") {
+		t.Fatal("the confirmed commit did not mark the run")
+	}
+	// After its own commit the same page is this run's evidence: untouched.
+	own := desktopAnnotateOrderEvidence(scope, "page; page flags: order_success")
+	if strings.Contains(own, "ORDER_EVIDENCE") {
+		t.Fatalf("this run's own success annotated as stale: %q", own)
+	}
+}
