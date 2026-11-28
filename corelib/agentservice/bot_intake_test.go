@@ -684,6 +684,29 @@ func TestAnsweredGapStartsEvenOnAPlanPhase(t *testing.T) {
 	}
 }
 
+func TestNegatedDelegationDoesNotCloseTheGap(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：周报\n还缺：发给谁")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "不要你自己决定，必须我先确认"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"new","run":0,"spec":true,"phase":"execute","instruction":"周报","ack":"我开始","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "ask" {
+		t.Fatalf("a negated delegation closed the gap: %+v %v", got, err)
+	}
+	for _, yes := range []string{"你自己决定长度", "我不想自己定，你来吧", "你看着办就行"} {
+		if !specContentDelegates(yes) {
+			t.Fatalf("delegation missed: %q", yes)
+		}
+	}
+	for _, no := range []string{"不要你自己决定", "不许你看着办", "别自行决定"} {
+		if specContentDelegates(no) {
+			t.Fatalf("negation read as delegation: %q", no)
+		}
+	}
+}
 func TestDelegatedAnswerClosesTheGap(t *testing.T) {
 	desktopbot.ResetSpecMemory()
 	t.Cleanup(desktopbot.ResetSpecMemory)

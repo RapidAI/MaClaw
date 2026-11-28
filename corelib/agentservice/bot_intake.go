@@ -111,7 +111,7 @@ The object has these fields:
 - pace: direct, reply, ask, schedule, or status.
 - persona: the whole identity to keep after this message, or an empty string when it did not change, or a single hyphen when they withdraw it.
 - schedule: an object only when kind is schedule. mode is create or cancel. name is a short stable name. For create, either interval_minutes is a positive number of minutes, or hour (0-23) and minute (0-59) name a clock time. day_of_week is 0 for Sunday through 6 for Saturday; omit it to run every day. For cancel, name is the timer to stop, or empty to stop every timer of this bot.
-- spec: true or false. Leave it false for a clear one-step command: opening a named page, a screenshot, a lookup, a small change already spelled out, small talk, a status question, or a timer. Set spec true when the message is a class of work that still has to be specified with this person before it can be done faithfully — a post, a report, a program, a publication, or another multi-step delivery — and a detail that would change the result is missing and cannot be defaulted: who it is for, where it goes, the form, the source, the length, or what done looks like. A spec already open is listed under "spec already open". A later message that fills that spec in keeps spec true.
+- spec: true or false. Leave it false for a clear one-step command: opening a named page, a screenshot, a lookup, a small change already spelled out, small talk, a status question, or a timer. Set spec true when the message is a class of work that still has to be specified with this person before it can be done faithfully — a post, a report, a program, a publication, or another multi-step delivery — and a detail that would change the result is missing and cannot be defaulted: who it is for, where it goes, the form, the source, the length, or what done looks like. Many details CAN be defaulted and must not open a spec: the length of a piece settles to a reasonable length, the audience of a post or publication settles to the public readers of that platform, draft versus direct publish settles to whatever the person's verb already said (发/发布/ publish means publish), and an unspecified pick among candidates settles to the first or hottest one. When every missing detail has such a default, spec stays false and the work starts at once. A spec already open is listed under "spec already open". A later message that fills that spec in keeps spec true.
 
 kind:
 - supplement: the message adds a constraint, detail, or material to a running task and does not change that task's goal.
@@ -128,7 +128,7 @@ kind:
 A line under "timers already armed" is a timer that already runs. When the new message only adds a fact or a delivery form for that timer — a city, a place, or a file type such as PDF — kind is schedule, mode is create, and name is that timer's name. instruction is the whole order for one later run: what the timer already does, the place it covers, and the file form. A place is the subject of the report, not a field inside a sample file. A file form is how that later run is delivered. Do not make the file on this turn. ack says the timer now uses that place and that form, and does not say a file was already made. This is not kind new, not kind reply, and not kind ask. A different repeating job gets its own name. Leave a clock field out to keep the armed timer's value. Set interval_minutes, or hour and minute, only when the message changes the time. Omit day_of_week to keep the armed weekday.
 
 When no task is running, do not use supplement, change, stop, pause, or continue.
-A clear request is direct work. Do not ask only for permission to proceed. Prefer a reasonable default over a question whenever the missing detail can be inferred or checked during execution: an account default such as the default shipping address means use it, an unspecified article/product means choose the most relevant first result, and login state is checked on the desktop instead of asking in advance. kind is ask only for a fact that cannot be inferred or observed there and without which the work cannot start, such as a required recipient, credential choice, payment approval, or a genuinely ambiguous target. While spec is true and the spec is not settled, this sentence does not apply: kind stays ask.
+A clear request is direct work. Do not ask only for permission to proceed. Prefer a reasonable default over a question whenever the missing detail can be inferred or checked during execution: an account default such as the default shipping address means use it, an unspecified article/product means choose the most relevant first result, and login state is checked on the desktop instead of asking in advance. kind is ask only for a fact that cannot be inferred or observed there and without which the work cannot start, such as a required recipient, a credential choice, or a genuinely ambiguous target. Payment approval is never such a question: it is confirmed at the checkout gate when the paying click arrives, long after the work starts. While spec is true and the spec is not settled, this sentence does not apply: kind stays ask.
 If you are unsure which running task a message belongs to, kind is new and run is 0.
 Do not match the message against a list of phrases.
 
@@ -431,11 +431,34 @@ func specGapAnswered(card, gap, content string) bool {
 func specContentDelegates(content string) bool {
 	flat := strings.Join(strings.Fields(strings.ToLower(content)), "")
 	for _, mark := range []string{
-		"你自己决定", "你们自己决定", "你决定", "你来定", "你看着办", "你拿主意",
-		"听你的", "随便你", "都可以你定", "你定吧", "自己定", "自行决定",
+		"你自己决定", "你们自己决定", "你决定", "你来定", "你来吧", "你来说定",
+		"你来决定", "你说了算", "你看着办", "你拿主意",
+		"听你的", "随便你", "都可以你定", "你定吧", "自行决定",
 		"uptoyou", "yourchoice", "youdecide", "decideyourself",
 	} {
-		if strings.Contains(flat, mark) {
+		for at := strings.Index(flat, mark); at >= 0; {
+			if !specDelegationNegated(flat, at) {
+				return true
+			}
+			next := strings.Index(flat[at+len(mark):], mark)
+			if next < 0 {
+				break
+			}
+			at += len(mark) + next
+		}
+	}
+	return false
+}
+
+// specDelegationNegated reports that a negation sits just ahead of the mark:
+// "不要你自己决定" or "不许你看着办" forbids the assistant's own choice, the
+// opposite of a delegation. The lookback stays short so "我不想自己定" — the
+// person declining to decide, which IS a delegation — still counts.
+func specDelegationNegated(flat string, at int) bool {
+	head := []rune(flat[:at])
+	for i := len(head) - 1; i >= 0 && i >= len(head)-3; i-- {
+		switch head[i] {
+		case '不', '没', '别', '勿', '莫':
 			return true
 		}
 	}
